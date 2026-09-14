@@ -15,8 +15,10 @@ target_metadata = Base.metadata
 
 
 def _apply_url() -> None:
-    settings = get_settings()
-    config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+    # Prefer MIGRATION_DATABASE_URL: a pooled endpoint (Neon) is not always suitable for DDL.
+    from app.db.session import migration_url
+
+    config.set_main_option("sqlalchemy.url", migration_url(get_settings()).replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

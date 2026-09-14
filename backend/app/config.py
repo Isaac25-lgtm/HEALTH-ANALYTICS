@@ -25,6 +25,23 @@ class Settings(BaseSettings):
         default="sqlite+pysqlite:///./hpip_dev.db",
         description="SQLAlchemy URL. PostgreSQL is required for shared/staging/production.",
     )
+    # Optional direct (unpooled) URL for migrations when DATABASE_URL is a pooled endpoint,
+    # as it is on Neon. Provider-neutral: only the URL differs.
+    migration_database_url: str = ""
+    # Small pools on purpose: the API, worker, migration job and scheduled purge share one
+    # managed database with a limited connection budget.
+    db_pool_size: int = Field(default=5, ge=1, le=50)
+    db_max_overflow: int = Field(default=5, ge=0, le=50)
+    db_pool_recycle_seconds: int = Field(default=300, ge=30, le=86_400)
+    db_pool_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    db_pool_pre_ping: bool = True
+    db_connect_timeout_seconds: int = Field(default=10, ge=1, le=120)
+    # "require" for managed PostgreSQL; empty leaves the driver default (local development).
+    db_sslmode: str = ""
+    # Managed databases must be reached over TLS. Set false only for a database on a private
+    # network you control (for example the Docker Compose stack), and say so in deployment docs.
+    db_require_ssl: bool = True
+    db_application_name: str = "hpip"
 
     auth_secret: str = Field(
         default="replace-with-a-long-random-development-secret-at-least-32-chars",
@@ -47,6 +64,10 @@ class Settings(BaseSettings):
     seed_dev_data: bool = False
     seed_password: str = "dev-only-change-me"
 
+    # The host is known, but nothing is connected: credentials, verified mappings and live
+    # synchronisation are still missing. Both switches must be set explicitly to enable them.
+    dhis2_enabled: bool = False
+    sync_enabled: bool = False
     dhis2_base_url: str = ""
     dhis2_username: str = ""
     dhis2_password: str = ""
@@ -220,6 +241,63 @@ def validate_runtime_settings(settings: Settings) -> list[str]:
     errors.extend(rate_limit_configuration_errors(settings))
     errors.extend(retention_configuration_errors(settings))
     errors.extend(artifact_storage_configuration_errors(settings))
+    errors.extend(database_configuration_errors(settings))
+    errors.extend(dhis2_configuration_errors(settings))
+    return errors
+
+
+def dhis2_configuration_errors(settings: Settings) -> list[str]:
+    """DHIS2 stays inert until it is switched on deliberately, and then it must be complete."""
+    errors: list[str] = []
+    if not settings.dhis2_enabled:
+        if settings.sync_enabled:
+            errors.append("SYNC_ENABLED requires DHIS2_ENABLED.")
+        return errors
+    if not settings.dhis2_base_url.strip():
+        errors.append("DHIS2_BASE_URL is required when DHIS2_ENABLED is true.")
+    elif not settings.dhis2_base_url.startswith("https://"):
+        errors.append("DHIS2_BASE_URL must be HTTPS when DHIS2_ENABLED is true.")
+    method = settings.dhis2_auth_method.strip().lower()
+    if method == "basic" and not (settings.dhis2_username and settings.dhis2_password):
+        errors.append("DHIS2 basic authentication requires DHIS2_USERNAME and DHIS2_PASSWORD.")
+    if method in {"pat", "token"} and not settings.dhis2_pat:
+        errors.append("DHIS2 token authentication requires DHIS2_PAT.")
+    return errors
+
+
+def database_configuration_errors(settings: Settings) -> list[str]:
+    """Connection problems that must stop a staging/production deployment."""
+    errors: list[str] = []
+    url = settings.database_url.strip()
+    if not url:
+        errors.append("DATABASE_URL is required.")
+        return errors
+    if "://" not in url or url.split("://", 1)[1] == "":
+        errors.append("DATABASE_URL is malformed.")
+        return errors
+    if not settings.is_production:
+        return errors
+    if settings.is_sqlite:
+        errors.append("DATABASE_URL must be PostgreSQL in staging/production.")
+        return errors
+    if not url.startswith("postgresql"):
+        errors.append("DATABASE_URL must use a PostgreSQL driver in staging/production.")
+    declared = settings.db_sslmode.strip().lower() in {"require", "verify-ca", "verify-full"}
+    in_url = "sslmode=require" in url or "sslmode=verify" in url
+    if settings.db_require_ssl and not (declared or in_url):
+        errors.append(
+            "DB_SSLMODE must require TLS in staging/production (or set sslmode in DATABASE_URL). "
+            "Set DB_REQUIRE_SSL=false only for a database on a private network you control."
+        )
+    if settings.db_require_ssl and "sslmode=disable" in url:
+        errors.append("DATABASE_URL disables TLS while DB_REQUIRE_SSL is true.")
+    migration = settings.migration_database_url.strip()
+    if migration and not migration.startswith("postgresql"):
+        errors.append("MIGRATION_DATABASE_URL must use a PostgreSQL driver.")
+    if migration and any(marker in migration.lower() for marker in PLACEHOLDER_CREDENTIALS):
+        errors.append("MIGRATION_DATABASE_URL still uses a documented placeholder credential.")
+    if settings.db_pool_size + settings.db_max_overflow > 20:
+        errors.append("DB_POOL_SIZE plus DB_MAX_OVERFLOW is too large for a small managed database.")
     return errors
 
 

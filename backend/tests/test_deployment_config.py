@@ -68,7 +68,6 @@ def _full_env() -> dict[str, str]:
         "ALLOWED_ORIGINS": "https://hpip.example.test",
         "ALLOWED_HOSTS": "hpip.example.test,localhost",
         "HEALTHCHECK_HOST": "localhost",
-        "NEXT_PUBLIC_API_BASE_URL": "https://hpip.example.test/api",
     }
 
 
@@ -116,6 +115,28 @@ def test_compose_has_no_usable_default_credentials():
         assert re.search(rf"^#?\s*{name}=\s*$", template, re.MULTILINE), f"{name} missing from template"
 
 
+def test_browser_never_needs_the_backend_hostname():
+    """The web service proxies /api server-side, so cookies stay on the frontend origin."""
+    services = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    web = services["web"]
+    assert "args" not in web.get("build", {}), "no API origin is baked into the image"
+    assert web["environment"]["BACKEND_INTERNAL_URL"] == "http://api:8000"
+    assert set(web["networks"]) == {"frontend", "backend"}
+    next_config = (ROOT / "frontend" / "next.config.ts").read_text(encoding="utf-8")
+    assert "BACKEND_INTERNAL_URL" in next_config
+    assert "/api/:path*" in next_config
+    api_client = (ROOT / "frontend" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+    assert 'NEXT_PUBLIC_API_BASE_URL ?? "/api"' in api_client
+    dockerfile = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
+    assert "ARG NEXT_PUBLIC_API_BASE_URL" not in dockerfile
+
+
+def test_compose_configures_a_small_connection_budget_and_private_network_tls_choice():
+    environment = _interpolate(_compose(), _full_env())["services"]["api"]["environment"]
+    assert environment["DB_REQUIRE_SSL"] == "false"  # private compose network, stated explicitly
+    assert int(environment["DB_POOL_SIZE"]) + int(environment["DB_MAX_OVERFLOW"]) <= 20
+
+
 def test_redis_requires_a_password_and_urls_carry_it():
     services = _interpolate(_compose(), _full_env())["services"]
     assert "--requirepass" in " ".join(services["redis"]["command"])
@@ -158,3 +179,100 @@ def test_backend_image_installs_worker_dependencies_and_runs_unprivileged():
     assert "EXPORT_EAGER=false" in text and "RATE_LIMIT_BACKEND=redis" in text
     pyproject = (ROOT / "backend" / "pyproject.toml").read_text(encoding="utf-8")
     assert re.search(r"worker = \[\s*\"celery\[redis\]", pyproject)
+
+
+# ---------------------------------------------------------------------------
+# Render blueprint (work packages Q, R, S)
+# ---------------------------------------------------------------------------
+
+RENDER = ROOT / "render.yaml"
+
+
+def _render() -> dict:
+    return yaml.safe_load(RENDER.read_text(encoding="utf-8"))
+
+
+def _service(name: str) -> dict:
+    return next(item for item in _render()["services"] if item["name"] == name)
+
+
+def test_render_blueprint_is_a_small_one_worker_topology():
+    blueprint = _render()
+    names = {item["name"]: item["type"] for item in blueprint["services"]}
+    assert names == {
+        "hpip-redis": "redis",
+        "hpip-api": "web",
+        "hpip-web": "web",
+        "hpip-worker": "worker",
+        "hpip-purge": "cron",
+        "hpip-dhis2-refresh": "cron",
+    }
+    # Neon is external: no Render PostgreSQL is provisioned.
+    assert blueprint.get("databases") == []
+    workers = [item for item in blueprint["services"] if item["type"] == "worker"]
+    assert len(workers) == 1
+    command = workers[0]["dockerCommand"]
+    for queue in ("exports", "sync", "maintenance"):
+        assert queue in command
+    assert "celery" in command and "worker" in command
+
+
+def test_render_contains_no_secret_values():
+    text = RENDER.read_text(encoding="utf-8")
+    for forbidden in ("password=", "postgres://", "postgresql://", "redis://:", "sk-", "change-me"):
+        assert forbidden not in text.lower()
+    for service in _render()["services"]:
+        for variable in service.get("envVars", []):
+            if variable.get("key") in {
+                "DATABASE_URL",
+                "MIGRATION_DATABASE_URL",
+                "DHIS2_USERNAME",
+                "DHIS2_PASSWORD",
+                "DHIS2_PAT",
+                "WEB_ORIGIN",
+                "ALLOWED_ORIGINS",
+                "ALLOWED_HOSTS",
+            }:
+                assert variable.get("sync") is False, variable["key"]
+                assert "value" not in variable, variable["key"]
+
+
+def test_render_api_is_configured_for_neon_and_database_artifacts():
+    values = {item["key"]: item for item in _service("hpip-api")["envVars"]}
+    assert values["APP_ENV"]["value"] == "production"
+    assert values["DB_SSLMODE"]["value"] == "require"
+    assert values["DB_REQUIRE_SSL"]["value"] == "true"
+    assert int(values["DB_POOL_SIZE"]["value"]) + int(values["DB_MAX_OVERFLOW"]["value"]) <= 20
+    # Render services have separate disks, so artifacts must not rely on a shared filesystem.
+    assert values["EXPORT_ARTIFACT_STORAGE"]["value"] == "database"
+    assert values["EXPORT_SHARED_FILESYSTEM"]["value"] == "false"
+    assert values["EXPORT_EAGER"]["value"] == "false"
+    assert values["RATE_LIMIT_BACKEND"]["value"] == "redis"
+    assert _service("hpip-api")["preDeployCommand"] == "alembic upgrade head"
+    assert _service("hpip-api")["healthCheckPath"] == "/health"
+
+
+def test_render_keeps_dhis2_and_ai_switched_off():
+    values = {item["key"]: item for item in _service("hpip-api")["envVars"]}
+    assert values["DHIS2_ENABLED"]["value"] == "false"
+    assert values["AI_ENABLED"]["value"] == "false"
+    assert values["DHIS2_BASE_URL"]["value"] == "https://hmis.health.go.ug"
+    refresh = _service("hpip-dhis2-refresh")
+    assert refresh["schedule"] == "0 */6 * * *"
+    assert "dhis2_refresh.py" in refresh["dockerCommand"]
+
+
+def test_render_purge_job_uses_the_same_purge_service():
+    purge = _service("hpip-purge")
+    assert purge["type"] == "cron"
+    assert "scripts/purge_expired.py" in purge["dockerCommand"]
+    assert purge["schedule"]
+
+
+def test_render_web_service_proxies_and_never_publishes_the_api_host():
+    web = _service("hpip-web")
+    values = {item["key"]: item for item in web["envVars"]}
+    assert "BACKEND_INTERNAL_URL" in values
+    assert values["BACKEND_INTERNAL_URL"]["fromService"]["name"] == "hpip-api"
+    assert "NEXT_PUBLIC_API_BASE_URL" not in values
+    assert web["healthCheckPath"] == "/login"

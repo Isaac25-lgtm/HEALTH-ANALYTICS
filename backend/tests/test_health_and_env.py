@@ -14,7 +14,8 @@ def test_ready(client):
     assert response.status_code == 200
     body = response.json()
     assert body["database"] == "ok"
-    assert body["dhis2"] in {"not_configured", "configured_unverified"}
+    # DHIS2 is reported separately: a pre-DHIS2 deployment is healthy with it switched off.
+    assert body["dhis2"] in {"disabled", "enabled_not_configured", "configured_unverified"}
     assert body["status"] in {"ok", "degraded"}
 
 

@@ -103,6 +103,7 @@ def test_production_rejects_incoherent_or_unsafe_retention_settings():
         "redis_url": "redis://:owner@redis:6379/0",
         "celery_broker_url": "redis://:owner@redis:6379/1",
         "celery_result_backend": "redis://:owner@redis:6379/2",
+        "db_sslmode": "require",
         # The test environment enables eager exports; production settings must not inherit it.
         "export_eager": False,
     }

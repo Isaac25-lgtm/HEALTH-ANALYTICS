@@ -21,8 +21,19 @@ def is_configured() -> bool:
 
 
 def dhis2_readiness_status() -> str:
+    """DHIS2 state, reported separately from service readiness.
+
+    A pre-DHIS2 UAT deployment is healthy with DHIS2 switched off; it must neither claim a
+    connection nor fail readiness. Once enabled, missing configuration is a blocking error
+    reported through validate_runtime_settings.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    if not settings.dhis2_enabled:
+        return "disabled"
     if not is_configured():
-        return "not_configured"
+        return "enabled_not_configured"
     return "configured_unverified"
 
 

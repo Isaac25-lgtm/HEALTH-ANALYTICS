@@ -28,13 +28,14 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      // NEXT_PUBLIC_* is inlined at build time; rebuild so e2e hits port 8010, not 8000.
+      // Same-origin proxy, exactly as deployed: the browser calls /api on port 3000 and
+      // Next forwards it to the disposable API. No API origin is baked into the bundle.
       command: "npx next build && npx next start --port 3000",
       url: "http://localhost:3000",
       reuseExistingServer,
-      timeout: 180_000,
+      timeout: 240_000,
       env: {
-        NEXT_PUBLIC_API_BASE_URL: "http://localhost:8010",
+        BACKEND_INTERNAL_URL: "http://127.0.0.1:8010",
       },
     },
   ],

@@ -40,6 +40,12 @@ x-backend-environment: &backend-environment
   # A shared named volume gives the API and worker one filesystem here; Render has none,
   # so EXPORT_ARTIFACT_STORAGE=database is used there (see docs/DEPLOYMENT.md).
   EXPORT_ARTIFACT_STORAGE: ${EXPORT_ARTIFACT_STORAGE:-filesystem}
+  # PostgreSQL here is a container on a private compose network, so TLS is not required.
+  # Managed deployments (Neon) leave DB_REQUIRE_SSL true and set DB_SSLMODE=require.
+  DB_REQUIRE_SSL: ${DB_REQUIRE_SSL:-false}
+  DB_SSLMODE: ${DB_SSLMODE:-}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
 
 x-backend-env-file: &backend-env-file
   # Optional integration settings (DHIS2, AI, FORMULA_UNDATED_FALLBACK, MPDSR_CAUSE_MIN_CELL_COUNT).
@@ -151,9 +157,10 @@ services:
   web:
     build:
       context: ./frontend
-      args:
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?NEXT_PUBLIC_API_BASE_URL is required}
-    networks: [frontend]
+    environment:
+      # Server-side only: the browser calls /api on the web origin.
+      BACKEND_INTERNAL_URL: http://api:8000
+    networks: [frontend, backend]
     ports:
       - "${WEB_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     depends_on:

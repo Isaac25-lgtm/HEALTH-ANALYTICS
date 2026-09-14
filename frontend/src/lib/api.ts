@@ -9,7 +9,15 @@ import type {
 
 export type { CurrentContext, OrgUnitSummary };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+/**
+ * Same-origin by default: the browser calls `/api/...` on the frontend host and Next.js
+ * forwards it server-side to the backend (see next.config.ts). Session and CSRF cookies
+ * therefore belong to the origin the page was served from, which is what makes cookie-only
+ * authentication work when the API runs on a different Render hostname.
+ *
+ * Set NEXT_PUBLIC_API_BASE_URL only for a deliberate cross-origin setup.
+ */
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 const CSRF_COOKIE = "hpip_csrf";
 
 function readCookie(name: string): string | null {

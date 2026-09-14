@@ -170,6 +170,7 @@ def test_eager_generation_requires_explicit_development_or_test(monkeypatch):
         app_env="production",
         export_eager=True,
         database_url="postgresql+psycopg://hpip:owner-supplied@db:5432/hpip",
+        db_sslmode="require",
     )
     assert any("EXPORT_EAGER" in error for error in validate_runtime_settings(production))
     for env in ("development", "test"):

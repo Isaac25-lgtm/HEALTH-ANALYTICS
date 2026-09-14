@@ -1,0 +1,187 @@
+# Render blueprint for the pre-DHIS2 UAT deployment (~100 light users).
+#
+# Topology, deliberately small:
+#   web        Next.js frontend; proxies /api to the backend, so cookies stay same-origin
+#   api        FastAPI backend
+#   worker     one Celery worker consuming exports, sync and maintenance
+#   redis      Key Value instance for the broker, results and distributed rate limiting
+#   purge      scheduled retention job, running the same purge service as the Celery task
+#   sync       scheduled DHIS2 refresh, PREPARED BUT DISABLED (see DHIS2_ENABLED below)
+#
+# PostgreSQL is Neon (external): set DATABASE_URL to the pooled connection string and, if
+# migrations need a direct connection, MIGRATION_DATABASE_URL. No Render PostgreSQL is
+# provisioned here.
+#
+# No secret values belong in this file. Every secret is declared `sync: false`, which makes
+# Render prompt for it once and keeps it out of the repository.
+#
+# Before relying on plan names, instance types or cron behaviour, check Render's current
+# documentation: the values below are the intended shape, not a guarantee of provider limits.
+
+databases: []
+
+services:
+  - type: redis
+    name: hpip-redis
+    plan: starter
+    ipAllowList: []          # reachable only from services in this blueprint
+    maxmemoryPolicy: noeviction  # a broker must not silently drop queued jobs
+
+  - type: web
+    name: hpip-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    healthCheckPath: /health
+    # Migrations run before the new code serves traffic.
+    preDeployCommand: alembic upgrade head
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL          # Neon pooled connection string
+        sync: false
+      - key: MIGRATION_DATABASE_URL  # optional Neon direct connection for DDL
+        sync: false
+      - key: DB_SSLMODE
+        value: require
+      - key: DB_REQUIRE_SSL
+        value: "true"
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "5"
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      - key: SEED_DEV_DATA
+        value: "false"
+      - key: SEED_PASSWORD
+        generateValue: true
+      - key: WEB_ORIGIN
+        sync: false            # https URL of the hpip-web service
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOWED_HOSTS
+        sync: false            # include the API host and the internal hostname
+      - key: HEALTHCHECK_HOST
+        value: localhost
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: hpip-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: hpip-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: hpip-redis
+          property: connectionString
+      - key: RATE_LIMIT_BACKEND
+        value: redis
+      - key: SYNC_EXECUTION
+        value: queue
+      - key: EXPORT_EAGER
+        value: "false"
+      # Render services do not share a disk, so export bytes live in the database and
+      # expire with the 24-hour retention policy.
+      - key: EXPORT_ARTIFACT_STORAGE
+        value: database
+      - key: EXPORT_SHARED_FILESYSTEM
+        value: "false"
+      - key: EXPORT_ARTIFACT_MAX_BYTES
+        value: "26214400"
+      - key: RAW_AGGREGATE_RETENTION_DAYS
+        value: "7"
+      - key: MPDSR_EVENT_RETENTION_HOURS
+        value: "24"
+      - key: EXPORT_FILE_RETENTION_HOURS
+        value: "24"
+      - key: EXPORT_JOB_RETENTION_DAYS
+        value: "90"
+      - key: CALCULATION_SNAPSHOT_RETENTION_MONTHS
+        value: "36"
+      - key: AUDIT_LOG_RETENTION_MONTHS
+        value: "24"
+      - key: PURGE_ENABLED
+        value: "true"
+      # DHIS2 is known but not connected: no credentials, no verified mappings, no sync.
+      - key: DHIS2_ENABLED
+        value: "false"
+      - key: DHIS2_BASE_URL
+        value: https://hmis.health.go.ug
+      - key: DHIS2_AUTH_METHOD
+        value: basic
+      - key: DHIS2_USERNAME
+        sync: false
+      - key: DHIS2_PASSWORD
+        sync: false
+      - key: DHIS2_PAT
+        sync: false
+      - key: AI_ENABLED
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+
+  - type: worker
+    name: hpip-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    # One worker for every queue: exports, future DHIS2 sync and maintenance.
+    dockerCommand: >-
+      celery --app=app.workers.celery_app:celery_app worker
+      --queues=exports,sync,maintenance --concurrency=2 --loglevel=INFO
+      --without-gossip --without-mingle
+    envVars:
+      - fromGroup: hpip-shared   # same values as hpip-api; see docs/DEPLOYMENT.md
+
+  - type: web
+    name: hpip-web
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: starter
+    healthCheckPath: /login
+    envVars:
+      # Server-side proxy target. The browser only ever calls /api on this service, so the
+      # session and CSRF cookies belong to this origin.
+      - key: BACKEND_INTERNAL_URL
+        fromService:
+          type: web
+          name: hpip-api
+          property: hostport
+      - key: NODE_ENV
+        value: production
+
+  - type: cron
+    name: hpip-purge
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    # Daily retention pass. Calls the same purge service as the Celery maintenance task.
+    schedule: "30 1 * * *"
+    dockerCommand: python scripts/purge_expired.py --source scheduler
+    envVars:
+      - fromGroup: hpip-shared
+
+  - type: cron
+    name: hpip-dhis2-refresh
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    # PREPARED BUT INERT. Six-hourly refresh of recent periods, per the owner decision.
+    # It cannot do anything until DHIS2_ENABLED=true, credentials exist and mappings are
+    # verified: the command exits without contacting DHIS2 while the feature is disabled.
+    schedule: "0 */6 * * *"
+    dockerCommand: python scripts/dhis2_refresh.py --scheduled
+    envVars:
+      - fromGroup: hpip-shared

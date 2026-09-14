@@ -32,6 +32,7 @@ PRODUCTION_BASE = {
     "redis_url": "redis://:owner-supplied@redis:6379/0",
     "celery_broker_url": "redis://:owner-supplied@redis:6379/1",
     "celery_result_backend": "redis://:owner-supplied@redis:6379/2",
+        "db_sslmode": "require",
 }
 
 
@@ -232,3 +233,134 @@ def test_ops_status_reports_export_failures_and_worker_state(client):
     assert set(body["export_jobs"]) == {"by_status", "failed_permanently"}
     assert body["workers"]["status"] in {"not_used", "no_workers", "ok", "unavailable", "not_installed"}
     assert "redis://" not in str(body)
+
+
+# ---------------------------------------------------------------------------
+# Database connection policy (work package P)
+# ---------------------------------------------------------------------------
+
+
+def test_managed_database_must_use_tls_unless_explicitly_exempted():
+    assert validate_runtime_settings(_production(db_sslmode="require")) == []
+    assert any(
+        "DB_SSLMODE" in error for error in validate_runtime_settings(_production(db_sslmode=""))
+    )
+    # A private network you control can opt out, but only by saying so.
+    assert validate_runtime_settings(_production(db_sslmode="", db_require_ssl=False)) == []
+    in_url = _production(
+        db_sslmode="",
+        database_url="postgresql+psycopg://hpip:owner@db:5432/hpip?sslmode=require",
+    )
+    assert validate_runtime_settings(in_url) == []
+    assert any(
+        "disables TLS" in error
+        for error in validate_runtime_settings(
+            _production(database_url="postgresql+psycopg://hpip:owner@db:5432/hpip?sslmode=disable")
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"database_url": "sqlite+pysqlite:///./hpip.db"}, "must be PostgreSQL"),
+        ({"database_url": "not-a-url"}, "malformed"),
+        ({"database_url": "mysql://hpip:owner@db:3306/hpip"}, "PostgreSQL driver"),
+        ({"migration_database_url": "mysql://hpip:owner@db:3306/hpip"}, "MIGRATION_DATABASE_URL"),
+        ({"migration_database_url": "postgresql+psycopg://hpip:change-me@db:5432/hpip"}, "placeholder"),
+        ({"db_pool_size": 20, "db_max_overflow": 20}, "too large"),
+    ],
+)
+def test_production_rejects_unsafe_database_configuration(overrides, expected):
+    errors = validate_runtime_settings(_production(**overrides))
+    assert any(expected in error for error in errors), errors
+
+
+def test_migration_url_prefers_the_direct_connection():
+    from app.db.session import migration_url
+
+    pooled = _production(database_url="postgresql+psycopg://hpip:owner@pooler:5432/hpip")
+    assert migration_url(pooled) == "postgresql+psycopg://hpip:owner@pooler:5432/hpip"
+    direct = _production(
+        database_url="postgresql+psycopg://hpip:owner@pooler:5432/hpip",
+        migration_database_url="postgresql+psycopg://hpip:owner@direct:5432/hpip",
+    )
+    assert migration_url(direct) == "postgresql+psycopg://hpip:owner@direct:5432/hpip"
+
+
+def test_engine_uses_a_small_pool_and_passes_tls_settings():
+    from app.db.session import create_db_engine
+
+    settings = _production(db_sslmode="require", db_pool_size=3, db_max_overflow=2)
+    engine = create_db_engine(settings)
+    try:
+        assert engine.pool.size() == 3
+        assert engine.pool._max_overflow == 2
+        assert engine.dialect.name == "postgresql"
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# DHIS2 stays inert (work package S)
+# ---------------------------------------------------------------------------
+
+
+def test_dhis2_is_disabled_by_default_and_reported_separately():
+    from app.integrations.dhis2 import dhis2_readiness_status
+
+    settings = Settings(_env_file=None)
+    assert settings.dhis2_enabled is False and settings.sync_enabled is False
+    assert validate_runtime_settings(_production()) == []
+    assert dhis2_readiness_status() == "disabled"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"sync_enabled": True}, "SYNC_ENABLED requires DHIS2_ENABLED"),
+        ({"dhis2_enabled": True, "dhis2_base_url": ""}, "DHIS2_BASE_URL is required"),
+        (
+            {"dhis2_enabled": True, "dhis2_base_url": "http://hmis.health.go.ug"},
+            "must be HTTPS",
+        ),
+        (
+            {"dhis2_enabled": True, "dhis2_base_url": "https://hmis.health.go.ug"},
+            "requires DHIS2_USERNAME",
+        ),
+        (
+            {
+                "dhis2_enabled": True,
+                "dhis2_base_url": "https://hmis.health.go.ug",
+                "dhis2_auth_method": "pat",
+            },
+            "requires DHIS2_PAT",
+        ),
+    ],
+)
+def test_enabling_dhis2_without_complete_configuration_fails_closed(overrides, expected):
+    errors = validate_runtime_settings(_production(**overrides))
+    assert any(expected in error for error in errors), errors
+
+
+def test_prepared_dhis2_commands_contact_nothing_while_disabled(monkeypatch, capsys):
+    import json as json_module
+
+    from scripts import dhis2_discovery, dhis2_refresh
+
+    monkeypatch.setattr(get_settings(), "dhis2_enabled", False)
+    monkeypatch.setattr(get_settings(), "sync_enabled", False)
+
+    assert dhis2_refresh.main(["--scheduled", "--json"]) == 0
+    refresh = json_module.loads(capsys.readouterr().out)
+    assert refresh["mode"] == "inert"
+    assert refresh["continuous_polling"] is False
+    assert refresh["closed_periods_refreshed"] is False
+    assert "DHIS2_ENABLED is false." in refresh["blocked_reasons"]
+
+    assert dhis2_discovery.main(["--resource", "org-units"]) == 3
+    discovery = json_module.loads(capsys.readouterr().out)
+    assert discovery["mode"] == "blocked"
+    assert discovery["http_methods"] == ["GET"]
+    assert discovery["credentials_in_output"] is False
+    assert discovery["page_size"] <= get_settings().dhis2_page_size
