@@ -1,0 +1,542 @@
+{
+  "applied": false,
+  "blocked_reason": "Production application remains blocked until the approved analytical hierarchy, feature-to-org-unit mappings, and effective date are supplied to a manage_mappings user.",
+  "reports": [
+    {
+      "mode": "dry_run",
+      "applied": false,
+      "source_file": "UGANDA_DISTRICT.json",
+      "source_sha256": "5a6024f5438cf38bbf1ea822ed4bc1d900005288585bd55294b29d730d7027b8",
+      "level_type": "district",
+      "total_features": 146,
+      "matched_features": 3,
+      "unmatched_count": 143,
+      "ambiguous_count": 0,
+      "invalid_count": 0,
+      "duplicate_org_unit_codes": [],
+      "unmatched": [
+        {
+          "feature": 1,
+          "name": "ABIM",
+          "district": "ABIM"
+        },
+        {
+          "feature": 2,
+          "name": "ADJUMANI",
+          "district": "ADJUMANI"
+        },
+        {
+          "feature": 3,
+          "name": "AGAGO",
+          "district": "AGAGO"
+        },
+        {
+          "feature": 4,
+          "name": "ALEBTONG",
+          "district": "ALEBTONG"
+        },
+        {
+          "feature": 5,
+          "name": "AMOLATAR",
+          "district": "AMOLATAR"
+        },
+        {
+          "feature": 6,
+          "name": "AMUDAT",
+          "district": "AMUDAT"
+        },
+        {
+          "feature": 7,
+          "name": "AMURIA",
+          "district": "AMURIA"
+        },
+        {
+          "feature": 8,
+          "name": "AMURU",
+          "district": "AMURU"
+        },
+        {
+          "feature": 9,
+          "name": "APAC",
+          "district": "APAC"
+        },
+        {
+          "feature": 10,
+          "name": "ARUA",
+          "district": "ARUA"
+        },
+        {
+          "feature": 11,
+          "name": "ARUA CITY",
+          "district": "ARUA CITY"
+        },
+        {
+          "feature": 12,
+          "name": "BUDAKA",
+          "district": "BUDAKA"
+        },
+        {
+          "feature": 13,
+          "name": "BUDUDA",
+          "district": "BUDUDA"
+        },
+        {
+          "feature": 14,
+          "name": "BUGIRI",
+          "district": "BUGIRI"
+        },
+        {
+          "feature": 15,
+          "name": "BUGWERI",
+          "district": "BUGWERI"
+        },
+        {
+          "feature": 16,
+          "name": "BUHWEJU",
+          "district": "BUHWEJU"
+        },
+        {
+          "feature": 17,
+          "name": "BUIKWE",
+          "district": "BUIKWE"
+        },
+        {
+          "feature": 18,
+          "name": "BUKEDEA",
+          "district": "BUKEDEA"
+        },
+        {
+          "feature": 19,
+          "name": "BUKOMANSIMBI",
+          "district": "BUKOMANSIMBI"
+        },
+        {
+          "feature": 20,
+          "name": "BUKWO",
+          "district": "BUKWO"
+        },
+        {
+          "feature": 21,
+          "name": "BULAMBULI",
+          "district": "BULAMBULI"
+        },
+        {
+          "feature": 22,
+          "name": "BULIISA",
+          "district": "BULIISA"
+        },
+        {
+          "feature": 23,
+          "name": "BUNDIBUGYO",
+          "district": "BUNDIBUGYO"
+        },
+        {
+          "feature": 24,
+          "name": "BUNYANGABU",
+          "district": "BUNYANGABU"
+        },
+        {
+          "feature": 25,
+          "name": "BUSHENYI",
+          "district": "BUSHENYI"
+        },
+        {
+          "feature": 26,
+          "name": "BUSIA",
+          "district": "BUSIA"
+        },
+        {
+          "feature": 27,
+          "name": "BUTALEJA",
+          "district": "BUTALEJA"
+        },
+        {
+          "feature": 28,
+          "name": "BUTAMBALA",
+          "district": "BUTAMBALA"
+        },
+        {
+          "feature": 29,
+          "name": "BUTEBO",
+          "district": "BUTEBO"
+        },
+        {
+          "feature": 30,
+          "name": "BUVUMA",
+          "district": "BUVUMA"
+        },
+        {
+          "feature": 31,
+          "name": "BUYENDE",
+          "district": "BUYENDE"
+        },
+        {
+          "feature": 32,
+          "name": "DOKOLO",
+          "district": "DOKOLO"
+        },
+        {
+          "feature": 33,
+          "name": "FORT PORTAL CITY",
+          "district": "FORT PORTAL CITY"
+        },
+        {
+          "feature": 34,
+          "name": "GOMBA",
+          "district": "GOMBA"
+        },
+        {
+          "feature": 35,
+          "name": "GULU",
+          "district": "GULU"
+        },
+        {
+          "feature": 36,
+          "name": "GULU CITY",
+          "district": "GULU CITY"
+        },
+        {
+          "feature": 37,
+          "name": "HOIMA",
+          "district": "HOIMA"
+        },
+        {
+          "feature": 38,
+          "name": "HOIMA CITY",
+          "district": "HOIMA CITY"
+        },
+        {
+          "feature": 39,
+          "name": "IBANDA",
+          "district": "IBANDA"
+        },
+        {
+          "feature": 40,
+          "name": "IGANGA",
+          "district": "IGANGA"
+        },
+        {
+          "feature": 41,
+          "name": "ISINGIRO",
+          "district": "ISINGIRO"
+        },
+        {
+          "feature": 42,
+          "name": "JINJA",
+          "district": "JINJA"
+        },
+        {
+          "feature": 43,
+          "name": "JINJA CITY",
+          "district": "JINJA CITY"
+        },
+        {
+          "feature": 44,
+          "name": "KAABONG",
+          "district": "KAABONG"
+        },
+        {
+          "feature": 45,
+          "name": "KABALE",
+          "district": "KABALE"
+        },
+        {
+          "feature": 46,
+          "name": "KABAROLE",
+          "district": "KABAROLE"
+        },
+        {
+          "feature": 47,
+          "name": "KABERAMAIDO",
+          "district": "KABERAMAIDO"
+        },
+        {
+          "feature": 48,
+          "name": "KAGADI",
+          "district": "KAGADI"
+        },
+        {
+          "feature": 49,
+          "name": "KAKUMIRO",
+          "district": "KAKUMIRO"
+        },
+        {
+          "feature": 50,
+          "name": "KALAKI",
+          "district": "KALAKI"
+        }
+      ],
+      "ambiguous": [],
+      "invalid": [],
+      "details_truncated": true
+    },
+    {
+      "mode": "dry_run",
+      "applied": false,
+      "source_file": "UGANDA_SUBCOUNTIES.json",
+      "source_sha256": "49c0d09380c5d9e7db824806217f1c8a6a072d7439342609b83dfdd2d5d29936",
+      "level_type": "sub_county",
+      "total_features": 2190,
+      "matched_features": 0,
+      "unmatched_count": 2190,
+      "ambiguous_count": 0,
+      "invalid_count": 0,
+      "duplicate_org_unit_codes": [],
+      "unmatched": [
+        {
+          "feature": 1,
+          "name": "ABAKO",
+          "district": "ALEBTONG"
+        },
+        {
+          "feature": 2,
+          "name": "ABANGA",
+          "district": "ZOMBO"
+        },
+        {
+          "feature": 3,
+          "name": "ABARILELA",
+          "district": "AMURIA"
+        },
+        {
+          "feature": 4,
+          "name": "ABEJA",
+          "district": "AMOLATAR"
+        },
+        {
+          "feature": 5,
+          "name": "ABER",
+          "district": "OYAM"
+        },
+        {
+          "feature": 6,
+          "name": "ABIA",
+          "district": "ALEBTONG"
+        },
+        {
+          "feature": 7,
+          "name": "ABIA",
+          "district": "AMURIA"
+        },
+        {
+          "feature": 8,
+          "name": "ABILIYEP",
+          "district": "AMUDAT"
+        },
+        {
+          "feature": 9,
+          "name": "ABIM",
+          "district": "ABIM"
+        },
+        {
+          "feature": 10,
+          "name": "ABIM TOWN COUNCIL",
+          "district": "ABIM"
+        },
+        {
+          "feature": 11,
+          "name": "ABINDU DIVISION",
+          "district": "NEBBI"
+        },
+        {
+          "feature": 12,
+          "name": "ABOK",
+          "district": "OYAM"
+        },
+        {
+          "feature": 13,
+          "name": "ABOKE",
+          "district": "KOLE"
+        },
+        {
+          "feature": 14,
+          "name": "ABOKE TOWN COUNCIL",
+          "district": "KOLE"
+        },
+        {
+          "feature": 15,
+          "name": "ABONGOMOLA",
+          "district": "KWANIA"
+        },
+        {
+          "feature": 16,
+          "name": "ABUGA",
+          "district": "OMORO"
+        },
+        {
+          "feature": 17,
+          "name": "ABUK TOWN COUNCIL",
+          "district": "ABIM"
+        },
+        {
+          "feature": 18,
+          "name": "ABUKU",
+          "district": "KOBOKO"
+        },
+        {
+          "feature": 19,
+          "name": "ACABA",
+          "district": "OYAM"
+        },
+        {
+          "feature": 20,
+          "name": "ACANA",
+          "district": "NEBBI"
+        },
+        {
+          "feature": 21,
+          "name": "ACEBA",
+          "district": "LAMWO"
+        },
+        {
+          "feature": 22,
+          "name": "ACET TOWN COUNCIL",
+          "district": "OMORO"
+        },
+        {
+          "feature": 23,
+          "name": "ACHOLI-BUR",
+          "district": "PADER"
+        },
+        {
+          "feature": 24,
+          "name": "ACHOLI - BUR TOWN COUNCIL",
+          "district": "PADER"
+        },
+        {
+          "feature": 25,
+          "name": "ACHORICHOR",
+          "district": "AMUDAT"
+        },
+        {
+          "feature": 26,
+          "name": "ACII",
+          "district": "AMOLATAR"
+        },
+        {
+          "feature": 27,
+          "name": "ACINGA",
+          "district": "KAPELEBYONG"
+        },
+        {
+          "feature": 28,
+          "name": "ACOWA",
+          "district": "KAPELEBYONG"
+        },
+        {
+          "feature": 29,
+          "name": "ACOWA TOWN COUNCIL",
+          "district": "KAPELEBYONG"
+        },
+        {
+          "feature": 30,
+          "name": "ADEKNINO",
+          "district": "DOKOLO"
+        },
+        {
+          "feature": 31,
+          "name": "ADILANG",
+          "district": "AGAGO"
+        },
+        {
+          "feature": 32,
+          "name": "ADILANG TOWN COUNCIL",
+          "district": "AGAGO"
+        },
+        {
+          "feature": 33,
+          "name": "ADJUMANI TOWN COUNCIL",
+          "district": "ADJUMANI"
+        },
+        {
+          "feature": 34,
+          "name": "ADOK",
+          "district": "DOKOLO"
+        },
+        {
+          "feature": 35,
+          "name": "ADROPI",
+          "district": "ADJUMANI"
+        },
+        {
+          "feature": 36,
+          "name": "ADUKU",
+          "district": "KWANIA"
+        },
+        {
+          "feature": 37,
+          "name": "ADUKU TOWN COUNCIL",
+          "district": "KWANIA"
+        },
+        {
+          "feature": 38,
+          "name": "ADWARI",
+          "district": "OTUKE"
+        },
+        {
+          "feature": 39,
+          "name": "ADWARI TOWN COUNCIL",
+          "district": "OTUKE"
+        },
+        {
+          "feature": 40,
+          "name": "ADWIR",
+          "district": "ALEBTONG"
+        },
+        {
+          "feature": 41,
+          "name": "AGAGO TOWN COUNCIL",
+          "district": "AGAGO"
+        },
+        {
+          "feature": 42,
+          "name": "AGAII TOWN COUNCIL",
+          "district": "MARACHA"
+        },
+        {
+          "feature": 43,
+          "name": "AGALI",
+          "district": "LIRA"
+        },
+        {
+          "feature": 44,
+          "name": "AGENGO",
+          "district": "AGAGO"
+        },
+        {
+          "feature": 45,
+          "name": "AGIKDAK",
+          "district": "AMOLATAR"
+        },
+        {
+          "feature": 46,
+          "name": "AGIRIGIROI",
+          "district": "NGORA"
+        },
+        {
+          "feature": 47,
+          "name": "AGORO",
+          "district": "LAMWO"
+        },
+        {
+          "feature": 48,
+          "name": "AGULE",
+          "district": "PALLISA"
+        },
+        {
+          "feature": 49,
+          "name": "AGULE TOWN COUNCIL",
+          "district": "PALLISA"
+        },
+        {
+          "feature": 50,
+          "name": "AGULLU DIVISION",
+          "district": "APAC"
+        }
+      ],
+      "ambiguous": [],
+      "invalid": [],
+      "details_truncated": true
+    }
+  ]
+}

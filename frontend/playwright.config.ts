@@ -1,0 +1,54 @@
+import { defineConfig, devices } from "@playwright/test";
+
+// CI supplies `python`; Windows developers can point this at their chosen interpreter.
+// Do not hard-code a workstation path into the test contract.
+const python = process.env.HPIP_PYTHON ?? "python";
+const pythonCommand = `"${python.replaceAll('"', '\\"')}"`;
+const browserExecutable = process.env.HPIP_BROWSER_EXECUTABLE;
+// Reuse is opt-in. Leaving it on for every local run can strand the disposable
+// API/Next processes after Playwright completes.
+const reuseExistingServer = process.env.HPIP_REUSE_E2E_SERVER === "true";
+
+export default defineConfig({
+  testDir: "./e2e",
+  fullyParallel: false,
+  retries: 0,
+  timeout: 60_000,
+  use: {
+    baseURL: "http://localhost:3000",
+    trace: "off",
+  },
+  reporter: [["list"], ["json", { outputFile: "playwright-report/results.json" }]],
+  webServer: [
+    {
+      command: `${pythonCommand} scripts/run_e2e_api.py`,
+      cwd: "../backend",
+      url: "http://127.0.0.1:8010/health",
+      reuseExistingServer,
+      timeout: 120_000,
+    },
+    {
+      // NEXT_PUBLIC_* is inlined at build time; rebuild so e2e hits port 8010, not 8000.
+      command: "npx next build && npx next start --port 3000",
+      url: "http://localhost:3000",
+      reuseExistingServer,
+      timeout: 180_000,
+      env: {
+        NEXT_PUBLIC_API_BASE_URL: "http://localhost:8010",
+      },
+    },
+  ],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        launchOptions: {
+          // Leave this unset in CI so Playwright uses its managed Chromium.
+          ...(browserExecutable ? { executablePath: browserExecutable } : {}),
+          args: ["--headless=new", "--disable-gpu"],
+        },
+      },
+    },
+  ],
+});

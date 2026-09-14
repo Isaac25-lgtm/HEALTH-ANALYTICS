@@ -1,0 +1,16 @@
+**/__pycache__
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+tests/
+*.db
+*.sqlite
+*.sqlite3
+e2e_hpip.sqlite
+export_artifacts/
+e2e_export_artifacts/
+.grok-pg18-verify/
+.env
+.env.*

@@ -1,0 +1,48 @@
+{
+  "label": "Appendix T-style labelled fixture. Not production Acholi data, populations, or DHIS2 values.",
+  "org_unit_code": "ACHOLI",
+  "module": "anc",
+  "period": "FY2025/26",
+  "comparison_period": "FY2024/25",
+  "population": {
+    "2024": 1000000,
+    "2025": 1000000
+  },
+  "rates": {
+    "FY2024/25": {
+      "anc1": 97.4,
+      "ft": 38.7,
+      "anc4": 59.3,
+      "anc8": 8.5,
+      "ipt3": 64.3,
+      "hb": 33.0,
+      "ifa": 84.3,
+      "us": 27.9,
+      "teen": 19.8
+    },
+    "FY2025/26": {
+      "anc1": 95.4,
+      "ft": 41.4,
+      "anc4": 58.3,
+      "anc8": 11.7,
+      "ipt3": 63.2,
+      "hb": 35.9,
+      "ifa": 181.3,
+      "us": 35.5,
+      "teen": 19.2
+    }
+  },
+  "expected": {
+    "ANC1_COVERAGE": {
+      "raw_value": 95.4,
+      "status": "green",
+      "change_pp": -2.0
+    },
+    "IFA_COVERAGE": {
+      "above_100": true
+    },
+    "TEENAGE_PREGNANCY": {
+      "status": "red"
+    }
+  }
+}

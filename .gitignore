@@ -1,0 +1,124 @@
+# ---------------------------------------------------------------------------
+# Secrets and local environment
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.test.example
+!.env.production.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+client_secret*.json
+secrets/
+.secrets/
+*token*.txt
+.netrc
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# ---------------------------------------------------------------------------
+# Node / Next.js / Playwright
+# ---------------------------------------------------------------------------
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+frontend/e2e-screenshots/
+frontend/blob-report/
+frontend/.playwright/
+playwright/.cache/
+npm-debug.log*
+yarn-error.log*
+
+# Generated build output relocated because another sandbox identity owns it
+# (see docs/project-context/OPEN_ITEMS.md). Owner removal only.
+.build-quarantine/
+
+# ---------------------------------------------------------------------------
+# Local databases, disposable clusters, caches and queue state
+# ---------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+backend/*.db
+backend/e2e_hpip.sqlite
+*.dump
+*.sql.gz
+*.bak
+pgdata/
+backend/.grok-pg18-verify/
+.grok-*/
+.audit-pytest-tmp/
+.audit2-pgdata/
+.audit2-pgdata-utf8/
+dump.rdb
+appendonly.aof
+*.rdb
+redis-data/
+celerybeat-schedule*
+celerybeat.pid
+*.pid
+
+# ---------------------------------------------------------------------------
+# Generated artifacts, temporary extracts and scratch output
+# ---------------------------------------------------------------------------
+export_artifacts/
+backend/export_artifacts/
+backend/e2e_export_artifacts/
+backend/.dhis2-extracts/
+backend/.mpdsr-cache/
+backend/.purge-tmp/
+*.scratch.json
+*.scratch.md
+.reconciliation-tmp/
+_docx_extract.txt
+
+# ---------------------------------------------------------------------------
+# Large owner source artifacts (kept on disk, never committed to ordinary Git).
+# Identity, checksums and structure are tracked in
+# docs/project-context/SOURCE_ARTIFACT_MANIFEST.md
+# ---------------------------------------------------------------------------
+UGANDA_DISTRICT.json
+UGANDA_SUBCOUNTIES.json
+UGANDA_DISTRICTS.json
+*.docx
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.orig
+*.rej
+
+# Inaccessible temporary directories created by another sandbox identity
+backend/.audit-*/
+backend/.audit2-*/
+backend/.codex-*/
+.codex-*/

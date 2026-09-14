@@ -1,0 +1,47 @@
+# Local development only (APP_ENV=development, synthetic seed data, SQLite, ports bound to
+# 127.0.0.1). Never use this file for staging or production; use docker-compose.yml.
+#
+# Development gates are explicit: exports are generated in-request (EXPORT_EAGER=true) and
+# rate limits are per-process (RATE_LIMIT_BACKEND=memory). To exercise the real queue locally,
+# run the production-like stack with a local env file instead.
+
+name: hpip-dev
+
+services:
+  api:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: development
+      DATABASE_URL: sqlite+pysqlite:////app/data/hpip_dev.db
+      SEED_DEV_DATA: "true"
+      WEB_ORIGIN: http://localhost:3000
+      AUTH_COOKIE_SECURE: "false"
+      EXPORT_EAGER: "true"
+      RATE_LIMIT_BACKEND: memory
+      SYNC_EXECUTION: eager
+    # Seed synthetic development data once per volume; later starts only apply migrations.
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        if [ ! -f /app/data/.seeded ]; then python scripts/bootstrap_db.py && touch /app/data/.seeded; fi &&
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - hpip_dev_data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  hpip_dev_data:

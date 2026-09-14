@@ -1,0 +1,51 @@
+{
+  "label": "VERIFIED FIXTURE. Appendix T-style labelled fixture. Not production Acholi data, populations, or DHIS2 values.",
+  "verified_fixture": true,
+  "org_unit_code": "ACHOLI",
+  "module": "anc",
+  "period": "FY2025/26",
+  "comparison_period": "FY2024/25",
+  "sources": {
+    "FY2024/25": {
+      "population": 1000000,
+      "population_year": 2024,
+      "ANC1": 48700,
+      "ANC1_FT": 18846.9,
+      "ANC4": 29650,
+      "ANC8": 4250,
+      "IPT3": 32150,
+      "HB_TESTED": 16071,
+      "IFA_30": 41054.1,
+      "ULTRASOUND": 13587.3,
+      "ANC1_AGE_LT15": 0,
+      "ANC1_AGE_15_19": 9642.6
+    },
+    "FY2025/26": {
+      "population": 1000000,
+      "population_year": 2025,
+      "ANC1": 47700,
+      "ANC1_FT": 19747.8,
+      "ANC4": 29150,
+      "ANC8": 5850,
+      "IPT3": 31600,
+      "HB_TESTED": 17124.3,
+      "IFA_30": 86480.1,
+      "ULTRASOUND": 16933.5,
+      "ANC1_AGE_LT15": 0,
+      "ANC1_AGE_15_19": 9158.4
+    }
+  },
+  "expected": {
+    "ANC1_COVERAGE": {
+      "raw_value": 95.4,
+      "status": "green",
+      "change_pp": -2.0
+    },
+    "IFA_COVERAGE": {
+      "above_100": true
+    },
+    "TEENAGE_PREGNANCY": {
+      "status": "red"
+    }
+  }
+}

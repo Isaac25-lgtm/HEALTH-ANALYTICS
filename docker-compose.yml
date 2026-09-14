@@ -1,0 +1,165 @@
+# Production-like stack: PostgreSQL, Redis, one-off migrations, API, Celery worker and web.
+#
+# There are no usable default credentials. Every secret and endpoint is required from an env
+# file or the shell, and `docker compose config` fails when one is missing:
+#   docker compose --env-file .env.production config -q
+#   docker compose --env-file .env.production up -d --build
+# Start from `.env.production.example`. Hosting, TLS termination, backups, monitoring and the
+# identity provider are owner decisions (docs/project-context/OPEN_ITEMS.md) and are not
+# provided here. Passwords used inside URLs must be URL-encoded.
+
+name: hpip
+
+x-backend-environment: &backend-environment
+  APP_ENV: ${APP_ENV:-production}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+  AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+  AUTH_COOKIE_SECURE: "true"
+  SEED_DEV_DATA: "false"
+  SEED_PASSWORD: ${SEED_PASSWORD:?SEED_PASSWORD is required (unused in production but must not be the development default)}
+  WEB_ORIGIN: ${WEB_ORIGIN:?WEB_ORIGIN is required}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS is required}
+  HEALTHCHECK_HOST: ${HEALTHCHECK_HOST:?HEALTHCHECK_HOST is required (one entry of ALLOWED_HOSTS)}
+  SYNC_EXECUTION: queue
+  EXPORT_EAGER: "false"
+  EXPORT_DIR: /app/export_artifacts
+  RATE_LIMIT_BACKEND: redis
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
+  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
+
+x-backend-env-file: &backend-env-file
+  # Optional integration settings (DHIS2, AI, FORMULA_UNDATED_FALLBACK, MPDSR_CAUSE_MIN_CELL_COUNT).
+  # Unset values stay unset, so fail-closed defaults apply.
+  - path: ./.env.production
+    required: false
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - hpip_pg_data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$${REDIS_PASSWORD}\" --appendonly yes"]
+    volumes:
+      - hpip_redis_data:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./backend
+    image: hpip-backend:local
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-environment
+    env_file: *backend-env-file
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: hpip-backend:local
+    environment: *backend-environment
+    env_file: *backend-env-file
+    volumes:
+      - hpip_exports:/app/export_artifacts
+    networks: [backend, frontend]
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 15s
+      timeout: 6s
+      start_period: 40s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    image: hpip-backend:local
+    command:
+      - celery
+      - --app=app.workers.celery_app:celery_app
+      - worker
+      - --queues=${EXPORT_QUEUE_NAME:-exports},${SYNC_QUEUE_NAME:-sync}
+      - --concurrency=${WORKER_CONCURRENCY:-2}
+      - --loglevel=INFO
+      - --without-gossip
+      - --without-mingle
+    environment: *backend-environment
+    env_file: *backend-env-file
+    volumes:
+      # Shared with the API, which serves finished artifacts to their owners.
+      - hpip_exports:/app/export_artifacts
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app=app.workers.celery_app:celery_app inspect ping --destination=celery@$$HOSTNAME --timeout=10 | grep -q pong"]
+      interval: 30s
+      timeout: 20s
+      start_period: 40s
+      retries: 3
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?NEXT_PUBLIC_API_BASE_URL is required}
+    networks: [frontend]
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 6s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  backend:
+  frontend:
+
+volumes:
+  hpip_pg_data:
+  hpip_redis_data:
+  hpip_exports:
