@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -898,6 +899,13 @@ class ExportJob(Base, TimestampMixin):
     celery_task_id: Mapped[str | None] = mapped_column(String(155))
     claim_token: Mapped[str | None] = mapped_column(String(64))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Where the finished file lives, and when the bytes expire. Job metadata (including the
+    # checksum) outlives the artifact, so an expired download is explainable rather than a 404.
+    artifact_storage: Mapped[str | None] = mapped_column(String(20))
+    artifact_media_type: Mapped[str | None] = mapped_column(String(120))
+    artifact_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    artifact_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    artifact_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -974,3 +982,67 @@ class OperationalEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ExportArtifact(Base, TimestampMixin):
+    """Export bytes for deployments where the API and worker have no shared filesystem.
+
+    Small, aggregated export files only, bounded by EXPORT_ARTIFACT_MAX_BYTES and purged with
+    the 24-hour export-file policy. Never raw DHIS2 extracts and never an export archive.
+    """
+
+    __tablename__ = "export_artifacts"
+    __table_args__ = (UniqueConstraint("export_job_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    export_job_id: Mapped[UUID] = mapped_column(ForeignKey("export_jobs.id"), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    media_type: Mapped[str | None] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class MaintenanceRun(Base):
+    """Operational record of one purge/maintenance pass.
+
+    Counts and codes only: never deleted row contents, event UIDs, patient details,
+    narratives, file paths or credentials.
+    """
+
+    __tablename__ = "maintenance_runs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    task_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    policy: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity: Mapped[str] = mapped_column(String(60), nullable=False)
+    requested_cutoff: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    rows_examined: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    rows_deleted: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    files_examined: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    files_deleted: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    rows_skipped: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    batches: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_summary: Mapped[str | None] = mapped_column(String(500))
+    software_version: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MaintenanceLock(Base):
+    """Provider-neutral lease so two purge processes never work the same policy at once."""
+
+    __tablename__ = "maintenance_locks"
+
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    holder: Mapped[str] = mapped_column(String(64), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

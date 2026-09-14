@@ -14,6 +14,7 @@ EXPORT_TASK_NAME = "app.workers.tasks.generate_export_job"
 SYNC_TASK_NAME = "app.workers.tasks.execute_sync_job"
 # Echoes a nonce. Used by scripts/queue_smoke.py to prove dispatch, consumption and results.
 PROBE_TASK_NAME = "app.workers.tasks.queue_health_probe"
+PURGE_TASK_NAME = "app.workers.tasks.purge_expired_data"
 
 
 def celery_config() -> dict:
@@ -30,6 +31,7 @@ def celery_config() -> dict:
         "task_routes": {
             EXPORT_TASK_NAME: {"queue": settings.export_queue_name},
             SYNC_TASK_NAME: {"queue": settings.sync_queue_name},
+            PURGE_TASK_NAME: {"queue": settings.maintenance_queue_name},
         },
         "task_publish_retry": True,
         "task_publish_retry_policy": {

@@ -19,7 +19,6 @@ Flow
 from __future__ import annotations
 
 import hashlib
-import os
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -37,6 +36,7 @@ from app.domain.enums import ActionPermission, JobStatus
 from app.domain.exports import EXPORT_FORMATS, export_label
 from app.domain.modules import MODULE_PROGRAMME
 from app.models import AuditLog, ExportJob, Programme, User
+from app.services import artifact_store
 from app.services.analysis import load_snapshot
 from app.services.authorization import (
     AuthorizationError,
@@ -152,13 +152,18 @@ def _requeue(job: ExportJob, *, artifact_missing: bool = False) -> None:
     if artifact_missing:
         job.file_path = None
         job.checksum = None
+        job.artifact_storage = None
+        job.artifact_expires_at = None
+        job.artifact_deleted_at = None
 
 
-def _resubmission(job: ExportJob) -> ExportSubmission:
+def _resubmission(session: Session, job: ExportJob) -> ExportSubmission:
     """Decide what an identical request means for the existing live job."""
     if job.status == JobStatus.SUCCEEDED.value:
-        if job.file_path and Path(job.file_path).exists():
+        if not artifact_store.is_expired(job) and artifact_store.is_available(session, job):
             return ExportSubmission(job, created=False, reused=True, needs_dispatch=False)
+        # Expired or lost bytes: regenerate from the same committed snapshot.
+        artifact_store.discard(session, job)
         _requeue(job, artifact_missing=True)
         return ExportSubmission(job, created=False, reused=True, needs_dispatch=True)
     if job.status == JobStatus.QUEUED.value:
@@ -223,7 +228,7 @@ def submit_export(
     key = export_idempotency_key(user.id, snapshot.id, export_type)
     live = _live_job(session, key)
     if live is not None:
-        return _resubmission(live)
+        return _resubmission(session, live)
     package = snapshot.evidence_json or evidence_package(dashboard)
     run_id = dashboard.get("module_result", {}).get("current_run_id") or snapshot.current_run_id
     job = ExportJob(
@@ -263,7 +268,7 @@ def submit_export(
         live = _live_job(session, key)
         if live is None:
             raise
-        return _resubmission(live)
+        return _resubmission(session, live)
     return ExportSubmission(job, created=True, reused=False, needs_dispatch=True)
 
 
@@ -280,7 +285,7 @@ def request_export_retry(session: Session, *, user: User, job_id: UUID) -> Expor
             "export_retry_not_permitted",
             "This export failed permanently. Request a new export from the snapshot.",
         )
-    decision = _resubmission(job)
+    decision = _resubmission(session, job)
     if not decision.needs_dispatch:
         raise AuthorizationError(
             "export_retry_not_permitted",
@@ -401,8 +406,18 @@ def _claim(db: Session, job_id: UUID, token: str) -> bool:
     return result.rowcount == 1
 
 
+ARTIFACT_TOO_LARGE = "export_artifact_too_large"
+SAFE_ERROR_MESSAGES[ARTIFACT_TOO_LARGE] = (
+    "The generated export is larger than this deployment allows. Narrow the export and try again."
+)
+
+
 def _classify(exc: Exception) -> tuple[str, bool]:
     """Return a safe error code and whether the failure is permanent."""
+    if isinstance(exc, artifact_store.ArtifactError):
+        if exc.code == artifact_store.ARTIFACT_TOO_LARGE:
+            return ARTIFACT_TOO_LARGE, True
+        return GENERATION_FAILED, False
     if isinstance(exc, AuthorizationError):
         if exc.code in {"not_found", "snapshot_mismatch", "snapshot_conflict"}:
             return SNAPSHOT_UNAVAILABLE, True
@@ -456,14 +471,20 @@ def _generate(db: Session, job_id: UUID, token: str, temp_holder: list[Path]) ->
     )
     dashboard = snapshot.payload_json or {}
     package = snapshot.evidence_json or evidence_package(dashboard)
-    suffix = EXPORT_FORMATS[job.export_type]["extension"]
+    settings = get_settings()
     directory = export_output_dir()
-    final_path = directory / f"{job.id}{suffix}"
     temp_path = directory / f".{job.id}.{token}.partial"
     temp_holder.append(temp_path)
     write_artifact(job.export_type, dashboard, package, temp_path)
     checksum = _sha256(temp_path)
+    size = temp_path.stat().st_size
+    if size > settings.export_artifact_max_bytes:
+        raise artifact_store.ArtifactError(artifact_store.ARTIFACT_TOO_LARGE)
+    storage = artifact_store.active_storage(settings)
     finished = _now()
+    expires_at = artifact_store.artifact_expiry(settings, finished)
+    media_type = artifact_store.media_type_for(job.export_type)
+    final_path = directory / artifact_store.artifact_filename(job)
     published = db.execute(
         update(ExportJob)
         .where(
@@ -473,12 +494,17 @@ def _generate(db: Session, job_id: UUID, token: str, temp_holder: list[Path]) ->
         )
         .values(
             status=JobStatus.SUCCEEDED.value,
-            file_path=str(final_path),
+            file_path=str(final_path) if storage == artifact_store.STORAGE_FILESYSTEM else None,
             checksum=checksum,
             finished_at=finished,
             claim_token=None,
             error_code=None,
             retry_scheduled=False,
+            artifact_storage=storage,
+            artifact_media_type=media_type,
+            artifact_size_bytes=size,
+            artifact_expires_at=expires_at,
+            artifact_deleted_at=None,
         )
         .execution_options(synchronize_session=False)
     )
@@ -490,7 +516,7 @@ def _generate(db: Session, job_id: UUID, token: str, temp_holder: list[Path]) ->
     db.refresh(job)
     _audit(db, job, "export_generated", {"checksum": checksum, "attempt": job.attempt_count})
     # The row stays locked by the UPDATE until commit, so no other claimant can publish now.
-    os.replace(temp_path, final_path)
+    artifact_store.publish(db, job, temp_path, checksum=checksum, settings=settings, now=finished)
     db.commit()
     return ExportAttempt(
         str(job_id),
@@ -570,10 +596,21 @@ def process_export_job(
             return _record_failure(db, job_id, token, code, permanent, auto_retry)
 
 
-def export_job_payload(job: ExportJob) -> dict:
+def export_job_payload(job: ExportJob, session: Session | None = None) -> dict:
     """Client-safe job representation. File paths and exception details are never included."""
     failed = job.status == JobStatus.FAILED.value
+    expired = job.status == JobStatus.SUCCEEDED.value and artifact_store.is_expired(job)
+    available = (
+        artifact_store.is_available(session, job)
+        if session is not None
+        else job.status == JobStatus.SUCCEEDED.value and not expired
+    )
     return {
+        "artifact_storage": job.artifact_storage,
+        "artifact_expires_at": job.artifact_expires_at.isoformat() if job.artifact_expires_at else None,
+        "artifact_expired": expired,
+        "artifact_size_bytes": job.artifact_size_bytes,
+        "media_type": job.artifact_media_type,
         "job_id": str(job.id),
         "status": job.status,
         "export_type": job.export_type,
@@ -584,9 +621,7 @@ def export_job_payload(job: ExportJob) -> dict:
         "calculation_run_id": str(job.calculation_run_id) if job.calculation_run_id else None,
         "analysis_snapshot_id": str(job.analysis_snapshot_id) if job.analysis_snapshot_id else None,
         "template_version": job.template_version,
-        "downloadable": bool(
-            job.status == JobStatus.SUCCEEDED.value and job.file_path and Path(job.file_path).exists()
-        ),
+        "downloadable": bool(available),
         "error_code": job.error_code,
         "error_message": SAFE_ERROR_MESSAGES.get(job.error_code) if job.error_code else None,
         "retryable": bool(failed and job.active_key is not None),

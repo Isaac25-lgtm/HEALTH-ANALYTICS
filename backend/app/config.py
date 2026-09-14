@@ -92,16 +92,43 @@ class Settings(BaseSettings):
     # unless EXPORT_EAGER=true is set explicitly in a development or test environment.
     export_eager: bool = False
     export_queue_name: str = "exports"
+    # Where finished export bytes live. "filesystem" needs one disk shared by the API and the
+    # worker; "database" keeps small aggregated files in PostgreSQL for platforms (Render) where
+    # each service has its own ephemeral disk. Bytes always expire with EXPORT_FILE_RETENTION_HOURS.
+    export_artifact_storage: str = "filesystem"
+    export_artifact_max_bytes: int = Field(default=26_214_400, ge=1024, le=104_857_600)
+    # Set false when the API and worker do not share EXPORT_DIR (separate hosts/containers).
+    export_shared_filesystem: bool = True
     export_max_attempts: int = Field(default=3, ge=1, le=10)
     export_retry_backoff_seconds: int = Field(default=15, ge=1)
     export_retry_backoff_max_seconds: int = Field(default=300, ge=1)
     export_job_lease_seconds: int = Field(default=900, ge=60)
     sync_queue_name: str = "sync"
+    maintenance_queue_name: str = "maintenance"
     # Undated (legacy) formula versions may be used only when an indicator has no dated
     # history. Unset: permitted in development/test only. Staging/production must set it.
     formula_undated_fallback: bool | None = None
     # MPDSR cause patterns stay withheld until an owner-approved minimum cell size is set.
     mpdsr_cause_min_cell_count: int | None = None
+
+    # ---------------------------------------------------------------------
+    # Retention (owner decision 2026-09-14). HPIP is a control and results
+    # store, never a second HMIS warehouse: routine raw data is a short-lived
+    # cache, while calculated evidence, provenance and audit are retained.
+    # All windows are configurable; month windows use calendar months.
+    # ---------------------------------------------------------------------
+    raw_aggregate_retention_days: int = Field(default=7, ge=1, le=3650)
+    mpdsr_event_retention_hours: int = Field(default=24, ge=1, le=8760)
+    export_file_retention_hours: int = Field(default=24, ge=1, le=8760)
+    export_job_retention_days: int = Field(default=90, ge=1, le=3650)
+    calculation_snapshot_retention_months: int = Field(default=36, ge=1, le=600)
+    audit_log_retention_months: int = Field(default=24, ge=1, le=600)
+    purge_enabled: bool = True
+    purge_dry_run: bool = False
+    purge_schedule_enabled: bool = False
+    purge_batch_size: int = Field(default=500, ge=1, le=10_000)
+    purge_max_batches: int = Field(default=200, ge=1, le=10_000)
+    purge_lock_timeout_seconds: int = Field(default=900, ge=30, le=86_400)
 
     @property
     def cors_origins(self) -> list[str]:
@@ -191,6 +218,37 @@ def validate_runtime_settings(settings: Settings) -> list[str]:
         errors.append("EXPORT_EAGER must be false outside development/test so workers generate artifacts.")
     errors.extend(queue_configuration_errors(settings))
     errors.extend(rate_limit_configuration_errors(settings))
+    errors.extend(retention_configuration_errors(settings))
+    errors.extend(artifact_storage_configuration_errors(settings))
+    return errors
+
+
+def artifact_storage_configuration_errors(settings: Settings) -> list[str]:
+    """A worker must never write exports to a disk the API cannot read."""
+    errors: list[str] = []
+    storage = settings.export_artifact_storage.strip().lower()
+    if storage not in {"filesystem", "database"}:
+        errors.append("EXPORT_ARTIFACT_STORAGE must be 'filesystem' or 'database'.")
+        return errors
+    if storage == "filesystem" and not settings.export_shared_filesystem:
+        errors.append(
+            "EXPORT_ARTIFACT_STORAGE=filesystem requires a filesystem shared by the API and worker; "
+            "set EXPORT_SHARED_FILESYSTEM=true or use EXPORT_ARTIFACT_STORAGE=database."
+        )
+    return errors
+
+
+def retention_configuration_errors(settings: Settings) -> list[str]:
+    """Retention windows must stay coherent: evidence outlives the raw cache it came from."""
+    errors: list[str] = []
+    if settings.export_job_retention_days * 24 < settings.export_file_retention_hours:
+        errors.append("EXPORT_JOB_RETENTION_DAYS must cover EXPORT_FILE_RETENTION_HOURS.")
+    if settings.calculation_snapshot_retention_months * 28 * 24 < settings.raw_aggregate_retention_days * 24:
+        errors.append("CALCULATION_SNAPSHOT_RETENTION_MONTHS must exceed RAW_AGGREGATE_RETENTION_DAYS.")
+    if settings.is_production and settings.purge_dry_run and settings.purge_schedule_enabled:
+        errors.append("PURGE_DRY_RUN must be false when PURGE_SCHEDULE_ENABLED is true in staging/production.")
+    if settings.is_production and not settings.purge_enabled:
+        errors.append("PURGE_ENABLED must be true in staging/production so expired data is removed.")
     return errors
 
 

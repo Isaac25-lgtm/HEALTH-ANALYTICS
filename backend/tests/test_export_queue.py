@@ -455,10 +455,11 @@ def test_failure_after_publication_step_rolls_back_work_in_progress(queue_db, mo
         headers = auth_header(login(client, "pader.focal"))
         job_id, _dash = _queued_job(factory, client, headers, pader_id)
 
-    def replace_fails(_src, _dst):
+    def publish_fails(*_args, **_kwargs):
         raise PermissionError("cannot publish artifact")
 
-    monkeypatch.setattr(export_jobs.os, "replace", replace_fails)
+    # Fail at the publication step, after the success UPDATE and its audit row.
+    monkeypatch.setattr(export_jobs.artifact_store, "publish", publish_fails)
     attempt = export_jobs.process_export_job(UUID(job_id), factory=factory, auto_retry=False)
     assert attempt.outcome == "failed"
     job = _job(factory, job_id)

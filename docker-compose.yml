@@ -28,6 +28,18 @@ x-backend-environment: &backend-environment
   REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
   CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/1
   CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/2
+  # Retention (owner decision). HPIP caches routine data briefly and keeps results.
+  RAW_AGGREGATE_RETENTION_DAYS: ${RAW_AGGREGATE_RETENTION_DAYS:-7}
+  MPDSR_EVENT_RETENTION_HOURS: ${MPDSR_EVENT_RETENTION_HOURS:-24}
+  EXPORT_FILE_RETENTION_HOURS: ${EXPORT_FILE_RETENTION_HOURS:-24}
+  EXPORT_JOB_RETENTION_DAYS: ${EXPORT_JOB_RETENTION_DAYS:-90}
+  CALCULATION_SNAPSHOT_RETENTION_MONTHS: ${CALCULATION_SNAPSHOT_RETENTION_MONTHS:-36}
+  AUDIT_LOG_RETENTION_MONTHS: ${AUDIT_LOG_RETENTION_MONTHS:-24}
+  PURGE_ENABLED: "true"
+  PURGE_DRY_RUN: "false"
+  # A shared named volume gives the API and worker one filesystem here; Render has none,
+  # so EXPORT_ARTIFACT_STORAGE=database is used there (see docs/DEPLOYMENT.md).
+  EXPORT_ARTIFACT_STORAGE: ${EXPORT_ARTIFACT_STORAGE:-filesystem}
 
 x-backend-env-file: &backend-env-file
   # Optional integration settings (DHIS2, AI, FORMULA_UNDATED_FALLBACK, MPDSR_CAUSE_MIN_CELL_COUNT).
@@ -110,7 +122,7 @@ services:
       - celery
       - --app=app.workers.celery_app:celery_app
       - worker
-      - --queues=${EXPORT_QUEUE_NAME:-exports},${SYNC_QUEUE_NAME:-sync}
+      - --queues=${EXPORT_QUEUE_NAME:-exports},${SYNC_QUEUE_NAME:-sync},${MAINTENANCE_QUEUE_NAME:-maintenance}
       - --concurrency=${WORKER_CONCURRENCY:-2}
       - --loglevel=INFO
       - --without-gossip

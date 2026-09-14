@@ -1,8 +1,7 @@
-from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,11 +9,18 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, parse_uuid, raise_authz, require_write
 from app.db.session import get_db
 from app.domain.enums import ActionPermission, JobStatus, ProgrammeCode
-from app.domain.exports import export_label, export_media_type
+from app.domain.exports import export_label
+from app.domain.modules import MODULE_PROGRAMME
 from app.models import ExportJob, User
 from app.schemas.api import ExportAcceptedResponse
+from app.services import artifact_store
 from app.services.audit import write_audit
-from app.services.authorization import AuthorizationError, require_action, require_org_unit_access
+from app.services.authorization import (
+    AuthorizationError,
+    require_action,
+    require_org_unit_access,
+    require_programme_access,
+)
 from app.services.export_jobs import (
     DISPATCH_ERROR_CODES,
     SAFE_ERROR_MESSAGES,
@@ -172,7 +178,7 @@ def list_export_jobs(
         .order_by(ExportJob.created_at.desc(), ExportJob.id.desc())
         .limit(limit)
     ).all()
-    return {"jobs": [export_job_payload(row) for row in rows]}
+    return {"jobs": [export_job_payload(row, session) for row in rows]}
 
 
 @router.get("/jobs/{job_id}")
@@ -184,7 +190,7 @@ def get_export_job(
     job = session.get(ExportJob, parse_uuid(job_id, "job_id"))
     if job is None or job.user_id != user.id:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Export job was not found."})
-    return export_job_payload(job)
+    return export_job_payload(job, session)
 
 
 @router.post("/jobs/{job_id}/retry", response_model=ExportAcceptedResponse, status_code=202)
@@ -219,24 +225,64 @@ def download_export(
     job_id: str,
     session: Session = Depends(require_write),
     user: User = Depends(get_current_user),
-) -> FileResponse:
-    """Download writes an access audit record, so it is a CSRF-protected POST, never a GET."""
+) -> StreamingResponse:
+    """Download writes an access audit record, so it is a CSRF-protected POST, never a GET.
+
+    Permissions are re-checked on every download, and an expired artifact is reported as
+    ``artifact_expired`` (HTTP 410) rather than an unexplained 404.
+    """
     job = session.get(ExportJob, parse_uuid(job_id, "job_id"))
-    if job is None or job.user_id != user.id or not job.file_path or job.status != JobStatus.SUCCEEDED.value:
-        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Export file was not found."})
-    path = Path(job.file_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Export file was not found."})
+    if job is None or job.user_id != user.id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Export job was not found."})
+    try:
+        require_action(session, user, ActionPermission.EXPORT)
+        if job.org_unit_id:
+            require_org_unit_access(session, user, job.org_unit_id)
+        if job.module and job.module in MODULE_PROGRAMME:
+            require_programme_access(session, user, MODULE_PROGRAMME[job.module])
+    except AuthorizationError as error:
+        session.rollback()
+        raise_authz(error)
+    if job.status != JobStatus.SUCCEEDED.value:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "export_not_ready",
+                "message": "This export has not finished successfully.",
+                "status": job.status,
+            },
+        )
+    try:
+        payload = artifact_store.load(session, job)
+    except artifact_store.ArtifactError as error:
+        status_code = 410 if error.code == artifact_store.ARTIFACT_EXPIRED else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "code": error.code,
+                "message": str(error),
+                "job_id": str(job.id),
+                "checksum": job.checksum,
+                "artifact_expires_at": job.artifact_expires_at.isoformat() if job.artifact_expires_at else None,
+            },
+        ) from None
     write_audit(
         session,
         actor_user_id=user.id,
         action="export_downloaded",
         resource_type="export_job",
         resource_id=str(job.id),
-        after={"checksum": job.checksum, "export_type": job.export_type},
+        after={"checksum": job.checksum, "export_type": job.export_type, "storage": job.artifact_storage},
         commit=True,
     )
-    return FileResponse(path, filename=path.name, media_type=export_media_type(path.suffix))
+    return StreamingResponse(
+        payload.chunks(),
+        media_type=payload.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{payload.filename}"',
+            "Content-Length": str(payload.size_bytes),
+        },
+    )
 
 
 @router.post("/mpdsr-linelist", response_model=ExportAcceptedResponse, status_code=202)

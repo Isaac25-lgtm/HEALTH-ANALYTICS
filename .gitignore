@@ -122,3 +122,4 @@ backend/.audit-*/
 backend/.audit2-*/
 backend/.codex-*/
 .codex-*/
+backend/.pytest-*/
