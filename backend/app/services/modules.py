@@ -166,6 +166,9 @@ def _serialize_value(session: Session, row: CalculatedValue | None) -> dict:
         "display_precision": row.display_precision,
         "thresholds": _thresholds(version, mode),
         "event_coverage_status": (row.event_coverage or {}).get("status"),
+        "denominator_provenance": row.denominator_provenance,
+        "period_kind": (row.denominator_provenance or {}).get("period_kind"),
+        "population_period_fraction": (row.denominator_provenance or {}).get("period_fraction"),
     }
 
 

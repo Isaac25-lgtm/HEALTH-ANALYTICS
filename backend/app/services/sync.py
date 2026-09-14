@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.domain.enums import AbsenceReason, ConnectorType, JobStatus, MappingSourceSystem
+from app.domain.mpdsr_minimisation import minimise_event_values
 from app.domain.periods import PeriodError, parse_period
 from app.integrations.dhis2.aggregate import AggregateAnalyticsAdapter
 from app.integrations.dhis2.errors import Dhis2Error, Dhis2NotConfiguredError
@@ -143,7 +144,7 @@ def persist_event_observations(
     field_mappings: list[EventFieldMapping],
     extracted_at: datetime,
 ) -> dict[str, int]:
-    stored = rejected = 0
+    stored = rejected = dropped_fields = 0
     for observation in observations:
         if job.cancelled:
             break
@@ -178,14 +179,16 @@ def persist_event_observations(
         if ambiguous:
             rejected += 1
             continue
-        semantic: dict = {}
+        mapped_values: dict = {}
         for source_uid, value in (observation.data_values or {}).items():
             mapped = uid_to_field.get(source_uid)
             if mapped is None:
                 continue
-            if mapped.internal_semantic_field in {"name", "narrative", "username", "clinician"}:
-                continue
-            semantic[mapped.internal_semantic_field] = value
+            mapped_values[mapped.internal_semantic_field] = value
+        # Whitelist minimisation: only approved, non-identifying scalar facts are persisted.
+        minimised = minimise_event_values(mapped_values)
+        semantic = minimised.values
+        dropped_fields += minimised.dropped_count
         semantic.setdefault("event_type", next(iter(event_types)))
         death = _as_date(semantic.get("death_date"))
         notification = _as_date(semantic.get("notification_date"))
@@ -230,7 +233,14 @@ def persist_event_observations(
     job.stored_count = stored
     job.rejected_count = rejected
     job.received_count = len(observations)
-    return {"stored": stored, "rejected": rejected}
+    if dropped_fields:
+        # Counts only: which unapproved fields arrived is not recorded, and their values never are.
+        record_operational_event(
+            "mpdsr_event_fields_dropped",
+            job_id=str(job.id),
+            records_rejected=dropped_fields,
+        )
+    return {"stored": stored, "rejected": rejected, "dropped_fields": dropped_fields}
 
 
 def _as_date(value):

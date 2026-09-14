@@ -138,7 +138,129 @@ def resolve_population_year(session: Session, period_key: str, programme_id: UUI
 
 
 def period_fraction(period_key: str) -> float:
+    """Approved fraction of an annual target covered by this period.
+
+    Owner decision 2026-09-14: full year 12/12, half-year 6/12, quarter 3/12, month 1/12.
+    """
     return parse_period(period_key).fraction_of_year
+
+
+@dataclass(frozen=True)
+class TargetDenominator:
+    """The one authoritative population-derived denominator, with its full provenance.
+
+    No screen, export, AI component or frontend may resolve a population year or period
+    fraction independently; they all read what this produced.
+    """
+
+    status: str
+    value: float | None
+    period_kind: str
+    parent_fy: str | None
+    population_year: int | None
+    fraction: float
+    coefficient: float | None
+    annual_target: float | None
+    adjusted_target: float | None
+    population: float | None = None
+    population_version_id: UUID | None = None
+    facility_population_entry_id: UUID | None = None
+    population_source: str | None = None
+    population_type: str | None = None
+    approval_status: str | None = None
+    rule_id: UUID | None = None
+    reason: str | None = None
+    reason_code: str | None = None
+    period_adjusted: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+    def provenance(self) -> dict:
+        return {
+            "period_kind": self.period_kind,
+            "parent_fy": self.parent_fy,
+            "population_year": self.population_year,
+            "period_fraction": self.fraction,
+            "period_adjusted": self.period_adjusted,
+            "coefficient": self.coefficient,
+            "annual_target": self.annual_target,
+            "adjusted_target": self.adjusted_target,
+            "population": self.population,
+            "population_source": self.population_source,
+            "population_type": self.population_type,
+            "population_version_id": str(self.population_version_id) if self.population_version_id else None,
+            "facility_population_entry_id": (
+                str(self.facility_population_entry_id) if self.facility_population_entry_id else None
+            ),
+            "population_rule_id": str(self.rule_id) if self.rule_id else None,
+            "reason_code": self.reason_code,
+        }
+
+
+def resolve_target_denominator(
+    session: Session,
+    org_unit: OrgUnit,
+    *,
+    period_key: str,
+    coefficient: float | None,
+    programme_id: UUID | None = None,
+    period_adjust: bool = True,
+    policy: str = PopulationAggregationPolicy.DIRECT_OR_COMPLETE_CHILDREN.value,
+) -> TargetDenominator:
+    """Resolve population x coefficient x period fraction for one org unit and period.
+
+    Service-derived denominators never call this: they are counted from reported activity and
+    are never scaled by a period fraction.
+    """
+    spec = parse_period(period_key)
+    fraction = spec.fraction_of_year if period_adjust else 1.0
+    resolved = resolve_population(session, org_unit, period_key=period_key, programme_id=programme_id, policy=policy)
+    if resolved.status != "ok" or resolved.population is None:
+        return TargetDenominator(
+            status="unavailable",
+            value=None,
+            period_kind=spec.kind,
+            parent_fy=spec.parent_fy,
+            population_year=resolved.year,
+            fraction=fraction,
+            coefficient=coefficient,
+            annual_target=None,
+            adjusted_target=None,
+            population_version_id=resolved.version_id,
+            facility_population_entry_id=resolved.used_facility_entry_id,
+            population_source=resolved.source,
+            population_type=resolved.population_type,
+            approval_status=resolved.approval_status,
+            rule_id=resolved.rule_id,
+            reason=resolved.reason,
+            reason_code=resolved.reason_code or UnavailableReason.POPULATION_UNAVAILABLE.value,
+            period_adjusted=period_adjust,
+        )
+    factor = float(coefficient or 0)
+    annual = resolved.population * factor
+    adjusted = annual * fraction
+    return TargetDenominator(
+        status="ok",
+        value=adjusted,
+        period_kind=spec.kind,
+        parent_fy=spec.parent_fy,
+        population_year=resolved.year,
+        fraction=fraction,
+        coefficient=factor,
+        annual_target=annual,
+        adjusted_target=adjusted,
+        population=resolved.population,
+        population_version_id=resolved.version_id,
+        facility_population_entry_id=resolved.used_facility_entry_id,
+        population_source=resolved.source,
+        population_type=resolved.population_type,
+        approval_status=resolved.approval_status,
+        rule_id=resolved.rule_id,
+        reason=resolved.reason,
+        period_adjusted=period_adjust,
+    )
 
 
 def period_target(annual_population: float, coefficient: float, period_key: str) -> float:

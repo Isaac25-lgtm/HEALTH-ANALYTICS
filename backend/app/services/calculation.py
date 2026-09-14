@@ -48,7 +48,7 @@ from app.services.mpdsr import (
     review_timely,
 )
 from app.services.mpdsr_events import event_in_mpdsr_scope, scoped_mpdsr_events
-from app.services.population import resolve_population
+from app.services.population import TargetDenominator, resolve_target_denominator
 from app.version import SOFTWARE_VERSION
 
 ABSENT_REASONS = {
@@ -128,6 +128,7 @@ class Measure:
     reason_code: str | None = None
     event_snapshot_ids: list[str] = field(default_factory=list)
     event_coverage: dict | None = None
+    denominator_provenance: dict | None = None
 
 
 @dataclass
@@ -998,9 +999,18 @@ def evaluate_formula(
     population_version_id = None
     facility_entry_id = None
     denominator: float | None = None
+    target: TargetDenominator | None = None
     if den_spec.get("mode") == "population":
-        resolved = resolve_population(session, org_unit, period_key=period, programme_id=programme_id)
-        if resolved.status != "ok" or resolved.population is None:
+        # One authoritative resolution of population year, coefficient and period fraction.
+        target = resolve_target_denominator(
+            session,
+            org_unit,
+            period_key=period,
+            coefficient=den_spec.get("coefficient") or version.denominator_coefficient,
+            programme_id=programme_id,
+            period_adjust=bool(den_spec.get("period_adjust") or version.period_adjustment),
+        )
+        if not target.ok:
             return Measure(
                 numerator,
                 None,
@@ -1008,24 +1018,19 @@ def evaluate_formula(
                 PerformanceStatus.NA.value,
                 None,
                 PerformanceStatus.BLUE.value,
-                resolved.reason or "Population unavailable.",
-                population_year=resolved.year,
-                population_version_id=resolved.version_id,
-                facility_population_entry_id=resolved.used_facility_entry_id,
+                target.reason or "Population unavailable.",
+                population_year=target.population_year,
+                population_version_id=target.population_version_id,
+                facility_population_entry_id=target.facility_population_entry_id,
                 missing_components=list(scope.missing) if scope is not None else [],
-                reason_code=resolved.reason_code or UnavailableReason.POPULATION_UNAVAILABLE.value,
+                reason_code=target.reason_code or UnavailableReason.POPULATION_UNAVAILABLE.value,
+                denominator_provenance=target.provenance(),
                 **lineage,
             )
-        coefficient = float(den_spec.get("coefficient") or version.denominator_coefficient or 0)
-        fraction = 1.0
-        if den_spec.get("period_adjust") or version.period_adjustment:
-            from app.services.population import period_fraction
-
-            fraction = period_fraction(period)
-        denominator = resolved.population * coefficient * fraction
-        population_year = resolved.year
-        population_version_id = None if resolved.used_facility_entry_id else resolved.version_id
-        facility_entry_id = resolved.used_facility_entry_id
+        denominator = target.value
+        population_year = target.population_year
+        population_version_id = None if target.facility_population_entry_id else target.population_version_id
+        facility_entry_id = target.facility_population_entry_id
     elif denominator_keys and scope is not None and scope.ok:
         denominator = sum(scope.values[key] for key in denominator_keys if key in scope.values)
 
@@ -1033,6 +1038,7 @@ def evaluate_formula(
         population_year=population_year,
         population_version_id=population_version_id,
         facility_population_entry_id=facility_entry_id,
+        denominator_provenance=target.provenance() if target is not None else None,
     )
 
     if scope is not None and not scope.ok:
@@ -1346,6 +1352,7 @@ def run_calculation(
                     reason_code=measure.reason_code,
                     event_snapshot_ids=measure.event_snapshot_ids or None,
                     event_coverage=measure.event_coverage,
+                    denominator_provenance=measure.denominator_provenance,
                 )
             )
             selection = selection_by_version.get(str(version.id)) or {}

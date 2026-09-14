@@ -42,23 +42,29 @@ def _eval(session, code, org, period):
     return evaluate_formula(session, org_unit=org, period=period, version=version, programme_id=indicator.programme_id)
 
 
-def test_fy_rule_covers_only_full_financial_years(session):
+def test_fy_rule_covers_its_child_periods_but_not_unapproved_years(session):
+    """Owner decision D-041 (2026-09-14) extended the FY rule to its child periods.
+
+    Periods outside the approved population source years still fail closed.
+    """
     assert resolve_population_year(session, "FY2024/25") == 2024
-    assert resolve_population_year(session, "FY2024/25Q1") is None
-    assert resolve_population_year(session, "202407") is None
-    assert resolve_population_year(session, "2024Q3") is None
-    missing = resolve_population_year_rule(session, "202407")
+    assert resolve_population_year(session, "FY2024/25Q1") == 2024
+    assert resolve_population_year(session, "202407") == 2024
+    assert resolve_population_year(session, "2024Q3") == 2024
+    missing = resolve_population_year_rule(session, "203207")
+    assert missing.year is None
     assert missing.reason_code == "population_rule_missing"
     assert "month" in (missing.reason or "")
 
 
 def test_calendar_year_rule_applies_only_to_listed_kinds(session):
-    assert resolve_population_year(session, "2025") is None
-    put_period_rule(session, "2025", 2025, kinds=["year"], scope="calendar_year")
-    assert resolve_population_year(session, "2025") == 2025
-    assert resolve_population_year(session, "2025Q1") is None
-    put_period_rule(session, "2025", 2025, kinds=["year", "quarter"], scope="calendar_year")
-    assert resolve_population_year(session, "2025Q1") == 2025
+    # 2032 is outside the approved source years, so nothing is seeded for it.
+    assert resolve_population_year(session, "2032") is None
+    put_period_rule(session, "2032", 2032, kinds=["year"], scope="calendar_year")
+    assert resolve_population_year(session, "2032") == 2032
+    assert resolve_population_year(session, "2032Q1") is None
+    put_period_rule(session, "2032", 2032, kinds=["year", "quarter"], scope="calendar_year")
+    assert resolve_population_year(session, "2032Q1") == 2032
 
 
 def test_conflicting_rules_leave_period_unresolved(session):
@@ -70,28 +76,30 @@ def test_conflicting_rules_leave_period_unresolved(session):
 
 
 def test_unapproved_rule_is_ignored(session):
-    put_period_rule(session, "FY2026/27", 2026, kinds=["fy"], approval_status=ApprovalStatus.DRAFT.value)
-    assert resolve_population_year(session, "FY2026/27") is None
+    put_period_rule(session, "FY2032/33", 2032, kinds=["fy"], approval_status=ApprovalStatus.DRAFT.value)
+    assert resolve_population_year(session, "FY2032/33") is None
 
 
 def test_other_programme_rule_is_never_used(session):
     epi = _programme(session, "EPI")
     mnch = _programme(session, "MNCH")
-    put_period_rule(session, "FY2026/27", 2026, kinds=["fy"], programme_id=epi.id)
-    assert resolve_population_year(session, "FY2026/27", epi.id) == 2026
-    assert resolve_population_year(session, "FY2026/27", mnch.id) is None
-    assert resolve_population_year(session, "FY2026/27") is None
+    put_period_rule(session, "FY2032/33", 2032, kinds=["fy"], programme_id=epi.id)
+    assert resolve_population_year(session, "FY2032/33", epi.id) == 2032
+    assert resolve_population_year(session, "FY2032/33", mnch.id) is None
+    assert resolve_population_year(session, "FY2032/33") is None
 
 
 def test_missing_monthly_rule_blocks_only_population_derived_values(session):
+    """A period with no approved rule (here, beyond the approved source years) fails closed for
+    population-derived indicators while service-derived ones still calculate."""
     uganda = _unit(session, "UG")
     put_population(session, uganda, 2024, 120_000)
-    put_raw(session, uganda, "202407", "ANC1", 400)
-    put_raw(session, uganda, "202407", "ANC1_FT", 100)
-    coverage = _eval(session, "ANC1_COVERAGE", uganda, "202407")
+    put_raw(session, uganda, "203207", "ANC1", 400)
+    put_raw(session, uganda, "203207", "ANC1_FT", 100)
+    coverage = _eval(session, "ANC1_COVERAGE", uganda, "203207")
     assert coverage.raw_value is None
     assert coverage.reason_code == "population_rule_missing"
-    service = _eval(session, "ANC1_FIRST_TRIMESTER", uganda, "202407")
+    service = _eval(session, "ANC1_FIRST_TRIMESTER", uganda, "203207")
     assert service.raw_value == 25
 
 

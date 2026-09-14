@@ -279,22 +279,47 @@ def _indicators(session: Session, programmes: dict) -> None:
         )
 
 
-def _period_rules(session: Session, programmes: dict) -> None:
-    """Binding decision D-004: full financial years use the FY base-year population.
+# Owner decision 2026-09-14 (D-041), extending the FY-only scope of D-004: a financial year
+# uses its first year, and the months, quarters and half-years inside that financial year use
+# the same base population year.
+FY_PERIOD_KINDS = ["fy", "fy_quarter", "quarter", "half", "month"]
+# The approved workbook covers 2024-2030. Periods outside that horizon stay
+# population_rule_missing rather than being extrapolated.
+POPULATION_SOURCE_FIRST_YEAR = 2024
+POPULATION_SOURCE_LAST_YEAR = 2030
 
-    Only the ``fy`` period kind is covered. Monthly and quarterly population selection
-    is unresolved (OPEN_ITEMS) and is not seeded.
+
+def _period_rules(session: Session, programmes: dict) -> None:
+    """Approved period-to-population-year rules.
+
+    Calendar year N uses population year N. Financial year YYYY/YY+1 uses YYYY, as do the
+    months, quarters and half-years inside it. Nothing beyond the approved source years is
+    seeded, so later periods fail closed instead of assuming a population.
     """
-    for key, year in (("FY2024/25", 2024), ("FY2025/26", 2025)):
+    for start_year in range(POPULATION_SOURCE_FIRST_YEAR, POPULATION_SOURCE_LAST_YEAR):
+        key = f"FY{start_year}/{str(start_year + 1)[2:]}"
         for programme_id in (None, programmes["MNCH"].id):
             session.add(
                 PeriodPopulationRule(
                     financial_year_key=key,
-                    population_year=year,
+                    population_year=start_year,
                     programme_id=programme_id,
                     scope_kind=PeriodRuleScope.FINANCIAL_YEAR.value,
-                    applies_to_period_kinds=["fy"],
+                    applies_to_period_kinds=list(FY_PERIOD_KINDS),
                     approval_status=ApprovalStatus.APPROVED.value,
-                    notes="Current MNCH convention (D-004). Covers full financial years only.",
+                    notes="Owner decision D-041: FY base year, including its child periods.",
+                )
+            )
+    for year in range(POPULATION_SOURCE_FIRST_YEAR, POPULATION_SOURCE_LAST_YEAR + 1):
+        for programme_id in (None, programmes["MNCH"].id):
+            session.add(
+                PeriodPopulationRule(
+                    financial_year_key=str(year),
+                    population_year=year,
+                    programme_id=programme_id,
+                    scope_kind=PeriodRuleScope.CALENDAR_YEAR.value,
+                    applies_to_period_kinds=["year"],
+                    approval_status=ApprovalStatus.APPROVED.value,
+                    notes="Owner decision D-041: calendar year N uses population year N.",
                 )
             )

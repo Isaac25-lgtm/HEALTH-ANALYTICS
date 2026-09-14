@@ -742,6 +742,9 @@ class CalculatedValue(Base, TimestampMixin):
     aggregation_level: Mapped[str | None] = mapped_column(String(40))
     source_row_ids: Mapped[list | None] = mapped_column(JSON)
     source_mapping_ids: Mapped[list | None] = mapped_column(JSON)
+    # How the population-derived target denominator was resolved (period kind, parent FY,
+    # population year, fraction, coefficient, annual and adjusted target, population source).
+    denominator_provenance: Mapped[dict | None] = mapped_column(JSON)
     software_version: Mapped[str | None] = mapped_column(String(40))
     missing_components: Mapped[list | None] = mapped_column(JSON)
     reason_code: Mapped[str | None] = mapped_column(
@@ -1046,3 +1049,61 @@ class MaintenanceLock(Base):
     holder: Mapped[str] = mapped_column(String(64), nullable=False)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PopulationImportBatch(Base, TimestampMixin):
+    """One governed ingestion of an approved population source.
+
+    Staging preserves every source row and its match state before any organisation-unit
+    crosswalk is approved, so an approved workbook is never silently attached to uncertain
+    organisation units. Nothing here becomes a denominator until it is applied and approved.
+    """
+
+    __tablename__ = "population_import_batches"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    source_dataset: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    source_file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_display_name: Mapped[str | None] = mapped_column(String(255))
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    source_sheet: Mapped[str | None] = mapped_column(String(120))
+    importer_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    imported_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    year_min: Mapped[int | None] = mapped_column(Integer)
+    year_max: Mapped[int | None] = mapped_column(Integer)
+    unit_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    district_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    city_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    national_totals: Mapped[dict | None] = mapped_column(JSON)
+    region_totals: Mapped[dict | None] = mapped_column(JSON)
+    match_counts: Mapped[dict | None] = mapped_column(JSON)
+    reference_scope: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reviewed_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class PopulationImportRow(Base, TimestampMixin):
+    """One staged source value: unit, declared type, broad region, year and population."""
+
+    __tablename__ = "population_import_rows"
+    __table_args__ = (UniqueConstraint("batch_id", "row_number", "year"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    batch_id: Mapped[UUID] = mapped_column(ForeignKey("population_import_batches.id"), nullable=False, index=True)
+    row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_unit_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_unit_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_region: Mapped[str | None] = mapped_column(String(80))
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    population: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_column_label: Mapped[str | None] = mapped_column(String(80))
+    match_state: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    candidate_org_unit_id: Mapped[UUID | None] = mapped_column(ForeignKey("org_units.id"))
+    alias_id: Mapped[UUID | None] = mapped_column(ForeignKey("population_source_aliases.id"))
+    review_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    validation_error: Mapped[str | None] = mapped_column(String(255))

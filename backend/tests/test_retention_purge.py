@@ -109,7 +109,9 @@ def test_production_rejects_incoherent_or_unsafe_retention_settings():
     assert validate_runtime_settings(Settings(**base)) == []
     assert any(
         "EXPORT_JOB_RETENTION_DAYS" in error
-        for error in validate_runtime_settings(Settings(**base, export_job_retention_days=1, export_file_retention_hours=48))
+        for error in validate_runtime_settings(
+            Settings(**base, export_job_retention_days=1, export_file_retention_hours=48)
+        )
     )
     assert any("PURGE_ENABLED" in error for error in validate_runtime_settings(Settings(**base, purge_enabled=False)))
     assert any(
@@ -120,7 +122,10 @@ def test_production_rejects_incoherent_or_unsafe_retention_settings():
         "EXPORT_ARTIFACT_STORAGE" in error
         for error in validate_runtime_settings(Settings(**base, export_shared_filesystem=False))
     )
-    assert validate_runtime_settings(Settings(**base, export_artifact_storage="database", export_shared_filesystem=False)) == []
+    assert (
+        validate_runtime_settings(Settings(**base, export_artifact_storage="database", export_shared_filesystem=False))
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +256,9 @@ def test_expired_export_file_is_explained_while_job_metadata_survives(client, se
 
     # Age the artifact past its window.
     session.execute(
-        update(ExportJob).where(ExportJob.id == job.id).values(artifact_expires_at=datetime.now(UTC) - timedelta(hours=1))
+        update(ExportJob)
+        .where(ExportJob.id == job.id)
+        .values(artifact_expires_at=datetime.now(UTC) - timedelta(hours=1))
     )
     session.commit()
     result = purge_policy(session, retention.EXPORT_FILES, dry_run=False)
@@ -308,7 +315,9 @@ def test_database_artifact_storage_round_trips_without_a_shared_filesystem(clien
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     session.execute(
-        update(ExportJob).where(ExportJob.id == job.id).values(artifact_expires_at=datetime.now(UTC) - timedelta(hours=1))
+        update(ExportJob)
+        .where(ExportJob.id == job.id)
+        .values(artifact_expires_at=datetime.now(UTC) - timedelta(hours=1))
     )
     session.execute(
         update(ExportArtifact)
@@ -332,10 +341,16 @@ def test_terminal_export_metadata_expires_but_live_jobs_never_do(session):
         user_id = session.scalar(select(User.id).where(User.username == "pader.focal"))
     old = datetime.now(UTC) - timedelta(days=400)
     jobs = [
-        ExportJob(id=uuid4(), user_id=user_id, export_type="excel", status="succeeded", finished_at=old, org_unit_id=org.id),
-        ExportJob(id=uuid4(), user_id=user_id, export_type="excel", status="failed", finished_at=old, org_unit_id=org.id),
+        ExportJob(
+            id=uuid4(), user_id=user_id, export_type="excel", status="succeeded", finished_at=old, org_unit_id=org.id
+        ),
+        ExportJob(
+            id=uuid4(), user_id=user_id, export_type="excel", status="failed", finished_at=old, org_unit_id=org.id
+        ),
         ExportJob(id=uuid4(), user_id=user_id, export_type="excel", status="queued", org_unit_id=org.id),
-        ExportJob(id=uuid4(), user_id=user_id, export_type="excel", status="running", claimed_at=old, org_unit_id=org.id),
+        ExportJob(
+            id=uuid4(), user_id=user_id, export_type="excel", status="running", claimed_at=old, org_unit_id=org.id
+        ),
     ]
     for job in jobs:
         job.created_at = old
@@ -382,7 +397,9 @@ def test_expired_snapshots_take_their_runs_and_values_but_spare_referenced_ones(
 
 
 def test_audit_log_retention(session):
-    old = AuditLog(action="legacy_action", resource_type="export_job", created_at=datetime.now(UTC) - timedelta(days=800))
+    old = AuditLog(
+        action="legacy_action", resource_type="export_job", created_at=datetime.now(UTC) - timedelta(days=800)
+    )
     recent = AuditLog(action="recent_action", resource_type="export_job", created_at=datetime.now(UTC))
     session.add_all([old, recent])
     session.commit()
@@ -418,9 +435,7 @@ def test_second_purge_is_skipped_while_the_lease_is_held(session, engine):
 
 def test_expired_lease_can_be_taken_over(session):
     stale = datetime.now(UTC) - timedelta(hours=2)
-    session.add(
-        MaintenanceLock(name="retention_purge:test", holder="dead-worker", acquired_at=stale, expires_at=stale)
-    )
+    session.add(MaintenanceLock(name="retention_purge:test", holder="dead-worker", acquired_at=stale, expires_at=stale))
     session.commit()
     assert purge.acquire_lease(session, "retention_purge:test", "new-worker", 600) is True
     assert session.get(MaintenanceLock, "retention_purge:test").holder == "new-worker"
@@ -437,7 +452,9 @@ def test_failure_is_recorded_safely_and_releases_the_lease(session, monkeypatch)
     assert result.error_summary == "RuntimeError"
     assert session.get(MaintenanceLock, "retention_purge:audit_logs") is None
     run = session.scalars(
-        select(MaintenanceRun).where(MaintenanceRun.policy == retention.AUDIT_LOGS).order_by(MaintenanceRun.started_at.desc())
+        select(MaintenanceRun)
+        .where(MaintenanceRun.policy == retention.AUDIT_LOGS)
+        .order_by(MaintenanceRun.started_at.desc())
     ).first()
     assert run is not None and run.status == STATUS_FAILED
     encoded = json.dumps({column.name: str(getattr(run, column.name)) for column in MaintenanceRun.__table__.columns})

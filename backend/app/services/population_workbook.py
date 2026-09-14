@@ -35,7 +35,15 @@ from app.domain.enums import (
     PopulationType,
     aggregation_class,
 )
-from app.models import OrgUnit, PopulationSourceAlias, PopulationValue, PopulationVersion, User
+from app.models import (
+    OrgUnit,
+    PopulationImportBatch,
+    PopulationImportRow,
+    PopulationSourceAlias,
+    PopulationValue,
+    PopulationVersion,
+    User,
+)
 from app.services.audit import write_audit
 from app.services.authorization import (
     AuthorizationError,
@@ -63,6 +71,23 @@ HEADER = (
 NATIONAL_TOTAL_LABEL = "NATIONAL TOTAL"
 TYPE_LEVELS = {"District": OrgUnitLevel.DISTRICT.value, "City": OrgUnitLevel.CITY.value}
 CENSUS_YEAR = 2024
+# Structure the owner-approved source is expected to have. Differences are reported, never
+# silently corrected.
+EXPECTED_DISTRICTS = 135
+EXPECTED_CITIES = 11
+EXPECTED_UNITS = EXPECTED_DISTRICTS + EXPECTED_CITIES
+EXPECTED_YEARS = list(range(2024, 2031))
+# The four broad statistical regions in the workbook. These are descriptive metadata for
+# reconciliation only; they are never an analytical parent and never a health sub-region.
+BROAD_REGIONS = ("Central", "Eastern", "Northern", "Western")
+IMPORTER_VERSION = "hpip-population-workbook-2"
+SOURCE_TYPE = "national_statistical_office_workbook"
+# Candidate matches are only as authoritative as the organisation units they matched against.
+REFERENCE_SYNTHETIC = "synthetic_development_fixtures"
+REFERENCE_AUTHORITATIVE = "authoritative_org_units"
+STAGED = "staged"
+REVIEW_PENDING = "pending_review"
+
 LOWER_LEVEL_NOTE = (
     "Facility and sub-county populations are never derived from this workbook. "
     "They remain unavailable until separately supplied and approved."
@@ -592,3 +617,177 @@ def apply_population_workbook(
         )
         versions.append(version)
     return versions
+
+
+# ---------------------------------------------------------------------------
+# Structure validation, derived totals and governed staging
+# ---------------------------------------------------------------------------
+
+
+def region_totals(extract: WorkbookExtract) -> dict[str, dict[str, int]]:
+    """Broad-region totals per year, derived from workbook membership only."""
+    totals: dict[str, dict[str, int]] = {}
+    for unit in extract.units:
+        region = unit.region or "Unclassified"
+        bucket = totals.setdefault(region, {})
+        for year, value in unit.values.items():
+            bucket[str(year)] = bucket.get(str(year), 0) + value
+    return dict(sorted(totals.items()))
+
+
+def derived_national_totals(extract: WorkbookExtract) -> dict[str, int]:
+    """National population derived as the sum of the district and city rows."""
+    totals: dict[str, int] = {}
+    for unit in extract.units:
+        for year, value in unit.values.items():
+            totals[str(year)] = totals.get(str(year), 0) + value
+    return dict(sorted(totals.items()))
+
+
+def structure_findings(extract: WorkbookExtract) -> list[str]:
+    """Differences between the workbook and its expected structure. Reported, never corrected."""
+    findings: list[str] = []
+    types = Counter(unit.unit_type for unit in extract.units)
+    if types.get("District", 0) != EXPECTED_DISTRICTS:
+        findings.append(f"Expected {EXPECTED_DISTRICTS} districts; found {types.get('District', 0)}.")
+    if types.get("City", 0) != EXPECTED_CITIES:
+        findings.append(f"Expected {EXPECTED_CITIES} cities; found {types.get('City', 0)}.")
+    if len(extract.units) != EXPECTED_UNITS:
+        findings.append(f"Expected {EXPECTED_UNITS} administrative units; found {len(extract.units)}.")
+    if extract.years != EXPECTED_YEARS:
+        findings.append(f"Expected years {EXPECTED_YEARS}; found {extract.years}.")
+    unknown_regions = sorted(
+        {unit.region for unit in extract.units if unit.region not in BROAD_REGIONS and unit.region is not None}
+    )
+    if unknown_regions:
+        findings.append(f"Unexpected region labels: {', '.join(unknown_regions)}.")
+    derived = derived_national_totals(extract)
+    for year in extract.years:
+        stated = extract.national_total.get(year)
+        if stated is not None and derived.get(str(year)) != stated:
+            findings.append(f"NATIONAL TOTAL for {year} does not equal the sum of the unit rows.")
+    return findings
+
+
+def detect_reference_scope(session: Session) -> str:
+    """Whether candidate matches are against synthetic fixtures or a full hierarchy.
+
+    A synthetic development database has a handful of organisation units; an authoritative
+    hierarchy has the full district and city cohort. Synthetic matches are never reported as
+    production matches.
+    """
+    candidates = session.scalars(
+        select(OrgUnit).where(
+            OrgUnit.active.is_(True),
+            OrgUnit.level_type.in_([OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value]),
+        )
+    ).all()
+    return REFERENCE_AUTHORITATIVE if len(list(candidates)) >= EXPECTED_UNITS else REFERENCE_SYNTHETIC
+
+
+def stage_population_workbook(
+    session: Session,
+    user: User,
+    *,
+    report: ReconciliationReport,
+    source_display_name: str | None = None,
+    notes: str | None = None,
+) -> PopulationImportBatch:
+    """Record every source row and its match state without creating any denominator.
+
+    Staging is deliberately separate from applying: it preserves all 146 rows and the state of
+    each crosswalk decision while the authoritative organisation-unit hierarchy is still absent.
+    """
+    require_action(session, user, ActionPermission.EDIT_POPULATION)
+    extract = report.extract
+    scope = detect_reference_scope(session)
+    types = Counter(unit.unit_type for unit in extract.units)
+    batch = PopulationImportBatch(
+        source_dataset=SOURCE_DATASET,
+        source_file_name=extract.file_name,
+        source_display_name=source_display_name or extract.file_name,
+        source_sha256=extract.sha256,
+        source_type=SOURCE_TYPE,
+        source_sheet=extract.sheet,
+        importer_version=IMPORTER_VERSION,
+        imported_at=datetime.now(UTC),
+        imported_by_user_id=user.id,
+        year_min=min(extract.years) if extract.years else None,
+        year_max=max(extract.years) if extract.years else None,
+        unit_count=len(extract.units),
+        district_count=types.get("District", 0),
+        city_count=types.get("City", 0),
+        national_totals=derived_national_totals(extract),
+        region_totals=region_totals(extract),
+        match_counts=report.counts,
+        reference_scope=scope,
+        status=STAGED,
+        review_status=REVIEW_PENDING,
+        notes=notes,
+    )
+    session.add(batch)
+    session.flush()
+    findings = structure_findings(extract)
+    for item in report.units:
+        for year, value in sorted(item.unit.values.items()):
+            session.add(
+                PopulationImportRow(
+                    batch_id=batch.id,
+                    row_number=item.unit.row_number,
+                    source_unit_name=item.unit.name,
+                    source_unit_type=item.unit.unit_type,
+                    source_region=item.unit.region,
+                    year=year,
+                    population=value,
+                    source_column_label=extract.column_labels.get(year),
+                    match_state=item.status,
+                    candidate_org_unit_id=item.org_unit.id if item.org_unit else None,
+                    alias_id=item.alias.id if item.alias else None,
+                    review_state=REVIEW_PENDING,
+                    validation_error=item.detail[:255] if item.detail else None,
+                )
+            )
+    session.flush()
+    write_audit(
+        session,
+        actor_user_id=user.id,
+        action="population_workbook_staged",
+        resource_type="population_import_batch",
+        resource_id=str(batch.id),
+        after={
+            "source_file_name": extract.file_name,
+            "source_sha256": extract.sha256,
+            "units": len(extract.units),
+            "cells": extract.cell_count,
+            "reference_scope": scope,
+            "match_counts": report.counts,
+            "structure_findings": findings,
+        },
+        reason="Governed staging of an approved population source; no denominator was created.",
+    )
+    return batch
+
+
+def staging_summary(session: Session, batch: PopulationImportBatch) -> dict:
+    """Operator-facing summary of one staged batch."""
+    rows = session.scalars(select(PopulationImportRow).where(PopulationImportRow.batch_id == batch.id)).all()
+    states = Counter(row.match_state for row in rows)
+    return {
+        "batch_id": str(batch.id),
+        "source_file_name": batch.source_file_name,
+        "source_display_name": batch.source_display_name,
+        "source_sha256": batch.source_sha256,
+        "importer_version": batch.importer_version,
+        "imported_at": batch.imported_at.isoformat() if batch.imported_at else None,
+        "reference_scope": batch.reference_scope,
+        "status": batch.status,
+        "review_status": batch.review_status,
+        "units": batch.unit_count,
+        "districts": batch.district_count,
+        "cities": batch.city_count,
+        "years": [batch.year_min, batch.year_max],
+        "staged_cells": len(rows),
+        "match_states": dict(sorted(states.items())),
+        "national_totals": batch.national_totals,
+        "region_totals": batch.region_totals,
+    }
