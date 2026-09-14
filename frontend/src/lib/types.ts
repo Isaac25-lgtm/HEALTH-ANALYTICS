@@ -286,3 +286,25 @@ export type AiResponse = {
     mode?: string;
   };
 };
+
+export type ExportJobSummary = {
+  job_id: string;
+  status: string;
+  export_type: string;
+  label: string;
+  period: string | null;
+  module: string | null;
+  analysis_snapshot_id: string | null;
+  downloadable: boolean;
+  artifact_expired: boolean;
+  artifact_expires_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  retryable: boolean;
+  retry_scheduled: boolean;
+  permanent_failure: boolean;
+  attempt_count: number;
+  max_attempts: number | null;
+  created_at: string | null;
+  finished_at: string | null;
+};

@@ -177,11 +177,12 @@ def test_postgres_export_queue_races_and_durable_failure(monkeypatch, tmp_path):
         # 4. Publication failure after the success UPDATE rolls back the UPDATE and its audit row.
         monkeypatch.setitem(publishing.ARTIFACT_WRITERS, "powerpoint", publishing._write_pptx)
 
-        def replace_fails(_src, _dst):
+        def publish_fails(*_args, **_kwargs):
             raise PermissionError("cannot publish")
 
         with monkeypatch.context() as patch:
-            patch.setattr(export_jobs.os, "replace", replace_fails)
+            # Publication goes through the artifact store (filesystem or database), not os.replace.
+            patch.setattr(export_jobs.artifact_store, "publish", publish_fails)
             second = export_jobs.process_export_job(job_id, factory=factory, auto_retry=True)
         assert second.outcome == "retry"
         seen = _independent_job(test_url, job_id)

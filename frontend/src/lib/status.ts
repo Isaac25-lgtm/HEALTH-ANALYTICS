@@ -113,3 +113,25 @@ export function changeLabel(change?: {
   }
   return "No comparison";
 }
+
+/**
+ * User-facing text for server reason codes. The server decides why a value is unavailable;
+ * this only names it. A missing value is never presented as zero.
+ */
+const UNAVAILABLE_LABELS: Record<string, string> = {
+  population_unavailable: "Population denominator unavailable",
+  population_denominator_unavailable: "Population denominator unavailable",
+  population_rule_missing: "No approved population year for this period",
+  formula_version_unavailable: "No formula version valid for this period",
+  incompatible_scope: "Numerator and denominator scopes differ",
+  mixed_levels: "Mixed geography levels",
+  incomplete_children: "Child units incomplete",
+  event_coverage_unverified: "Event coverage not verified",
+};
+
+export function unavailableLabel(reasonCode?: string | null): string {
+  if (!reasonCode) {
+    return "No calculated value";
+  }
+  return UNAVAILABLE_LABELS[reasonCode] ?? reasonCode.replaceAll("_", " ");
+}

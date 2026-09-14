@@ -79,7 +79,13 @@ def test_population_figures_are_never_hard_coded_in_production_code():
 
 def test_production_code_never_reads_the_prototype_or_source_workbooks_at_runtime():
     """Only the governed importer and its CLI may open an owner source file."""
-    allowed = {"population_workbook.py", "import_population_workbook.py", "import_geojson.py", "geojson_dry_run.py"}
+    allowed = {
+        "population_workbook.py",
+        "import_population_workbook.py",
+        "import_geojson.py",
+        "geojson_dry_run.py",
+        "geojson_reconciliation.py",
+    }
     offenders = []
     for path in _production_files():
         if path.name in allowed:

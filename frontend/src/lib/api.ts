@@ -232,3 +232,11 @@ export async function downloadExportFile(jobId: string): Promise<void> {
   link.click();
   URL.revokeObjectURL(url);
 }
+
+export async function listExportJobs(limit = 20): Promise<{ jobs: import("./types").ExportJobSummary[] }> {
+  return api(`/exports/jobs?limit=${limit}`);
+}
+
+export async function retryExportJob(jobId: string): Promise<{ job_id: string; status: string; message: string }> {
+  return api(`/exports/jobs/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
+}

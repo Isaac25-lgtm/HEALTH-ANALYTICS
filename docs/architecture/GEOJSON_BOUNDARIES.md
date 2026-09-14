@@ -56,3 +56,13 @@ Dashboards no longer join a separately fetched geometry layer in the browser. `P
 `GET /analysis-snapshots/{id}/map-features` returns those features with values copied from the snapshot and access re-checked. District polygons are never substituted for regions; district screens map facility points or polygons, not the district outline. The browser performs no calculation and no `as_of` derivation.
 
 The earlier Phase 4 map joined the features below to authorised dashboard comparison values by organisation-unit ID. It does not calculate indicators in the browser or load the owner source set in the client. A 2026-09-12 dry-run report is stored at `docs/architecture/GEOJSON_DRY_RUN.json`. Name matches against the synthetic seed are not approved production mappings.
+
+## Validation and reconciliation (2026-09-14)
+
+`python scripts/geojson_reconciliation.py --write-reports` streams all three candidates and writes `docs/reconciliation/GEOJSON_RECONCILIATION.{md,json}`:
+
+- `UGANDA_DISTRICT.json`: GeoJSON, 146 features (142 Polygon, 4 MultiPolygon), 489,872 positions, all within WGS84 range and the Uganda bounding box, no null or empty geometry, no duplicate identifiers or names.
+- `UGANDA_SUBCOUNTIES.json`: GeoJSON, 2,190 features (2,080 Polygon, 110 MultiPolygon), 1,671,234 positions, all in range. `OBJECTID=1240` is shared by two different features; 44 sub-county names repeat nationally, with no collision once qualified by district.
+- `UGANDA_DISTRICTS.json`: Esri JSON (`esriGeometryPolygon`, wkid 4326), 146 features — comparison only, never canonical.
+
+Crosswalk results are against synthetic development fixtures and are not production mappings. **Effective date not yet verified.** `apply_geometry_import` now refuses unless the caller passes `effective_date_verified=True`, and `scripts/import_geojson.py --apply` requires `--effective-date-verified`; no date is invented to satisfy the column.

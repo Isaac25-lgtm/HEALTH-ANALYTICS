@@ -357,7 +357,7 @@ def test_fy_quarter_uses_configured_population_year(session):
 
     assert parse_period("FY2025/26Q3").parent_fy == "FY2025/26"
     assert parse_period("FY2025/26Q3").start == date(2026, 1, 1)
-    # Owner decision D-041: a quarter inside a financial year uses that FY base year.
+    # Owner decision D-045: a quarter inside a financial year uses that FY base year.
     assert resolve_population_year(session, "FY2025/26Q3") == 2025
     # A financial year with no approved rule still fails closed until one is recorded.
     assert resolve_population_year(session, "FY2032/33Q3") is None
@@ -668,7 +668,10 @@ def test_login_does_not_return_or_document_localstorage_token(client):
     source = frontend.read_text(encoding="utf-8")
     assert "localStorage" not in source
     assert "hpip_token" not in source
-    assert '"http://localhost:8000"' in source
+    # Same-origin proxy (D-042): the browser defaults to /api on the web origin, so the session and
+    # CSRF cookies are first-party. No absolute backend origin is compiled into the client.
+    assert '?? "/api"' in source
+    assert '"http://localhost:8000"' not in source
     assert '"http://127.0.0.1:8000"' not in source
 
 

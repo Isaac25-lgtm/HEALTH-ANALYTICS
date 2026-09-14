@@ -7,7 +7,7 @@ export jobs, and the indexes the retention scans need.
 Backfill is deterministic: existing succeeded jobs that still name a file are marked as
 filesystem-stored and expire 24 hours (the approved default window) after they finished.
 
-Revision ID: 0009_retention_and_artifact_storage
+Revision ID: 0009_retention_artifacts
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0009_retention_and_artifact_storage"
+revision = "0009_retention_artifacts"
 down_revision = "0008_export_queue_durability"
 branch_labels = None
 depends_on = None

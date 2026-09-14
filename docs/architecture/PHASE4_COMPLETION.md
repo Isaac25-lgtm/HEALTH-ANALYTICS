@@ -35,7 +35,7 @@ From `frontend/` on 2026-09-12, using project-local ESLint 9 + `eslint-config-ne
 - `npx tsc --noEmit` — exit 0
 - `npx eslint .` — exit 0
 - `npx vitest run` — 9 passed
-- `npx next build` — exit 0 after isolating `distDir` to `.next-build` (the previous hang was a locked `.next` directory on Windows)
+- `npx next build` — exit 0 after isolating `distDir` to `.next-build` (historical). **Superseded:** `distDir` is back to `.next`; locked output from another account is relocated and a `prebuild` guard fails fast (see OPEN_ITEMS).
 - `npx playwright test` — 3 passed (cookie/CSRF login, four-screen navigation, unauthorised URL denial, logout)
 
 Playwright starts a disposable SQLite API on port **8010** so it does not bind the workstation’s existing port 8000 process.

@@ -62,6 +62,6 @@ Current raw-aggregate uniqueness includes source system, org unit, period, sourc
 
 ## Live verification
 
-Owner-supplied host text is approximately `HMIS.hhs.go.ug` via `DHIS2_BASE_URL`. The exact production URL, authentication method, and credentials remain unverified.
+The DHIS2 base host is `https://hmis.health.go.ug` (D-049), configured through `DHIS2_BASE_URL`. The host is known; the authentication method, credentials, metadata mappings and authenticated capability remain unverified, and `DHIS2_ENABLED` defaults to false. Prepared, inert tooling: `scripts/dhis2_discovery.py` (read-only metadata proposals, GET only, bounded, refuses while disabled and without `--confirm-network-access`) and `scripts/dhis2_refresh.py` (six-hourly recent-period refresh entry point; exits without network access while disabled).
 
 **Status:** Connector implementation complete; live DHIS2 verification pending authorised endpoint configuration and credentials.

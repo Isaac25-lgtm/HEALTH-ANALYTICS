@@ -2,7 +2,7 @@
 
 ## Integration boundary
 
-DHIS2 is the authoritative routine-data source. The production base URL must be configuration-driven (expected host text: `HMIS.hhs.go.ug`), using `DHIS2_BASE_URL`; exact endpoint, authentication method, credentials, UIDs, and access scopes remain TBD. Never commit credentials or hard-code mappings.
+DHIS2 is the authoritative routine-data source. The base host is known — `https://hmis.health.go.ug` (D-049) — and stays configuration-driven through `DHIS2_BASE_URL`. Authentication method, credentials, UIDs, metadata mappings and access scopes remain TBD, and no authenticated call or live synchronisation has been made. Never commit credentials or hard-code mappings.
 
 Phase 2 adapters are implemented in `backend/app/integrations/dhis2/`. See `docs/architecture/DHIS2_CONNECTORS.md`. Live verification is pending.
 

@@ -43,7 +43,7 @@ def _eval(session, code, org, period):
 
 
 def test_fy_rule_covers_its_child_periods_but_not_unapproved_years(session):
-    """Owner decision D-041 (2026-09-14) extended the FY rule to its child periods.
+    """Owner decision D-045 (2026-09-14) extended the FY rule to its child periods.
 
     Periods outside the approved population source years still fail closed.
     """

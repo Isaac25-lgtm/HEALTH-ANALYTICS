@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0010_denominator_provenance"
-down_revision = "0009_retention_and_artifact_storage"
+down_revision = "0009_retention_artifacts"
 branch_labels = None
 depends_on = None
 

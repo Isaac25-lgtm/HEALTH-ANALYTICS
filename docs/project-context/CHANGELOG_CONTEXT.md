@@ -1,5 +1,40 @@
 # Context Changelog
 
+## 2026-09-14 — Pre-DHIS2 productionisation (Render + Neon UAT preparation)
+
+This entry prepares UAT on Render with Neon PostgreSQL for about 100 light users (D-042 to D-049). **Nothing was deployed, no Neon database was connected, live DHIS2 was not contacted, and nothing is owner-accepted.** Work is committed to a local Git repository on `master` with no remote.
+
+- Git baseline with `.gitignore` excluding secrets, clusters, build output and the large owner sources (see `SOURCE_ARTIFACT_MANIFEST.md`).
+- The Alembic head is `0011_population_import_staging`:
+  - `0009_retention_artifacts`: artifact storage and expiry, `export_artifacts`, `maintenance_runs`, `maintenance_locks`, retention indexes.
+  - `0010_denominator_provenance`.
+  - `0011_population_import_staging`.
+  - 0001–0008 are unchanged.
+  - The 0009 revision id was shortened from 35 characters before any deployment, because PostgreSQL's `alembic_version.version_num` is VARCHAR(32). A static test now guards this.
+- Retention (D-043): raw aggregates 7 days, MPDSR events and their UIDs 24 hours, export files 24 hours, export job metadata 90 days, snapshots 36 months, audit 24 months. One purge service is shared by the CLI, the Celery maintenance task and the Render cron. It uses per-policy leases and batches, is idempotent, and its dry run writes nothing.
+- MPDSR event minimisation uses a whitelist. Cause analysis and timeliness remain disabled or unverified; no date mappings were invented.
+- Export artifacts go through `artifact_store` (filesystem or database). Expired files return 410 `artifact_expired`; the job record and checksum survive the file.
+- Population: a central `resolve_target_denominator` applies D-045 period rules (2024–2030 seeded) and records provenance with each value. Sub-county values are reported as "Population denominator unavailable". Workbook staging preserves all 146 rows. Reconciliation reports are in `docs/reconciliation/`: 3 of 146 units match the synthetic seed; no production import was performed.
+- GeoJSON validation and reconciliation reports record the boundary effective date as "not yet verified". Activation refuses without a verified date.
+- Neon readiness: small pools, TLS required, a direct `MIGRATION_DATABASE_URL`, and fail-closed production validation for the API and worker. `render.yaml` defines web, API, one worker, Key Value, a purge cron, and an inert six-hourly DHIS2 refresh; there is no Render PostgreSQL.
+- The browser uses a same-origin `/api` proxy, so session and CSRF cookies are first-party.
+- Frontend:
+  - Specialised workspaces (quality console, export history, administration panels) and prototype visual tokens. No calculations run in the browser.
+  - The login page has a blank username.
+  - `scripts/create_initial_admin.py` has no defaults.
+- The DHIS2 discovery and refresh commands are prepared and refuse or stay inert while `DHIS2_ENABLED=false`.
+
+Verification on 2026-09-14 (Windows workstation):
+
+- Backend Ruff: clean.
+- Backend pytest, full suite with `HPIP_POSTGRES_TEST_URL` set to a disposable PostgreSQL 18.1 cluster on port 55432: **544 passed, 2 skipped** in 763 s. The two skips are `test_redis_integration.py`, because no disposable Redis was available. Ports 5432 and 5433 were not touched.
+- An earlier full run without PostgreSQL reported 2 failures, 521 passed and 20 skipped (18 PostgreSQL, 2 Redis). Both failures were assertions that predated this phase's intentional changes (the same-origin API default, and the new boundary reconciliation CLI). They were updated to the new contract, not removed.
+- The first PostgreSQL run exposed the over-long 0009 revision id and a stale patch target in the PostgreSQL export-queue test. Both were fixed before the clean run.
+- New PostgreSQL coverage: the 0008→0009 backfill, the downgrade and re-upgrade to head, and purge-lease exclusivity with six concurrent connections for both fresh and stale leases.
+- Frontend: `tsc` 0 errors, ESLint 0, Vitest 35 passed, `npm run build` exit 0 in the real repository.
+- Playwright against the final code: **12 passed** in 157 s with the system Chrome, with `assert-no-skips` passing. The runner exited by itself, and ports 3000 and 8010 were free afterwards.
+- Not executed locally: Docker Compose and container builds (Docker not installed), real Redis and Celery-over-Redis (CI only), any Render or Neon deployment, and live DHIS2.
+
 ## 2026-09-13 — Material amendment to the corrective prompt
 
 Owner supplied a candidate district/city population workbook, an HTML design prototype (layout reference only), and a 17-section material amendment. The base corrective prompt it amends was not received; only the amendment was implemented. Nothing below is owner-accepted.

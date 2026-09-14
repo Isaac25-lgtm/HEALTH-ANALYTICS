@@ -52,3 +52,27 @@ These decisions come from the owner's material amendment to the corrective promp
 | D-041 | DHIS2 remains the authoritative source. PostgreSQL is limited to the platform control and provenance plane: authorisation, approved configuration/mappings, versioned formula and population metadata, short-lived aggregate cache and analytical snapshots, export-job state, and audit records. Raw DHIS2 extracts and identifiable MPDSR material must not be retained beyond owner-approved short retention; raw MPDSR persists only minimised fields necessary for approved analytics. | Owner decision, 2026-09-13 |
 
 See [ANALYTICAL_RULES.md](ANALYTICAL_RULES.md) for the complete formula and threshold subset retained for navigation.
+
+## Pre-DHIS2 productionisation — owner decisions, 2026-09-14
+
+Recorded from the owner's written execution instruction of 2026-09-14. Engineering choices made to implement them are listed separately below and are **not** owner decisions.
+
+| ID | Binding decision | Source / status |
+|---|---|---|
+| D-042 | Hosting: application on Render, PostgreSQL on Neon initially. Code stays provider-neutral through `DATABASE_URL` (pooled runtime connection), an optional direct `MIGRATION_DATABASE_URL`, and TLS required in production. Render-generated URLs are acceptable for UAT; no custom domain is required. | Owner decision, 2026-09-14 |
+| D-043 | Retention defaults, all configurable: routine raw aggregates 7 days; minimised MPDSR event cache 24 hours; generated export files 24 hours; export-job metadata 90 days; calculation snapshots, evidence and provenance 36 months; audit logs 24 months. | Owner decision, 2026-09-14 (completes the durations D-041 left open) |
+| D-044 | Authentication for initial UAT uses local HPIP accounts. SSO and MFA may follow. No synthetic login values in production; geography, programme and action enforcement stays server-side. | Owner decision, 2026-09-14 |
+| D-045 | Population periods: calendar year N uses population year N; a financial year uses its first (base) year; months, quarters and half-years inside a financial year use that financial year's base year. Population-derived annual target denominators are scaled by period fraction (12/12, 6/12, 3/12, 1/12); service-derived denominators are never scaled. National population is the sum of the 146 district/city rows. No sub-county or facility population is invented. Extends the FY-only scope of D-004. | Owner decision, 2026-09-14 |
+| D-046 | `Uganda_District_City_Populations_2024_2030 (1).xlsx` is the approved district/city population source, subject to checksum verification. Verified: the repository copy `Uganda_District_City_Populations_2024_2030.xlsx` has SHA-256 `5ae43dca…3e75072`, identical to the checksum recorded at receipt. Approval of the source does not approve any organisation-unit crosswalk. | Owner decision, 2026-09-14; checksum verified 2026-09-14 |
+| D-047 | Refresh: both scheduled and permission-controlled on-demand refresh are required later. Default cadence for recent/current aggregate periods is every six hours; closed historical periods are not repeatedly refreshed; continuous polling is prohibited. | Owner decision, 2026-09-14 (schedule prepared but disabled) |
+| D-048 | Features allowed to remain disabled for UAT: external AI, MPDSR cause analysis, EPI RAG without approved thresholds, official Ministry templates, SSO/MFA, custom domain, and lower-level population-derived indicators without populations. | Owner decision, 2026-09-14 |
+| D-049 | The known DHIS2 base host is `https://hmis.health.go.ug`. The host is known; credentials, metadata mappings, authenticated capability and live synchronisation remain unavailable and must not be claimed. | Owner decision, 2026-09-14 (supersedes the approximate host text) |
+
+### Engineering implementation choices (not owner decisions)
+
+- Period rules are seeded as approved `PeriodPopulationRule` rows for 2024–2030 only, the approved workbook horizon; later periods return `population_rule_missing`.
+- Export bytes on Render are stored in PostgreSQL (`EXPORT_ARTIFACT_STORAGE=database`, 25 MB cap) because Render services do not share a disk.
+- The browser calls a same-origin `/api` path proxied by Next.js so cookie-only authentication works across Render hostnames.
+- Purge runs daily at 01:30 UTC through one purge service; the six-hourly DHIS2 refresh command exists but exits without contacting DHIS2.
+- Boundary geometry cannot be activated without an explicit `effective_date_verified` confirmation.
+- Undated legacy formula versions are permitted in development/test only unless `FORMULA_UNDATED_FALLBACK` is set (see OPEN_ITEMS).

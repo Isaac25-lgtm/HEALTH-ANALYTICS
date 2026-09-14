@@ -279,7 +279,7 @@ def _indicators(session: Session, programmes: dict) -> None:
         )
 
 
-# Owner decision 2026-09-14 (D-041), extending the FY-only scope of D-004: a financial year
+# Owner decision 2026-09-14 (D-045), extending the FY-only scope of D-004: a financial year
 # uses its first year, and the months, quarters and half-years inside that financial year use
 # the same base population year.
 FY_PERIOD_KINDS = ["fy", "fy_quarter", "quarter", "half", "month"]
@@ -307,7 +307,7 @@ def _period_rules(session: Session, programmes: dict) -> None:
                     scope_kind=PeriodRuleScope.FINANCIAL_YEAR.value,
                     applies_to_period_kinds=list(FY_PERIOD_KINDS),
                     approval_status=ApprovalStatus.APPROVED.value,
-                    notes="Owner decision D-041: FY base year, including its child periods.",
+                    notes="Owner decision D-045: FY base year, including its child periods.",
                 )
             )
     for year in range(POPULATION_SOURCE_FIRST_YEAR, POPULATION_SOURCE_LAST_YEAR + 1):
@@ -320,6 +320,6 @@ def _period_rules(session: Session, programmes: dict) -> None:
                     scope_kind=PeriodRuleScope.CALENDAR_YEAR.value,
                     applies_to_period_kinds=["year"],
                     approval_status=ApprovalStatus.APPROVED.value,
-                    notes="Owner decision D-041: calendar year N uses population year N.",
+                    notes="Owner decision D-045: calendar year N uses population year N.",
                 )
             )

@@ -18,7 +18,7 @@ Each rule records `scope_kind` (`financial_year` or `calendar_year`), `applies_t
 3. The period kind must be listed in `applies_to_period_kinds`.
 4. Conflicting approved rules, or no rule, return `population_rule_missing`. No year is inferred.
 
-No explicit rule for months, quarters or half-years was found in the handoff or the owner's workbook guide, which states only calendar-year and financial-year rules. Sub-annual population-derived values therefore stay unavailable until an approved rule names those period kinds (for example `applies_to_period_kinds=["fy","fy_quarter"]`). Migration 0007 kept the existing FY rules as FY-only. See `OPEN_ITEMS.md`.
+**Owner decision D-045 (2026-09-14):** calendar year N uses population year N; a financial year uses its first year; months, quarters and half-years inside a financial year use that financial year's base year. The seeded approved rules cover FY2024/25–FY2029/30 (kinds `fy`, `fy_quarter`, `quarter`, `half`, `month`) and calendar years 2024–2030 (kind `year`) — the approved workbook horizon. Periods beyond it still return `population_rule_missing`; nothing is extrapolated.
 
 Selection of a national/subnational version is deterministic:
 
@@ -101,3 +101,21 @@ python scripts/import_population_workbook.py --apply --version-code <CODE> --use
 No import has been performed; production application waits for the approved hierarchy and alias decisions.
 
 Ordinary population listing returns approved version values only. Bulk import requires `edit_population`; approve/reject requires `approve_population`, locks the draft row, and prevents non-admin self-approval. A caller-supplied version cannot bypass approval, validity date, year, or geography coverage checks. The owner will supply the district population values later; none were inferred from the boundary files.
+
+## Central target-denominator resolver (2026-09-14)
+
+`resolve_target_denominator()` in `backend/app/services/population.py` is the only place a population-derived denominator is resolved:
+
+`target = approved population x approved coefficient x period fraction`
+
+It returns the value together with its provenance — period kind, parent FY, population year, fraction, coefficient, annual target, adjusted target, population value, version or facility entry, source, type and rule — and the calculation engine persists that provenance on `calculated_values.denominator_provenance`. Dashboards, modules, scorecards, maps, rankings, evidence, exports and AI all read the persisted result; the frontend never resolves a population or a fraction.
+
+- Service-derived denominators (ANC1 attendance, deliveries, live births, reported deaths, event cohorts) are counted from reported activity and never scaled.
+- Display rounding happens only at the display boundary.
+- Sub-counties: the workbook has no sub-county populations. District values are never divided down, and no area- or facility-based estimate is made. Population-derived indicators return a typed unavailable state (`population_unavailable`, shown as "Population denominator unavailable"); service-derived indicators still calculate.
+- Facilities: the versioned catchment workflow is unchanged — entered, approved by a different user (system-administrator exception audited), superseded, never allocated from district totals.
+- Regression tests use Pader's real workbook values from `backend/tests/fixtures/workbook_population_reference.json`, derived from the approved workbook and checked against its SHA-256.
+
+## Governed staging of the approved workbook
+
+`python scripts/import_population_workbook.py --stage --username <importer>` records all 146 units x 7 years (1,022 cells) in `population_import_batches`/`population_import_rows` with each row's match state (`matched_exact`, `matched_alias`, `unmatched`, `ambiguous`, `type_mismatch`, `pending_alias`, `rejected_alias`, `invalid_alias`, `duplicate_target`) and review state. Staging creates no denominator. `--write-reports` writes `docs/reconciliation/POPULATION_RECONCILIATION.{md,json}`, which derives national totals from the unit rows, reports the four broad-region totals, and labels matches against synthetic fixtures as non-production. Health sub-region totals are not calculated without approved membership.

@@ -44,3 +44,28 @@ Results are from tests executed on 2026-09-13 (SQLite plus the disposable Postgr
 | — | ESLint gate | 420 errors from generated `.next-gate` | Output directory not ignored | `eslint.config.mjs` | `npx eslint .` | 0 errors |
 
 Remaining unverified or blocked items are listed in `OPEN_ITEMS.md`.
+
+## Pre-DHIS2 productionisation — 2026-09-14
+
+Results are from tests executed on 2026-09-14. SQLite unless marked PostgreSQL (disposable 18.1 cluster, port 55432). Passing tests are not owner acceptance.
+
+| WP | Requirement | Defect or gap found | Main changes | Regression tests | Result |
+|---|---|---|---|---|---|
+| A | Safe Git baseline | No repository; 219 MB of boundary sources and a 10.7 MB .docx would have been committed | `.gitignore`, `SOURCE_ARTIFACT_MANIFEST.md`, `git init` | Staged-list and credential scan | Baseline `6800145`; no remote |
+| C | Configurable retention | Raw aggregates, event UIDs and export files kept indefinitely | `domain/retention.py`, `services/purge.py`, migration 0009, `scripts/purge_expired.py`, Celery maintenance task | `test_retention_purge.py` (calendar months, dry run writes nothing, idempotency, batching, lease, stale lease, failure record, disabled) | Passed |
+| D | Purge-safe provenance | Not previously proven | Denominator provenance (0010); snapshot/export reopen after purge | `test_snapshot_and_export_survive_the_deletion_of_their_raw_rows` | Passed |
+| E | MPDSR minimisation | Blacklist of four names; nested and unmapped payloads could persist; flag `event_uid` never expired | `domain/mpdsr_minimisation.py` whitelist; purge clears flag UIDs | `test_mpdsr_minimisation.py` | Passed |
+| F | Render-safe artifacts | Worker wrote to local disk the API could not read; expired downloads were bare 404s | `services/artifact_store.py` (`filesystem`/`database`), 410 `artifact_expired`, download re-checks permissions | `test_retention_purge.py`, `test_export_queue.py` | Passed |
+| G/H | Workbook staging and reconciliation | 146 rows could not be preserved without an approved crosswalk | Migration 0011 staging, CLI `--stage`/`--write-reports` | `test_population_workbook.py`, reports in `docs/reconciliation/` | Passed; 143/146 production-unresolved |
+| I/J/K | Central resolver and real populations | Sub-annual and calendar periods unresolved (now decided, D-045); resolution spread across calculation code | `resolve_target_denominator`, seeded 2024–2030 rules | `test_population_period_resolver.py` (Pader 2025 = 248,910 from fixture) | Passed |
+| L | Prototype paths | None found in production code; no guard existed | Contract tests backend and frontend | `test_prototype_contract.py`, `prototype-contract.test.ts` | Passed |
+| M | Boundary validation | No validation report; activation required an assumed date | `scripts/geojson_reconciliation.py`; `effective_date_verified` guard | `test_phase12_audit_fixes.py` | Passed; OBJECTID 1240 duplicate reported |
+| N | Visual workspaces | All workspaces rendered one identical layout | `lib/workspaces.ts`, `QualityConsole`, `ExportHistory`, `AdministrationPanels`, `globals.css` tokens | `workspaces.test.tsx`, `e2e/workspaces.spec.ts` | Passed (Vitest 35; Playwright 12, no skips) |
+| O | Development login | Username prefilled with `national.analyst`; no safe admin provisioning | Blank login; `scripts/create_initial_admin.py` | `test_admin_provisioning.py` | Passed |
+| P | Neon readiness | No pool limits, TLS policy or direct migration URL | `db/session.py`, config validation, Alembic `migration_url` | `test_runtime_gates.py` | Passed |
+| Q | Same-origin auth | CSRF cookie read via `document.cookie` would fail across Render hostnames | `/api` proxy (`BACKEND_INTERNAL_URL`), `render.yaml` | `test_deployment_config.py`, Playwright cookie test | Passed |
+| S | DHIS2 discovery | Approximate hostname in docs; no enable switch | `DHIS2_ENABLED`/`SYNC_ENABLED`, inert discovery and refresh commands | `test_runtime_gates.py` | Passed; no network call made |
+| P | Release on PostgreSQL | Revision id `0009_retention_and_artifact_storage` (35 characters) exceeded PostgreSQL `alembic_version.version_num` VARCHAR(32). SQLite does not enforce the length, so `alembic upgrade head` passed locally but would have failed at the Neon release | Revision renamed to `0009_retention_artifacts` before any deployment (0001–0008 untouched) | `test_revision_ids_fit_the_postgresql_version_column` (runs on SQLite), `test_postgres_0008_to_0009_backfills_artifact_expiry_and_downgrades` | Passed |
+| C | Purge lease under contention | Lease exclusivity was only proven on SQLite | None needed | `test_postgres_purge_lease_admits_exactly_one_holder_under_contention` (6 threads, fresh and stale lease) | Passed |
+| F | Stale test patch | PostgreSQL export-queue test still patched `export_jobs.os.replace`, which publication no longer uses | Patch `artifact_store.publish`; assertions unchanged | `test_postgres_export_queue_races_and_durable_failure` | Passed |
+| T | Build hang | Another account (`CodexSandboxOffline`) rebuilt into `.next` during the session, re-triggering Next's infinite `EPERM` retry | Relocated output; `prebuild` fail-fast guard | Real-repository `npm run build` | exit 0 in 188 s |

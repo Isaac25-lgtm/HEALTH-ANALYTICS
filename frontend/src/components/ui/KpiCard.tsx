@@ -1,4 +1,4 @@
-import { changeLabel, formatMeasure, interpretationLabel, resolveStatus } from "@/lib/status";
+import { changeLabel, formatMeasure, interpretationLabel, resolveStatus, unavailableLabel } from "@/lib/status";
 import type { Measure } from "@/lib/types";
 import { StatusPill } from "./StatusPill";
 
@@ -22,6 +22,11 @@ export function KpiCard({ measure }: { measure: Measure }) {
           </span>
         ) : null}
       </p>
+      {measure.raw_value === null ? (
+        <p className="kpi-unavailable" role="note">
+          {unavailableLabel(measure.reason_code)}
+        </p>
+      ) : null}
       <StatusPill status={status} />
       {spark != null && measure.raw_value != null ? (
         <svg className="kpi-spark" viewBox="0 0 64 18" aria-hidden="true">

@@ -25,6 +25,7 @@ import {
   snapshotAnswersRequest,
 } from "@/lib/scope";
 import { formatMeasure, resolveStatus } from "@/lib/status";
+import { sectionsFor, workspaceSpec } from "@/lib/workspaces";
 import type { CurrentContext, DashboardResponse, Measure, OrgUnitSummary, RankingEntry } from "@/lib/types";
 import { AdaptiveMap } from "../maps/AdaptiveMap";
 import { AppShell } from "../shell/AppShell";
@@ -33,6 +34,9 @@ import { ErrorState, LoadingState, PermissionDenied } from "../ui/EmptyStates";
 import { EvidenceDrawer } from "../ui/EvidenceDrawer";
 import { KpiCard } from "../ui/KpiCard";
 import { Scorecard } from "../ui/Scorecard";
+import { ExportHistory } from "../ui/ExportHistory";
+import { QualityConsole } from "../ui/QualityConsole";
+import { AdministrationPanels } from "../ui/AdministrationPanels";
 import { StatusPill } from "../ui/StatusPill";
 import { TrendChart } from "../ui/TrendChart";
 
@@ -229,8 +233,12 @@ export function DashboardView({
   const mpdsr = dashboard.module_result.mpdsr;
   const freshness = dashboard.module_result.freshness;
 
+  const spec = workspaceSpec(workspace);
+  const visible = new Set(sectionsFor(workspace));
+  const shows = (section: string) => visible.has(section as never);
+
   return (
-    <AppShell context={context} screen={screen}>
+    <AppShell context={context} screen={screen} workspace={workspace}>
       <form
         className="filter-bar"
         onSubmit={(event) => {
@@ -305,9 +313,9 @@ export function DashboardView({
       </form>
 
       <p className="workspace-kicker">
-        {workspace ? `${workspace.replaceAll("_", " ")} workspace` : `${screen.replaceAll("_", " ")} geography`}
+        <strong>{spec ? spec.label : `${screen.replaceAll("_", " ")} geography`}</strong>
         {" · "}
-        specialised composition for {dashboard.scope.level_type}
+        {spec ? spec.summary : `Composed for ${dashboard.scope.level_type} scope.`}
       </p>
       <p className="freshness">
         Source freshness: {freshness.availability.replaceAll("_", " ")}
@@ -335,7 +343,7 @@ export function DashboardView({
         </p>
       )}
 
-      {screen === "facility" ? (
+      {shows("identity") && screen === "facility" ? (
         <section className="card identity-strip">
           <p>
             <strong>{dashboard.scope.name}</strong> · {dashboard.scope.facility_level ?? dashboard.scope.level_type} ·{" "}
@@ -347,13 +355,15 @@ export function DashboardView({
         </section>
       ) : null}
 
+      {shows("kpis") ? (
       <section className="kpi-row" aria-label="Key indicators">
         {dashboard.kpis.map((measure) => (
           <KpiCard key={measure.indicator_code} measure={measure} />
         ))}
       </section>
+      ) : null}
 
-      {dashboard.module_result.continuum ? (
+      {shows("continuum") && dashboard.module_result.continuum ? (
         <section className="card" aria-label="Immunization continuum">
           <h2>Immunization continuum</h2>
           <p className="muted">{String(dashboard.module_result.continuum.note ?? "")}</p>
@@ -377,7 +387,7 @@ export function DashboardView({
           </dl>
         </section>
       ) : null}
-      {mpdsr ? (
+      {shows("mpdsr") && mpdsr ? (
         <section className="card" aria-label="MPDSR extras">
           <h2>MPDSR process extras</h2>
           <p className="muted">{mpdsr.cause_note ?? ""}</p>
@@ -410,17 +420,24 @@ export function DashboardView({
         </section>
       ) : null}
 
+      {shows("map") || shows("insights") ? (
       <section className="grid-2">
+        {shows("map") ? (
         <article className="card">
           <h2>Geographic intelligence</h2>
           <AdaptiveMap dashboard={dashboard} period={dashboard.period} comparison={comparison} />
         </article>
+        ) : null}
+        {shows("insights") ? (
         <article className="card">
           <h2>Priority and quality insights</h2>
           <AlertList insights={dashboard.insights} flags={dashboard.module_result.quality_flags} />
         </article>
+        ) : null}
       </section>
+      ) : null}
 
+      {shows("scorecard") ? (
       <section className="card">
         <div className="card-head">
           <h2>{screen === "district" ? "Facility performance scorecard" : "Scorecard"}</h2>
@@ -483,8 +500,9 @@ export function DashboardView({
           <Scorecard rows={dashboard.module_result.indicators} onOpen={setSelected} />
         )}
       </section>
+      ) : null}
 
-      {comparisonRows.length ? (
+      {shows("children") && comparisonRows.length ? (
         <section className="card">
           <div className="card-head">
             <h2>Child geography comparison</h2>
@@ -523,11 +541,15 @@ export function DashboardView({
         </section>
       ) : null}
 
+      {shows("trend") || shows("ranking") ? (
       <section className="grid-2">
+        {shows("trend") ? (
         <article className="card">
           <h2>Trend</h2>
           <TrendChart trends={dashboard.module_result.trends} indicatorCode={selectedCode} />
         </article>
+        ) : null}
+        {shows("ranking") ? (
         <article className="card">
           <h2>Selected-indicator ranking</h2>
           {dashboard.ranking.ranking_allowed ? (
@@ -542,14 +564,23 @@ export function DashboardView({
             </p>
           ) : null}
         </article>
+        ) : null}
       </section>
+      ) : null}
 
-      {screen === "facility" && dashboard.can_edit_population ? (
+      {shows("population") && screen === "facility" && dashboard.can_edit_population ? (
         <PopulationForm orgUnitId={dashboard.scope.id} year={dashboard.population.year ?? 2024} />
       ) : null}
 
-      <AskTheData dashboard={dashboard} period={dashboard.period} comparison={comparison} />
+      {shows("quality") ? <QualityConsole dashboard={dashboard} /> : null}
 
+      {shows("administration") ? <AdministrationPanels dashboard={dashboard} context={context} /> : null}
+
+      {shows("ask") ? (
+        <AskTheData dashboard={dashboard} period={dashboard.period} comparison={comparison} />
+      ) : null}
+
+      {shows("exports") ? (
       <section className="card export-surface">
         <h2>Exports</h2>
         <p className="muted">
@@ -595,6 +626,9 @@ export function DashboardView({
         </div>
         {exportMessage ? <p className="muted">{exportMessage}</p> : null}
       </section>
+      ) : null}
+
+      {shows("exportHistory") ? <ExportHistory /> : null}
 
       <EvidenceDrawer measure={selected} onClose={() => setSelected(null)} />
     </AppShell>

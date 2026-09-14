@@ -54,3 +54,12 @@ The owner-supplied HTML prototype may guide layout, density and interaction patt
 - A production dependency on Google Fonts; fonts may be hosted locally only from an approved asset.
 
 The Next.js application remains the implementation target.
+
+## Implementation status (2026-09-14)
+
+- `frontend/src/app/globals.css` carries the prototype's visual tokens only: navy scale `#061a31`–`#1a4a74`, blue scale `#12509e`–`#edf4fd`, RAG backgrounds, canvas `#f2f7fc`, 10px radius, 14px gap, 30px control and row height, 236px navy-gradient sidebar, subtle radial canvas background, sticky table headers, 430px evidence drawer, Excel/PowerPoint/report button colours. System fonts only.
+- Responsive: KPI strip 6 → 3 columns at 1320px → 2 at 760px; labelled 196px sidebar at tablet width (no icon-only collapse without icons); stacked navigation on phones; `prefers-reduced-motion` honoured; visible focus rings; `aria-current` on active navigation.
+- Workspaces are compositions of the same typed snapshot (`frontend/src/lib/workspaces.ts`): ANC and MNCH, intrapartum and newborn, immunisation (with continuum), MPDSR (process extras, counts unclassified), maps, trends, data quality (console of flags and unavailable reasons), reports and exports (job history with retry and expiry), AI insights, administration (registry status; refused for non-administrators).
+- Unavailable values show the server's reason in words (for example "Population denominator unavailable") and never zero.
+- Contract tests (`frontend/src/test/prototype-contract.test.ts`, `backend/tests/test_prototype_contract.py`) block prototype values, client-side calculations, invented EPI bands, hosted fonts and prefilled accounts.
+- Screenshots from the latest Playwright run are written to `frontend/e2e-screenshots/` (not tracked in Git).

@@ -4,24 +4,12 @@ import { useParams, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { DashboardView } from "@/components/dashboard/DashboardView";
 import { LoadingState } from "@/components/ui/EmptyStates";
-
-const MODULE_BY_SLUG: Record<string, string | undefined> = {
-  anc: "anc",
-  intrapartum: "intrapartum",
-  immunization: "immunization",
-  mpdsr: "mpdsr",
-  maps: undefined,
-  trends: undefined,
-  quality: undefined,
-  reports: undefined,
-  ai: undefined,
-  admin: undefined,
-};
+import { moduleFor } from "@/lib/workspaces";
 
 function Screen() {
   const params = useParams<{ module: string }>();
   const search = useSearchParams();
-  const programmeModule = MODULE_BY_SLUG[params.module];
+  const programmeModule = moduleFor(params.module);
   return (
     <DashboardView
       screen="national"

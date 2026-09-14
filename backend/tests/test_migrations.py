@@ -41,6 +41,14 @@ def test_alembic_head_is_corrective_revision():
     assert script.get_current_head() == HEAD_REVISION
 
 
+def test_revision_ids_fit_the_postgresql_version_column():
+    # alembic_version.version_num is VARCHAR(32) on PostgreSQL (and Neon); SQLite does not enforce
+    # the length, so an over-long revision id passes locally and fails at the production release.
+    script = ScriptDirectory.from_config(_alembic_cfg())
+    too_long = [rev.revision for rev in script.walk_revisions() if len(rev.revision) > 32]
+    assert too_long == []
+
+
 def test_historical_revisions_do_not_import_orm_models():
     root = Path(__file__).resolve().parents[1] / "alembic"
     files = [
@@ -52,7 +60,7 @@ def test_historical_revisions_do_not_import_orm_models():
         root / "versions" / "0006_corrective_snapshots.py",
         root / "versions" / "0007_amendment_corrections.py",
         root / "versions" / "0008_export_queue_durability.py",
-        root / "versions" / "0009_retention_and_artifact_storage.py",
+        root / "versions" / "0009_retention_artifacts.py",
         root / "versions" / "0010_denominator_provenance.py",
         root / "versions" / "0011_population_import_staging.py",
         root / "historical" / "phase1.py",

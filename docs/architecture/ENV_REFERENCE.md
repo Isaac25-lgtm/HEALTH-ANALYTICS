@@ -5,7 +5,11 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | Variable | Purpose |
 |---|---|
 | `APP_ENV` | `development`, `test`, `staging`, or `production` |
-| `DATABASE_URL` | SQLAlchemy URL. PostgreSQL required outside local tests. |
+| `DATABASE_URL` | SQLAlchemy URL. PostgreSQL required outside local tests; on Neon, the pooled connection string. |
+| `MIGRATION_DATABASE_URL` | Optional direct (unpooled) URL that Alembic prefers for DDL |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | Per-process pool (defaults 5/5; production rejects a total above 20) |
+| `DB_POOL_RECYCLE_SECONDS` / `DB_POOL_TIMEOUT_SECONDS` / `DB_CONNECT_TIMEOUT_SECONDS` / `DB_POOL_PRE_PING` | Connection hygiene |
+| `DB_SSLMODE` / `DB_REQUIRE_SSL` | `require` for managed PostgreSQL; `DB_REQUIRE_SSL=false` only for a private network you control |
 | `AUTH_SECRET` | JWT signing secret; at least 32 characters |
 | `AUTH_TOKEN_TTL_MINUTES` | Session cookie lifetime |
 | `AUTH_COOKIE_NAME` | HTTP-only session cookie name (`hpip_session`) |
@@ -15,11 +19,12 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | `AUTH_ISSUER` / `AUTH_AUDIENCE` | JWT `iss` / `aud` |
 | `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_SECONDS` | Login throttle |
 | `POPULATION_YEAR_MIN` / `POPULATION_YEAR_MAX` | Accepted catchment/population years |
-| `SYNC_EXECUTION` | `queue` (production) or `eager` (tests only) |
+| `SYNC_EXECUTION` | `queue` (production) or `eager` (development/test only) |
 | `SEED_DEV_DATA` | Seed synthetic users; must be false in staging/production |
 | `SEED_PASSWORD` | Password for synthetic development users |
 | `WEB_ORIGIN` | Allowed CORS origin for the frontend |
-| `DHIS2_BASE_URL` | Connector base URL. Owner-supplied text is approximately `HMIS.hhs.go.ug`. Exact host is unverified. |
+| `DHIS2_ENABLED` / `SYNC_ENABLED` | Both default false. While false, discovery and refresh commands contact nothing and readiness reports DHIS2 as `disabled`. Enabling without complete configuration is a blocking error. |
+| `DHIS2_BASE_URL` | Known host `https://hmis.health.go.ug` (D-049). Credentials, mappings and live access are not verified. |
 | `DHIS2_USERNAME` / `DHIS2_PASSWORD` | Basic-auth credentials when `DHIS2_AUTH_METHOD=basic` |
 | `DHIS2_PAT` | Personal access token when `DHIS2_AUTH_METHOD=pat` |
 | `DHIS2_AUTH_METHOD` | `basic` or `pat` |
@@ -31,10 +36,25 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | `DHIS2_MAX_RESPONSE_BYTES` | Response size bound |
 | `DHIS2_OU_MODE` | Organisation-unit mode, default `DESCENDANTS` |
 | `DHIS2_STALE_HOURS` | Freshness window used by quality rules |
-| `REDIS_URL` | Cache / broker |
-| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Required when `SYNC_EXECUTION=queue` and Celery workers are used |
+| `REDIS_URL` | Distributed rate limiting. No default; required in staging/production. |
+| `RATE_LIMIT_BACKEND` | `redis` (default) or `memory` (per-process, development/test only and only when set explicitly) |
+| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | No default; required in staging/production. `memory://` is refused outside development/test. |
+| `EXPORT_QUEUE_NAME` / `SYNC_QUEUE_NAME` / `MAINTENANCE_QUEUE_NAME` | Celery queues (`exports`, `sync`, `maintenance`); one worker consumes all three |
+| `EXPORT_EAGER` | In-request export generation; permitted only when set explicitly in development/test |
+| `EXPORT_MAX_ATTEMPTS` / `EXPORT_RETRY_BACKOFF_SECONDS` / `EXPORT_RETRY_BACKOFF_MAX_SECONDS` / `EXPORT_JOB_LEASE_SECONDS` | Bounded worker retries and stale-claim recovery |
+| `EXPORT_ARTIFACT_STORAGE` / `EXPORT_SHARED_FILESYSTEM` / `EXPORT_ARTIFACT_MAX_BYTES` | `filesystem` (shared disk) or `database` (Render); size cap |
+| `RAW_AGGREGATE_RETENTION_DAYS` / `MPDSR_EVENT_RETENTION_HOURS` / `EXPORT_FILE_RETENTION_HOURS` / `EXPORT_JOB_RETENTION_DAYS` / `CALCULATION_SNAPSHOT_RETENTION_MONTHS` / `AUDIT_LOG_RETENTION_MONTHS` | Retention windows (7 d / 24 h / 24 h / 90 d / 36 months / 24 months) |
+| `PURGE_ENABLED` / `PURGE_DRY_RUN` / `PURGE_SCHEDULE_ENABLED` / `PURGE_BATCH_SIZE` / `PURGE_MAX_BATCHES` / `PURGE_LOCK_TIMEOUT_SECONDS` | Purge controls |
+| `FORMULA_UNDATED_FALLBACK` | Whether undated legacy formula versions may be used; unset = development/test only |
+| `MPDSR_CAUSE_MIN_CELL_COUNT` | Unset keeps cause patterns withheld |
+| `HEALTHCHECK_HOST` | Host header the container healthcheck sends (one of `ALLOWED_HOSTS`) |
+| `HPIP_REDIS_TEST_URL` | Optional disposable Redis for real-Redis tests (CI) |
+| `HPIP_FAIL_ON_SKIP` | `1` makes any skipped backend test fail the run (CI) |
+| `HPIP_ADMIN_PASSWORD` | Read once by `scripts/create_initial_admin.py`; never stored |
 | `HPIP_POSTGRES_TEST_URL` | Optional SQLAlchemy URL for PostgreSQL Alembic tests |
 | `AI_PROVIDER` / `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` / `AI_ENABLED` | AI Gateway; disabled unless enabled with a key and base URL |
 | `AI_TIMEOUT_SECONDS` / `AI_MAX_TOKENS` / `AI_PROMPT_VERSION` / `AI_MAX_EVIDENCE_CHARS` / `AI_RATE_LIMIT` | Gateway bounds |
 | `EXPORT_DIR` / `EXPORT_RATE_LIMIT` | Publishing artifact directory and per-user rate limit |
-| `NEXT_PUBLIC_API_BASE_URL` | Frontend API origin, default `http://localhost:8000`; keep the hostname aligned with the frontend so cookie auth works |
+| `BACKEND_INTERNAL_URL` | Server-side proxy target for the frontend's same-origin `/api/*` path (default `http://127.0.0.1:8000`) |
+| `NEXT_PUBLIC_API_BASE_URL` | Optional; set only for a deliberate cross-origin deployment. Default is the same-origin `/api` path. |
+| `HPIP_PYTHON` / `HPIP_BROWSER_EXECUTABLE` / `HPIP_REUSE_E2E_SERVER` | Playwright: Python for the disposable API, optional local browser, opt-in server reuse |

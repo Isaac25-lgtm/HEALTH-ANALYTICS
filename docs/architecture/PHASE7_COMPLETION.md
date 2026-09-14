@@ -10,7 +10,7 @@
 - `validate_runtime_settings` rejects production placeholder secrets, SQLite, insecure cookies, eager sync, and AI-enabled-without-key.
 - SQLite backup/restore helper `backend/scripts/backup_restore.py` (refuses PostgreSQL URLs).
 - Gold-standard labelled fixture: `backend/tests/fixtures/acholi_gold_standard.json` (Appendix T-style; not production Acholi data).
-- Alembic head `0005_phase567_ai_publishing`.
+- Alembic head `0005_phase567_ai_publishing` at the time of this report. **Superseded:** the current head is `0011_population_import_staging` (see `docs/architecture/DATABASE.md`).
 - Deployment and governance documents listed in `docs/DEPLOYMENT.md`, `docs/AI_GOVERNANCE.md`, and `docs/EXPORT_CONTRACTS.md`.
 
 ## Gate (what this phase can close)
@@ -24,7 +24,7 @@ Security defaults, backup/restore evidence on SQLite, observability of ops statu
 | Backend pytest | 178 passed, 11 skipped (PostgreSQL Alembic; no disposable cluster started; port 5432 not used) |
 | Ruff | exit 0 |
 | Frontend `tsc` / `eslint` / Vitest | 0 / 0 / 9 passed |
-| `next build` | exit 0 (`.next-build`) |
+| `next build` | exit 0 (`.next-build`) — historical; the build now uses the standard `.next` directory |
 | Playwright | 3 passed |
 
 ## Gate (what remains owner sign-off)
