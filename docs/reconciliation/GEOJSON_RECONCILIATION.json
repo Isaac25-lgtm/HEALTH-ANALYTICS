@@ -1,0 +1,208 @@
+{
+  "generated_at": "2026-09-14T09:22:43.028778+00:00",
+  "effective_date_status": "effective date not yet verified",
+  "candidates": [
+    {
+      "file": "UGANDA_DISTRICT.json",
+      "role": "district_city_candidate",
+      "level": "district",
+      "expected_format": "geojson",
+      "detected_format": "geojson",
+      "declared_metadata": {},
+      "sha256": "5a6024f5438cf38bbf1ea822ed4bc1d900005288585bd55294b29d730d7027b8",
+      "size_bytes": 47405738,
+      "feature_count": 146,
+      "expected_features": 146,
+      "property_keys": {
+        "District": 146,
+        "FID": 146,
+        "RCode": 146
+      },
+      "geometry_types": {
+        "MultiPolygon": 4,
+        "Polygon": 142
+      },
+      "null_geometry": 0,
+      "empty_geometry": 0,
+      "total_positions": 489872,
+      "out_of_range_positions": 0,
+      "positions_outside_uganda": 0,
+      "large_features": [],
+      "duplicate_identifiers": {},
+      "duplicate_names": {},
+      "qualified_name_collisions": {},
+      "findings": [],
+      "crosswalk": {
+        "reference_scope": "synthetic_development_fixtures",
+        "internal_units_at_level": 3,
+        "matched_exact": 3,
+        "ambiguous": 0,
+        "production_unresolved": 143,
+        "unmatched_examples": [
+          "Abim",
+          "Adjumani",
+          "Agago",
+          "Alebtong",
+          "Amolatar",
+          "Amudat",
+          "Amuria",
+          "Amuru",
+          "Apac",
+          "Arua",
+          "Arua City",
+          "Budaka",
+          "Bududa",
+          "Bugiri",
+          "Bugweri"
+        ]
+      }
+    },
+    {
+      "file": "UGANDA_SUBCOUNTIES.json",
+      "role": "sub_county_candidate",
+      "level": "sub_county",
+      "expected_format": "geojson",
+      "detected_format": "geojson",
+      "declared_metadata": {},
+      "sha256": "49c0d09380c5d9e7db824806217f1c8a6a072d7439342609b83dfdd2d5d29936",
+      "size_bytes": 163183068,
+      "feature_count": 2190,
+      "expected_features": 2190,
+      "property_keys": {
+        "County": 2190,
+        "District": 2190,
+        "FID": 2190,
+        "FScode": 2190,
+        "OBJECTID": 2190,
+        "RCode": 2190,
+        "Shape_Area": 2190,
+        "Shape_Leng": 2190,
+        "Sub_County": 2190
+      },
+      "geometry_types": {
+        "MultiPolygon": 110,
+        "Polygon": 2080
+      },
+      "null_geometry": 0,
+      "empty_geometry": 0,
+      "total_positions": 1671234,
+      "out_of_range_positions": 0,
+      "positions_outside_uganda": 0,
+      "large_features": [],
+      "duplicate_identifiers": {
+        "OBJECTID=1240": 2
+      },
+      "duplicate_names": {
+        "ABIA": 2,
+        "ALITO": 2,
+        "AWACH": 2,
+        "BANDA": 2,
+        "BIHANGA": 2,
+        "BUFUMBO": 2,
+        "BUGAYA": 2,
+        "BUHUNGA": 2,
+        "BULONGO": 2,
+        "BUNAMBUTYE": 2,
+        "BUWUNGA": 2,
+        "BUYANGA": 2,
+        "BUYANJA": 2,
+        "CENTRAL DIVISION": 12,
+        "DDWANIRO": 2,
+        "EAST DIVISION": 2,
+        "EASTERN DIVISION": 4,
+        "KABIRA": 2,
+        "KAGULU": 2,
+        "KAKINDO TOWN COUNCIL": 2,
+        "KANARA": 2,
+        "KANYUM": 2,
+        "KASAMBYA": 2,
+        "KAYONZA": 3,
+        "KIBAALE TOWN COUNCIL": 2,
+        "KIBALE TOWN COUNCIL": 2,
+        "KIGANDO": 2,
+        "KIJONGO": 2,
+        "KINONI": 2,
+        "KINONI TOWN COUNCIL": 2,
+        "MALONGO": 2,
+        "MASABA": 2,
+        "MAYUGE TOWN COUNCIL": 2,
+        "NGOMA": 2,
+        "NKANDWA": 2,
+        "NORTH DIVISION": 5,
+        "NORTHERN DIVISION": 3,
+        "RUBAYA": 2,
+        "RUGARAMA": 2,
+        "RUTEETE": 2,
+        "SOUTH DIVISION": 6,
+        "SOUTHERN DIVISION": 2,
+        "WEST DIVISION": 3,
+        "WESTERN DIVISION": 5
+      },
+      "qualified_name_collisions": {},
+      "findings": [
+        "1 duplicated feature identifiers (OBJECTID=1240).",
+        "44 duplicated names at this level."
+      ],
+      "crosswalk": {
+        "reference_scope": "synthetic_development_fixtures",
+        "internal_units_at_level": 1,
+        "matched_exact": 0,
+        "ambiguous": 0,
+        "production_unresolved": 2190,
+        "unmatched_examples": [
+          "Abako",
+          "Abanga",
+          "Abarilela",
+          "Abeja",
+          "Aber",
+          "Abia",
+          "Abia",
+          "Abiliyep",
+          "Abim",
+          "Abim Town Council",
+          "Abindu Division",
+          "Abok",
+          "Aboke",
+          "Aboke Town Council",
+          "Abongomola"
+        ]
+      }
+    },
+    {
+      "file": "UGANDA_DISTRICTS.json",
+      "role": "comparison_only",
+      "level": "district",
+      "expected_format": "esri_json",
+      "detected_format": "esri_json",
+      "declared_metadata": {
+        "geometryType": true,
+        "spatialReference": true,
+        "displayFieldName": true
+      },
+      "sha256": "9b406b469445e7be1f512a0e6f2a0726c743dc1ce7cb7452feb7ab8ce7f9cad5",
+      "size_bytes": 19842192,
+      "feature_count": 146,
+      "expected_features": 146,
+      "property_keys": {
+        "District": 146,
+        "FID": 146,
+        "RCode": 146
+      },
+      "geometry_types": {
+        "esri_rings": 146
+      },
+      "null_geometry": 0,
+      "empty_geometry": 0,
+      "total_positions": 489872,
+      "out_of_range_positions": 0,
+      "positions_outside_uganda": 0,
+      "large_features": [],
+      "duplicate_identifiers": {},
+      "duplicate_names": {},
+      "qualified_name_collisions": {},
+      "findings": [
+        "Esri JSON comparison source. It is never treated as the canonical GeoJSON layer."
+      ]
+    }
+  ]
+}

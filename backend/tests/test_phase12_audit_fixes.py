@@ -2,6 +2,7 @@ import json
 from datetime import UTC, date, datetime
 from uuid import UUID
 
+import pytest
 from sqlalchemy import select
 
 from app.domain.enums import JobStatus
@@ -340,11 +341,16 @@ def test_geojson_import_and_adaptive_map_contract(client, session, tmp_path):
     plan = prepare_geometry_import(session, source, "district")
     assert plan.total_features == 2
     assert len(plan.records) == 2
+    # Geometry never activates on an assumed effective date.
+    with pytest.raises(AuthorizationError) as unverified:
+        apply_geometry_import(session, _user(session, "admin.user"), plan, valid_from=date(2026, 1, 1))
+    assert unverified.value.code == "boundary_effective_date_unverified"
     result = apply_geometry_import(
         session,
         _user(session, "admin.user"),
         plan,
         valid_from=date(2026, 1, 1),
+        effective_date_verified=True,  # synthetic fixture date, declared explicitly by this test
     )
     assert result["inserted"] == 2
     session.commit()

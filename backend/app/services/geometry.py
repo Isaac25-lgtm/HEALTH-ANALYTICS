@@ -299,8 +299,20 @@ def apply_geometry_import(
     *,
     valid_from: date,
     allow_unmatched: bool = False,
+    effective_date_verified: bool = False,
 ) -> dict:
+    """Activate boundary geometry.
+
+    ``valid_from`` is the date from which the geometry is authoritative. It must come from the
+    owner: the caller has to state explicitly that the boundary effective date was verified, so
+    an unverified date can never be assumed just to satisfy the column.
+    """
     require_action(session, user, ActionPermission.MANAGE_MAPPINGS)
+    if not effective_date_verified:
+        raise AuthorizationError(
+            "boundary_effective_date_unverified",
+            "The boundary effective date is not yet verified by the owner, so geometry cannot be activated.",
+        )
     if not plan.records:
         raise AuthorizationError("invalid_input", "The geometry import did not match any organisation units.")
     if plan.invalid or plan.ambiguous or plan.duplicate_org_unit_codes:

@@ -240,6 +240,10 @@ def main(argv: list[str] | None = None) -> int:
         report = reconcile_workbook(session, extract)
         payload = _payload(session, report, display_name=args.display_name)
         summary = {
+            "mode": "apply" if args.apply else ("stage" if args.stage else "dry_run"),
+            "can_apply": report.can_apply,
+        }
+        summary |= {
             key: payload[key]
             for key in (
                 "source_display_name",

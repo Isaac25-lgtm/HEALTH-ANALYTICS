@@ -33,7 +33,7 @@ def test_sensitive_event_column_comment_present():
     assert "names" in (table.c.data_values.comment or "").lower()
 
 
-HEAD_REVISION = "0008_export_queue_durability"
+HEAD_REVISION = "0011_population_import_staging"
 
 
 def test_alembic_head_is_corrective_revision():
@@ -52,6 +52,9 @@ def test_historical_revisions_do_not_import_orm_models():
         root / "versions" / "0006_corrective_snapshots.py",
         root / "versions" / "0007_amendment_corrections.py",
         root / "versions" / "0008_export_queue_durability.py",
+        root / "versions" / "0009_retention_and_artifact_storage.py",
+        root / "versions" / "0010_denominator_provenance.py",
+        root / "versions" / "0011_population_import_staging.py",
         root / "historical" / "phase1.py",
         root / "historical" / "phase2.py",
         root / "historical" / "phase12_corrections.py",
@@ -445,7 +448,8 @@ def test_upgrade_0007_to_0008_backfills_one_live_export_per_key(tmp_path, monkey
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     engine.dispose()
-    assert version == HEAD_REVISION
+    assert version == "0008_export_queue_durability"
+
     assert indexes["uq_export_jobs_active_key"]["unique"]
     assert state[legacy["newer"].hex][1] == legacy["key"]
     assert state[legacy["older"].hex][1] is None

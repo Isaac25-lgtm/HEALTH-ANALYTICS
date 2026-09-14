@@ -357,10 +357,12 @@ def test_fy_quarter_uses_configured_population_year(session):
 
     assert parse_period("FY2025/26Q3").parent_fy == "FY2025/26"
     assert parse_period("FY2025/26Q3").start == date(2026, 1, 1)
-    # The FY rule covers full financial years only; quarters need an explicit approved rule.
-    assert resolve_population_year(session, "FY2025/26Q3") is None
-    put_period_rule(session, "FY2025/26", 2025, kinds=["fy", "fy_quarter"])
+    # Owner decision D-041: a quarter inside a financial year uses that FY base year.
     assert resolve_population_year(session, "FY2025/26Q3") == 2025
+    # A financial year with no approved rule still fails closed until one is recorded.
+    assert resolve_population_year(session, "FY2032/33Q3") is None
+    put_period_rule(session, "FY2032/33", 2032, kinds=["fy", "fy_quarter"])
+    assert resolve_population_year(session, "FY2032/33Q3") == 2032
     for key, start, end in (
         ("FY2024/25Q1", date(2024, 7, 1), date(2024, 9, 30)),
         ("FY2024/25Q2", date(2024, 10, 1), date(2024, 12, 31)),

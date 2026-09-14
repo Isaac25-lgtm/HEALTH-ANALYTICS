@@ -28,6 +28,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--user", help="Username recorded as the audited importer.")
     parser.add_argument("--valid-from", type=date.fromisoformat)
     parser.add_argument("--allow-unmatched", action="store_true")
+    parser.add_argument(
+        "--effective-date-verified",
+        action="store_true",
+        help="Confirm the owner verified the boundary effective date. Required to apply.",
+    )
     return parser.parse_args()
 
 
@@ -41,6 +46,11 @@ def main() -> int:
             if args.apply:
                 if not args.user or not args.valid_from:
                     raise GeometryImportError("--apply requires --user and --valid-from.")
+                if not args.effective_date_verified:
+                    raise GeometryImportError(
+                        "--apply requires --effective-date-verified: the owner must confirm the "
+                        "boundary effective date before geometry is activated."
+                    )
                 user = session.scalar(
                     select(User).where(User.username == args.user, User.is_active.is_(True))
                 )
@@ -52,6 +62,7 @@ def main() -> int:
                     plan,
                     valid_from=args.valid_from,
                     allow_unmatched=args.allow_unmatched,
+                    effective_date_verified=args.effective_date_verified,
                 )
                 session.commit()
             print(json.dumps(output, indent=2))

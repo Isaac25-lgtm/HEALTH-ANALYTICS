@@ -17,7 +17,7 @@ from app.db.session import reset_engine
 # HPIP_POSTGRES_TEST_URL, so the suite never attempts to log in to a workstation instance.
 DEFAULT_ADMIN_URL = ""
 VERIFY_DB = "hpip_p18_alembic_verify"
-HEAD_REVISION = "0008_export_queue_durability"
+HEAD_REVISION = "0011_population_import_staging"
 
 
 def _admin_url() -> str:
@@ -553,7 +553,7 @@ def test_postgres_0007_to_0008_backfills_one_live_export_per_key(monkeypatch):
                 )
             ).scalar_one()
         engine.dispose()
-        assert version == HEAD_REVISION
+        assert version == "0008_export_queue_durability"
         assert length == 200
         assert indexes["uq_export_jobs_active_key"]["unique"]
         assert state[legacy["newer"].hex][1] == legacy["key"]
