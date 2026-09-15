@@ -1,5 +1,6 @@
 import { changeLabel, formatMeasure, interpretationLabel, resolveStatus, unavailableLabel } from "@/lib/status";
 import type { Measure } from "@/lib/types";
+import { Icon } from "./Icon";
 import { Sparkline } from "./Sparkline";
 import { StatusPill } from "./StatusPill";
 
@@ -25,6 +26,13 @@ export function KpiCard({
         <p className="kpi-value">{formatMeasure(measure.raw_value, measure.unit, measure.display_value)}</p>
         {measure.raw_value !== null ? (
           <p className="kpi-delta">
+            {measure.change?.change_kind ? (
+              <Icon
+                name={changeDirection(measure) ?? "flat"}
+                size={14}
+                className={`kpi-arrow interpretation-${measure.change?.interpretation ?? "not_interpreted"}`}
+              />
+            ) : null}
             {change}
             {interpretation ? (
               <span
@@ -52,4 +60,15 @@ export function KpiCard({
       </div>
     </article>
   );
+}
+
+/** Arrow direction follows the sign of the server's change value; its colour follows the server's
+ * interpretation, so a falling mortality rate can be an improvement. */
+function changeDirection(measure: Measure): "up" | "down" | "flat" | null {
+  const change = measure.change;
+  const value = change?.percentage_point_change ?? change?.absolute_change ?? change?.relative_percent_change;
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value > 0 ? "up" : value < 0 ? "down" : "flat";
 }

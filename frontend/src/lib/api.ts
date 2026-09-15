@@ -239,3 +239,14 @@ export async function listExportJobs(limit = 20): Promise<{ jobs: import("./type
 export async function retryExportJob(jobId: string): Promise<{ job_id: string; status: string; message: string }> {
   return api(`/exports/jobs/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
 }
+
+export type SearchResults = {
+  query: string;
+  org_units: Array<{ id: string; code: string; name: string; level_type: string }>;
+  indicators: Array<{ code: string; name: string; programme: string; module: string }>;
+};
+
+/** Authorised search. The server restricts results to the caller's geography and programmes. */
+export async function searchAuthorised(query: string, signal?: AbortSignal): Promise<SearchResults> {
+  return api<SearchResults>(`/search?q=${encodeURIComponent(query)}`, { signal });
+}

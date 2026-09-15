@@ -51,6 +51,7 @@ export function QualityFlagsPanel({
   const shown = flags.slice(current * size, current * size + size);
   return (
     <Panel
+      icon="quality"
       title={compact ? "Data quality issues" : "Data-quality console"}
       subtitle={`${flags.length} open flag${flags.length === 1 ? "" : "s"} in this run`}
       className={className}
@@ -123,6 +124,7 @@ export function UnavailableIndicatorsPanel({ dashboard, className }: { dashboard
   const [tab, setTab] = useState<"reasons" | "rule">("reasons");
   return (
     <Panel
+      icon="info"
       title="Why some indicators have no value"
       className={className}
       actions={

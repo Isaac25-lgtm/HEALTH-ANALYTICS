@@ -1,9 +1,19 @@
 import Link from "next/link";
 import type { DashboardResponse } from "@/lib/types";
+import { Icon, type IconName } from "../ui/Icon";
 import { Panel } from "./Panel";
 
 const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, blocking: 1, error: 2, medium: 3, warning: 3 };
-const SEVERITY_CUE: Record<string, string> = { critical: "!", high: "!", blocking: "!", error: "!", medium: "▲", warning: "▲" };
+const SEVERITY_ICON: Record<string, IconName> = {
+  critical: "alert",
+  high: "alert",
+  blocking: "alert",
+  error: "alert",
+  medium: "alert",
+  warning: "alert",
+  low: "info",
+  info: "info",
+};
 
 /**
  * A short, prioritised list of the server's deterministic insights. The complete list and every
@@ -30,6 +40,7 @@ export function InsightsPanel({
   const hidden = ordered.length - shown.length;
   return (
     <Panel
+      icon="ai"
       title={title}
       subtitle="Deterministic findings from this snapshot"
       className={className}
@@ -43,8 +54,8 @@ export function InsightsPanel({
         <ol className="insight-list">
           {shown.map((item, index) => (
             <li key={`${item.code}-${index}`} className={`insight insight-${item.severity}`}>
-              <span className="insight-cue" aria-hidden="true">
-                {SEVERITY_CUE[item.severity] ?? "i"}
+              <span className="insight-cue">
+                <Icon name={SEVERITY_ICON[item.severity] ?? "idea"} size={16} />
               </span>
               <div>
                 <p className="insight-title">{item.title}</p>

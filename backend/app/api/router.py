@@ -19,6 +19,7 @@ from app.api.routes import (
     populations,
     programmes,
     quality,
+    search,
     sync,
 )
 
@@ -42,3 +43,4 @@ api_router.include_router(ai.router)
 api_router.include_router(ops.router)
 api_router.include_router(mpdsr.router)
 api_router.include_router(admin.router)
+api_router.include_router(search.router)

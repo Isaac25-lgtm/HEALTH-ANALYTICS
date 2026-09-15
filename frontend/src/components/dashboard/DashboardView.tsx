@@ -209,7 +209,13 @@ export function DashboardView({
   const title = spec ? spec.label : SCREEN_TITLES[screen] ?? "Overview";
 
   return (
-    <AppShell context={context} screen={screen} workspace={workspace} subtitle={`${title} · ${current.scope.name}`}>
+    <AppShell
+      context={context}
+      screen={screen}
+      workspace={workspace}
+      subtitle={`${title} · ${current.scope.name}`}
+      alerts={{ count: current.module_result.quality_flags.length, href: hrefFor({ workspace: "quality" }) }}
+    >
       <FilterStrip
         dashboard={current}
         context={context}

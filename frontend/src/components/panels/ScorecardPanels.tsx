@@ -154,6 +154,7 @@ export function ScorecardPanel({
     title ?? (facilityView ? "Facility performance scorecard" : hasUnits ? "Unit scorecard" : "Indicator scorecard");
   return (
     <Panel
+      icon="table"
       title={heading}
       className={className}
       subtitle={`${dashboard.period} · snapshot values`}

@@ -56,6 +56,7 @@ export function AskTheData({
 
   return (
     <Panel
+      icon="ai"
       title="Ask the Data"
       subtitle="Answers from this snapshot's verified evidence only"
       className={`ask-panel ${className ?? ""}`}

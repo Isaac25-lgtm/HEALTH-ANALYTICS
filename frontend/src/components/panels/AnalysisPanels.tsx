@@ -20,6 +20,7 @@ export function MapPanel({
   const block = dashboard.map;
   return (
     <Panel
+      icon="maps"
       title="Geographic intelligence"
       subtitle={`${block.selected_indicator ?? dashboard.selected_indicator ?? "Selected indicator"} · ${dashboard.period}`}
       className={className}
@@ -44,6 +45,7 @@ export function TrendPanel({
   const selected: Measure | undefined = indicators.find((row) => row.indicator_code === code);
   return (
     <Panel
+      icon="trends"
       title={title}
       subtitle={selected?.name ?? code}
       className={className}
@@ -94,6 +96,7 @@ export function RankingPanel({ dashboard, className }: { dashboard: DashboardRes
   const notRanked = excluded.blue.length + excluded.missing.length + excluded.non_assessable.length;
   return (
     <Panel
+      icon="chart"
       title="Top and bottom performers"
       subtitle={`${ranking.indicator_code} · ${ranking.order_rule ? ORDER_RULE_LABELS[ranking.order_rule] ?? ranking.order_rule : "no approved ordering"}`}
       className={className}

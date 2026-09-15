@@ -9,7 +9,7 @@ import { Panel, PanelTabs } from "./Panel";
 export function ContinuumPanel({ dashboard, className }: { dashboard: DashboardResponse; className?: string }) {
   const continuum = dashboard.module_result.continuum;
   return (
-    <Panel title="Immunisation continuum" subtitle="Access versus completion" className={className}>
+    <Panel icon="immunization" title="Immunisation continuum" subtitle="Access versus completion" className={className}>
       {continuum ? (
         <>
           <dl className="continuum-list">
@@ -47,6 +47,7 @@ export function MpdsrCausePanel({ dashboard, className }: { dashboard: Dashboard
   const disclosure = mpdsr?.cause_disclosure;
   return (
     <Panel
+      icon="mpdsr"
       title="Cause patterns and reviews"
       subtitle={mpdsr?.cause_note ?? "Structured cause categories only"}
       className={className}
@@ -138,7 +139,12 @@ export function CatchmentPanel({ dashboard, className }: { dashboard: DashboardR
     }
   }
   return (
-    <Panel title="Catchment population" subtitle="Draft entries need approval before use" className={className}>
+    <Panel
+      icon="facility"
+      title="Catchment population"
+      subtitle="Draft entries need approval before use"
+      className={className}
+    >
       <p className="panel-copy">
         {population.status === "unavailable"
           ? `No approved population. ${population.reason ?? ""}`

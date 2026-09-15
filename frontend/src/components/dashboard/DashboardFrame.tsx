@@ -2,6 +2,8 @@
 
 import { DEFAULT_COMPARISON, MODULE_LABELS, PERIOD_OPTIONS } from "@/lib/scope";
 import type { CurrentContext, DashboardResponse, OrgUnitSummary } from "@/lib/types";
+import { Icon } from "../ui/Icon";
+import { SearchBox } from "./SearchBox";
 
 export type FilterChange = {
   orgUnitId: string;
@@ -61,11 +63,18 @@ export function FilterStrip({
       }}
     >
       <p className="filter-scope">
-        <span className="filter-key">Scope</span> <strong>{dashboard.scope.name}</strong>
-        <span className="filter-key filter-key-gap">Role</span> <strong>{roleLabel(context)}</strong>
+        <span className="filter-chip">
+          <Icon name="scope" size={18} />
+          <span className="filter-key">Scope:</span> <strong>{dashboard.scope.name}</strong>
+        </span>
+        <span className="filter-chip">
+          <Icon name="role" size={18} />
+          <span className="filter-key">Role:</span> <strong>{roleLabel(context)}</strong>
+        </span>
       </p>
-      <label>
+      <label className="filter-field">
         <span>Period</span>
+        <Icon name="calendar" size={16} className="field-icon" />
         <select name="period" defaultValue={dashboard.period} aria-label="Period">
           {PERIOD_OPTIONS.map((option) => (
             <option key={option} value={option}>
@@ -74,8 +83,9 @@ export function FilterStrip({
           ))}
         </select>
       </label>
-      <label>
+      <label className="filter-field">
         <span>Compare</span>
+        <Icon name="compare" size={16} className="field-icon" />
         <select
           name="comparison"
           defaultValue={dashboard.comparison_period ?? comparison ?? DEFAULT_COMPARISON}
@@ -88,8 +98,9 @@ export function FilterStrip({
           ))}
         </select>
       </label>
-      <label>
+      <label className="filter-field">
         <span>Geography</span>
+        <Icon name="pin" size={16} className="field-icon" />
         <select name="orgUnitId" defaultValue={dashboard.scope.id} aria-label="Geography">
           {geographyOptions.map((unit) => (
             <option key={unit.id} value={unit.id}>
@@ -98,8 +109,9 @@ export function FilterStrip({
           ))}
         </select>
       </label>
-      <label>
+      <label className="filter-field">
         <span>Programme</span>
+        <Icon name="programme" size={16} className="field-icon" />
         <select name="module" defaultValue={dashboard.module} aria-label="Programme module">
           {dashboard.available_modules.map((code) => (
             <option key={code} value={code}>
@@ -108,8 +120,9 @@ export function FilterStrip({
           ))}
         </select>
       </label>
-      <label>
+      <label className="filter-field">
         <span>Indicator</span>
+        <Icon name="indicator" size={16} className="field-icon" />
         <select name="indicator" defaultValue={selectedCode} aria-label="Selected indicator">
           {dashboard.module_result.indicators.map((row) => (
             <option key={row.indicator_code ?? row.name} value={row.indicator_code ?? ""}>
@@ -121,6 +134,7 @@ export function FilterStrip({
       <button type="submit" className="primary-button">
         Apply
       </button>
+      <SearchBox period={dashboard.period} comparison={comparison} orgUnitId={dashboard.scope.id} />
     </form>
   );
 }

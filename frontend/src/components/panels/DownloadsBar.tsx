@@ -3,6 +3,15 @@
 import { useState } from "react";
 import { downloadExportFile, requestExport, waitForExport } from "@/lib/api";
 import type { DashboardResponse } from "@/lib/types";
+import { Icon, type IconName } from "../ui/Icon";
+
+const FORMAT_ICONS: Record<string, IconName> = {
+  excel: "sheet",
+  powerpoint: "slides",
+  report: "file",
+  word: "file",
+  pdf: "file",
+};
 
 const FORMAT_HINTS: Record<string, string> = {
   excel: "Data tables",
@@ -57,16 +66,22 @@ export function DownloadsBar({
           }
         }}
       >
-        <span className="download-label">{busy === action.kind ? "Generating…" : action.label}</span>
-        <span className="download-hint" aria-hidden="true">
-          {FORMAT_HINTS[action.kind] ?? action.format}
+        <Icon name={FORMAT_ICONS[action.kind] ?? "file"} size={22} className="download-icon" />
+        <span className="download-text">
+          <span className="download-label">{busy === action.kind ? "Generating…" : action.label}</span>
+          <span className="download-hint" aria-hidden="true">
+            {FORMAT_HINTS[action.kind] ?? action.format}
+          </span>
         </span>
       </button>
     );
   });
   return (
     <section className={variant === "bar" ? "downloads-bar" : "panel downloads-panel"} aria-label="Downloads">
-      <h2 className="downloads-title">Downloads</h2>
+      <h2 className="downloads-title">
+        <Icon name="download" size={20} />
+        <span>Downloads</span>
+      </h2>
       <div className="download-buttons">{buttons}</div>
       <p className="downloads-meta">
         {message ? <span role="status">{message} · </span> : null}

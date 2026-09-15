@@ -30,6 +30,7 @@ export function ExportHistory({ className }: { className?: string }) {
 
   return (
     <Panel
+      icon="reports"
       title="Recent export jobs"
       subtitle="Your own jobs; status and expiry come from the server"
       className={className}

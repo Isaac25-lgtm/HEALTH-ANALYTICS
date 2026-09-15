@@ -207,3 +207,105 @@ test.describe("every workspace at every breakpoint keeps its panels on screen", 
     });
   }
 });
+
+test.describe("reference layout contract at 1680x945", () => {
+  test.use({ viewport: DESKTOP });
+
+  test("header, navigation, filter strip and panel placement follow the reference anatomy", async ({ page }) => {
+    await signIn(page, "national.analyst", /dashboard\/national/);
+    await expect(page.getByRole("heading", { name: "Geographic intelligence" })).toBeVisible({ timeout: 30_000 });
+
+    // Sidebar: reserved crest slot, two labelled navigation groups, an icon on every item.
+    await expect(page.getByRole("img", { name: "Reserved for the approved Ministry of Health crest" })).toBeVisible();
+    const geography = page.getByRole("navigation", { name: "Geography screens" });
+    await expect(geography.getByRole("link")).toHaveText([
+      "National",
+      "Regional",
+      "District facilities",
+      "Sub-county facilities",
+      "Facility",
+    ]);
+    const workspaces = page.getByRole("navigation", { name: "Programme workspaces" });
+    await expect(workspaces.getByRole("link")).toHaveCount(9);
+    for (const nav of [geography, workspaces]) {
+      const links = await nav.getByRole("link").count();
+      await expect(nav.locator("a svg[data-icon]")).toHaveCount(links);
+    }
+    const active = geography.locator('a[aria-current="page"]');
+    await expect(active).toHaveText("National");
+    await expect(active.locator('svg[data-icon="national"]')).toBeVisible();
+
+    // Header: title and subtitle left; alerts, profile, sign-out and tagline right.
+    const banner = page.getByRole("banner");
+    await expect(banner.getByRole("heading", { level: 1, name: "Health Performance Intelligence" })).toBeVisible();
+    await expect(banner.locator(".topbar-subtitle")).toContainText("National overview");
+    const alerts = banner.getByRole("link", { name: /Data-quality alerts: \d+ open flag/ });
+    await expect(alerts).toHaveAttribute("href", /\/workspace\/quality/);
+    await expect(banner.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expect(banner.locator(".topbar-tagline")).toBeVisible();
+    const title = await banner.getByRole("heading", { level: 1 }).boundingBox();
+    const user = await banner.locator(".topbar-user").boundingBox();
+    expect(title!.x + title!.width).toBeLessThan(user!.x);
+    expect(title!.height).toBeGreaterThanOrEqual(30);
+
+    // Filter strip: scope and role chips, five labelled selects with icons, apply, authorised search.
+    const strip = page.getByRole("form", { name: "Scope and period" });
+    await expect(strip.locator('svg[data-icon="scope"]')).toBeVisible();
+    await expect(strip.locator('svg[data-icon="role"]')).toBeVisible();
+    for (const icon of ["calendar", "compare", "pin", "programme", "indicator"]) {
+      await expect(strip.locator(`.filter-field svg[data-icon="${icon}"]`)).toBeVisible();
+    }
+    await expect(strip.getByRole("combobox", { name: "Search authorised places and indicators" })).toBeVisible();
+    const stripBox = await strip.boundingBox();
+    expect(stripBox!.height).toBeLessThanOrEqual(90);
+
+    // Panels: KPI strip above a three-panel main row, lower analytical row, downloads last.
+    const box = async (selector: string) => (await page.locator(selector).first().boundingBox())!;
+    const kpis = await box(".kpi-strip");
+    const [map, insights, scorecard] = [await box(".area-map"), await box(".area-insights"), await box(".area-scorecard")];
+    const [trend, ranking, ask] = [await box(".area-trend"), await box(".area-ranking"), await box(".area-ask")];
+    const downloads = await box(".downloads-bar");
+    expect(await page.locator(".kpi-strip .kpi-card").count()).toBe(6);
+    expect(kpis.y + kpis.height).toBeLessThanOrEqual(map.y);
+    expect(Math.abs(map.y - insights.y)).toBeLessThan(2);
+    expect(Math.abs(insights.y - scorecard.y)).toBeLessThan(2);
+    expect(map.x).toBeLessThan(insights.x);
+    expect(insights.x).toBeLessThan(scorecard.x);
+    expect(trend.y).toBeGreaterThanOrEqual(map.y + map.height);
+    expect(trend.x).toBeLessThan(ranking.x);
+    expect(ranking.x).toBeLessThan(ask.x);
+    expect(downloads.y).toBeGreaterThanOrEqual(ask.y + ask.height);
+    expect(downloads.width).toBeGreaterThan(kpis.width - 2);
+    for (const [area, icon] of [
+      [".area-map", "maps"],
+      [".area-insights", "ai"],
+      [".area-scorecard", "table"],
+      [".area-trend", "trends"],
+      [".area-ranking", "chart"],
+      [".area-ask", "ai"],
+    ] as const) {
+      await expect(page.locator(`${area} .panel-head svg[data-icon="${icon}"]`)).toBeVisible();
+    }
+    await expect(page.locator(".downloads-bar button svg[data-icon]").first()).toBeVisible();
+    await expect(page.locator(".kpi-strip .status-pill .status-dot").first()).toBeVisible();
+  });
+
+  test("header search returns only authorised places and navigates to them", async ({ page }) => {
+    await signIn(page, "national.analyst", /dashboard\/national/);
+    const search = page.getByRole("combobox", { name: "Search authorised places and indicators" });
+    await search.fill("kitg");
+    const option = page.getByRole("option", { name: /Kitgum/ });
+    await expect(option).toBeVisible({ timeout: 15_000 });
+    await search.press("Enter");
+    await page.waitForURL(/dashboard\/district.*orgUnitId=/, { timeout: 30_000 });
+
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.waitForURL(/login/);
+    await signIn(page, "pader.focal", /dashboard/);
+    const scoped = page.getByRole("combobox", { name: "Search authorised places and indicators" });
+    await scoped.fill("kitgum");
+    await expect(page.getByRole("option", { name: "No authorised matches." })).toBeVisible({ timeout: 15_000 });
+    await scoped.fill("pader hc");
+    await expect(page.getByRole("option", { name: /Pader HC III/ })).toBeVisible({ timeout: 15_000 });
+  });
+});

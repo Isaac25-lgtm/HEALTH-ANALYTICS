@@ -60,7 +60,7 @@ export function AdministrationPanels({
     },
   ];
   return (
-    <Panel title="Administration" subtitle="Registry health and pending owner decisions" className={className}>
+    <Panel icon="admin" title="Administration" subtitle="Registry health and pending owner decisions" className={className}>
       <div className="health-grid">
         {panels.map((panel) => (
           <article key={panel.title} className={`health-card health-${panel.state}`}>

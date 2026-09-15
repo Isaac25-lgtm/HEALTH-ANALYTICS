@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from "react";
+import { Icon, type IconName } from "../ui/Icon";
 
 /**
  * The shared analytical panel: a titled card whose body scrolls internally, so a long table or
@@ -13,7 +14,9 @@ export function Panel({
   bodyClassName,
   children,
   label,
+  icon,
 }: {
+  icon?: IconName;
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
@@ -32,6 +35,7 @@ export function Panel({
       aria-label={label}
     >
       <header className="panel-head">
+        {icon ? <Icon name={icon} size={22} className="panel-icon" /> : null}
         <div className="panel-titles">
           <h2 id={headingId}>{title}</h2>
           {subtitle ? <p className="panel-subtitle">{subtitle}</p> : null}

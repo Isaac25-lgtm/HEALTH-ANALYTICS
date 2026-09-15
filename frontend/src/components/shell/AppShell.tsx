@@ -7,34 +7,53 @@ import { dashboardHref, MODULE_LABELS, screenForLevel } from "@/lib/scope";
 import type { CurrentContext } from "@/lib/types";
 import { WORKSPACES } from "@/lib/workspaces";
 import { roleLabel } from "../dashboard/DashboardFrame";
+import { Icon, type IconName } from "../ui/Icon";
 
-const GEO_NAV = [
-  { screen: "national", label: "National" },
-  { screen: "regional", label: "Regional" },
-  { screen: "district", label: "District facilities" },
-  { screen: "sub_county", label: "Sub-county facilities" },
-  { screen: "facility", label: "Facility" },
+const GEO_NAV: Array<{ screen: string; label: string; icon: IconName }> = [
+  { screen: "national", label: "National", icon: "national" },
+  { screen: "regional", label: "Regional", icon: "regional" },
+  { screen: "district", label: "District facilities", icon: "district" },
+  { screen: "sub_county", label: "Sub-county facilities", icon: "sub_county" },
+  { screen: "facility", label: "Facility", icon: "facility" },
 ];
+
+const WORKSPACE_ICONS: Record<string, IconName> = {
+  anc: "anc",
+  intrapartum: "intrapartum",
+  immunization: "immunization",
+  mpdsr: "mpdsr",
+  maps: "maps",
+  trends: "trends",
+  quality: "quality",
+  reports: "reports",
+  ai: "ai",
+  admin: "admin",
+};
 
 const WORKSPACE_NAV = Object.values(WORKSPACES)
   .filter((item) => item.slug !== "admin")
-  .map((item) => ({ slug: item.slug, href: `/workspace/${item.slug}`, label: item.label }));
+  .map((item) => ({ slug: item.slug, href: `/workspace/${item.slug}`, label: item.label, icon: WORKSPACE_ICONS[item.slug] }));
+
+export type ShellAlerts = { count: number; href: string };
 
 export function AppShell({
   context,
   screen,
   workspace,
   subtitle,
+  alerts,
   children,
 }: {
   context: CurrentContext;
   screen: string;
   workspace?: string;
   subtitle?: string;
+  alerts?: ShellAlerts;
   children: React.ReactNode;
 }) {
   const router = useRouter();
   const landing = context.landing_org_unit;
+  const role = roleLabel(context);
   const navUnit = (target: string) =>
     [...context.landing_org_units, ...context.geography_scopes].find(
       (unit) => screenForLevel(unit.level_type) === target,
@@ -59,49 +78,58 @@ export function AppShell({
           </div>
           <div>
             <p className="brand-title">Ministry of Health</p>
-            <p className="brand-subtitle">Uganda · Health Performance Intelligence</p>
+            <p className="brand-subtitle">Republic of Uganda</p>
           </div>
         </div>
-        <nav aria-label="Geography screens">
-          {GEO_NAV.map((item) => (
-            <Link
-              key={item.screen}
-              className={!workspace && item.screen === screen ? "nav-item active" : "nav-item"}
-              aria-current={!workspace && item.screen === screen ? "page" : undefined}
-              href={dashboardHref({
-                screen: item.screen,
-                orgUnitId: navUnit(item.screen)?.id,
-              })}
-            >
-              {item.label}
-            </Link>
-          ))}
+        <nav aria-label="Geography screens" className="nav-group">
+          {GEO_NAV.map((item) => {
+            const current = !workspace && item.screen === screen;
+            return (
+              <Link
+                key={item.screen}
+                className={current ? "nav-item active" : "nav-item"}
+                aria-current={current ? "page" : undefined}
+                href={dashboardHref({ screen: item.screen, orgUnitId: navUnit(item.screen)?.id })}
+              >
+                <Icon name={item.icon} size={20} />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
         </nav>
-        <nav aria-label="Programme workspaces">
-          {WORKSPACE_NAV.map((item) => (
-            <Link
-              key={item.href}
-              className={workspace === item.slug ? "nav-item active" : "nav-item"}
-              aria-current={workspace === item.slug ? "page" : undefined}
-              href={item.href}
-            >
-              {item.label}
-            </Link>
-          ))}
+        <nav aria-label="Programme workspaces" className="nav-group">
+          {WORKSPACE_NAV.map((item) => {
+            const current = workspace === item.slug;
+            return (
+              <Link
+                key={item.href}
+                className={current ? "nav-item active" : "nav-item"}
+                aria-current={current ? "page" : undefined}
+                href={item.href}
+              >
+                <Icon name={item.icon} size={20} />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
           {context.actions.includes("manage_users") ? (
             <Link
               className={workspace === "admin" ? "nav-item active" : "nav-item"}
               aria-current={workspace === "admin" ? "page" : undefined}
               href="/workspace/admin"
             >
-              Administration
+              <Icon name="admin" size={20} />
+              <span>Administration</span>
             </Link>
           ) : null}
         </nav>
-        <p className="sidebar-note">
-          Authorised programmes:{" "}
-          {context.programmes.map((code) => MODULE_LABELS[code.toLowerCase()] ?? code).join(", ") || "None"}
-        </p>
+        <div className="sidebar-foot">
+          <p className="sidebar-note">
+            Authorised programmes:{" "}
+            {context.programmes.map((code) => MODULE_LABELS[code.toLowerCase()] ?? code).join(", ") || "None"}
+          </p>
+          <p className="sidebar-tagline">Health Performance Intelligence</p>
+        </div>
       </aside>
       <div className="workspace">
         <header className="topbar">
@@ -110,16 +138,32 @@ export function AppShell({
             <p className="topbar-subtitle">{subtitle ?? (landing ? landing.name : "No landing geography")}</p>
           </div>
           <div className="topbar-user">
+            {alerts ? (
+              <Link
+                href={alerts.href}
+                className="topbar-alerts"
+                aria-label={`Data-quality alerts: ${alerts.count} open flag${alerts.count === 1 ? "" : "s"}`}
+              >
+                <Icon name="bell" size={22} />
+                {alerts.count ? <span className="alert-badge">{alerts.count > 99 ? "99+" : alerts.count}</span> : null}
+              </Link>
+            ) : null}
             <span className="user-avatar" aria-hidden="true">
               {(context.display_name || context.username).slice(0, 1).toUpperCase()}
             </span>
             <span className="user-names">
               <strong>{context.display_name}</strong>
-              {roleLabel(context) !== context.display_name ? <span>{roleLabel(context)}</span> : null}
+              {role !== context.display_name ? <span>{role}</span> : null}
             </span>
-            <button type="button" className="ghost-button" onClick={onLogout}>
-              Sign out
+            <button type="button" className="ghost-button signout-button" onClick={onLogout}>
+              <Icon name="logout" size={16} />
+              <span>Sign out</span>
             </button>
+            <p className="topbar-tagline" aria-label="Platform note">
+              Deterministic, permission-scoped
+              <br />
+              analytics from committed snapshots
+            </p>
           </div>
         </header>
         <main id="main-content" className="workspace-main">
