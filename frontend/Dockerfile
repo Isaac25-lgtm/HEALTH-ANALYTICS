@@ -9,8 +9,10 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
-# Server-side proxy target; never exposed to the browser.
-ENV BACKEND_INTERNAL_URL=http://api:8000
+# BACKEND_INTERNAL_URL is read by the /api route at request time and must be provided by the
+# runtime environment (Compose: http://api:8000; Render: the private service hostport). It is
+# intentionally not set here and not needed at build time, so the image is environment-neutral
+# and an unset value fails closed with a generic 500 instead of silently using a default.
 COPY --from=build /app ./
 EXPOSE 3000
 CMD ["npm", "run", "start"]

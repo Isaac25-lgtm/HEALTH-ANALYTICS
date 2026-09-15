@@ -10,14 +10,13 @@ import type {
 export type { CurrentContext, OrgUnitSummary };
 
 /**
- * Same-origin by default: the browser calls `/api/...` on the frontend host and Next.js
- * forwards it server-side to the backend (see next.config.ts). Session and CSRF cookies
+ * Always same-origin: the browser calls `/api/...` on the frontend host and the server-side
+ * route `src/app/api/[...path]/route.ts` forwards it to the backend. Session and CSRF cookies
  * therefore belong to the origin the page was served from, which is what makes cookie-only
- * authentication work when the API runs on a different Render hostname.
- *
- * Set NEXT_PUBLIC_API_BASE_URL only for a deliberate cross-origin setup.
+ * authentication work when the API runs on a private Render service. No backend address is
+ * ever compiled into client JavaScript.
  */
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
+const API_BASE = "/api";
 const CSRF_COOKIE = "hpip_csrf";
 
 function readCookie(name: string): string | null {

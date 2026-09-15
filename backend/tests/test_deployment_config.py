@@ -122,13 +122,19 @@ def test_browser_never_needs_the_backend_hostname():
     assert "args" not in web.get("build", {}), "no API origin is baked into the image"
     assert web["environment"]["BACKEND_INTERNAL_URL"] == "http://api:8000"
     assert set(web["networks"]) == {"frontend", "backend"}
+    # The proxy is a runtime route handler: no build-time rewrite can capture a backend address.
     next_config = (ROOT / "frontend" / "next.config.ts").read_text(encoding="utf-8")
-    assert "BACKEND_INTERNAL_URL" in next_config
-    assert "/api/:path*" in next_config
+    assert "async rewrites(" not in next_config
+    route = (ROOT / "frontend" / "src" / "app" / "api" / "[...path]" / "route.ts").read_text(encoding="utf-8")
+    assert "proxyRequest" in route and 'dynamic = "force-dynamic"' in route
+    proxy = (ROOT / "frontend" / "src" / "lib" / "server" / "proxy.ts").read_text(encoding="utf-8")
+    assert "BACKEND_INTERNAL_URL" in proxy and "getSetCookie" in proxy
     api_client = (ROOT / "frontend" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
-    assert 'NEXT_PUBLIC_API_BASE_URL ?? "/api"' in api_client
+    assert 'const API_BASE = "/api";' in api_client
+    assert "NEXT_PUBLIC_API_BASE_URL" not in api_client
     dockerfile = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
     assert "ARG NEXT_PUBLIC_API_BASE_URL" not in dockerfile
+    assert "ENV BACKEND_INTERNAL_URL" not in dockerfile, "the proxy target is runtime-only, with no silent default"
 
 
 def test_compose_configures_a_small_connection_budget_and_private_network_tls_choice():
@@ -186,6 +192,42 @@ def test_backend_image_installs_worker_dependencies_and_runs_unprivileged():
 # ---------------------------------------------------------------------------
 
 RENDER = ROOT / "render.yaml"
+BACKEND_SERVICES = ("hpip-api", "hpip-worker", "hpip-purge")
+SECRET_KEYS = {"DATABASE_URL", "MIGRATION_DATABASE_URL", "AUTH_SECRET", "SEED_PASSWORD"}
+DEPLOYMENT_SPECIFIC = {"WEB_ORIGIN", "ALLOWED_ORIGINS", "ALLOWED_HOSTS"}
+# Every setting a backend process needs in production, whatever its role.
+REQUIRED_BACKEND_SETTINGS = {
+    "APP_ENV",
+    "DATABASE_URL",
+    "DB_SSLMODE",
+    "DB_REQUIRE_SSL",
+    "AUTH_SECRET",
+    "SEED_PASSWORD",
+    "SEED_DEV_DATA",
+    "AUTH_COOKIE_SECURE",
+    "WEB_ORIGIN",
+    "ALLOWED_ORIGINS",
+    "ALLOWED_HOSTS",
+    "REDIS_URL",
+    "CELERY_BROKER_URL",
+    "CELERY_RESULT_BACKEND",
+    "RATE_LIMIT_BACKEND",
+    "SYNC_EXECUTION",
+    "EXPORT_EAGER",
+    "EXPORT_ARTIFACT_STORAGE",
+    "EXPORT_SHARED_FILESYSTEM",
+    "RAW_AGGREGATE_RETENTION_DAYS",
+    "MPDSR_EVENT_RETENTION_HOURS",
+    "EXPORT_FILE_RETENTION_HOURS",
+    "EXPORT_JOB_RETENTION_DAYS",
+    "CALCULATION_SNAPSHOT_RETENTION_MONTHS",
+    "AUDIT_LOG_RETENTION_MONTHS",
+    "OPERATIONAL_RECORD_RETENTION_DAYS",
+    "PURGE_ENABLED",
+    "DHIS2_ENABLED",
+    "SYNC_ENABLED",
+    "AI_ENABLED",
+}
 
 
 def _render() -> dict:
@@ -196,83 +238,179 @@ def _service(name: str) -> dict:
     return next(item for item in _render()["services"] if item["name"] == name)
 
 
-def test_render_blueprint_is_a_small_one_worker_topology():
+def _groups() -> dict[str, list[dict]]:
+    return {group["name"]: group["envVars"] for group in _render().get("envVarGroups", [])}
+
+
+def _effective(service: dict) -> dict[str, dict]:
+    """Every variable a service receives: its groups first, then its own declarations."""
+    variables: dict[str, dict] = {}
+    for item in service.get("envVars", []):
+        if "fromGroup" in item:
+            for grouped in _groups()[item["fromGroup"]]:
+                variables[grouped["key"]] = grouped
+    for item in service.get("envVars", []):
+        if "key" in item:
+            variables[item["key"]] = item
+    return variables
+
+
+def test_render_blueprint_is_a_small_one_worker_topology_with_a_private_api():
     blueprint = _render()
     names = {item["name"]: item["type"] for item in blueprint["services"]}
     assert names == {
-        "hpip-redis": "redis",
-        "hpip-api": "web",
+        "hpip-redis": "keyvalue",
+        "hpip-api": "pserv",
         "hpip-web": "web",
         "hpip-worker": "worker",
         "hpip-purge": "cron",
-        "hpip-dhis2-refresh": "cron",
     }
-    # Neon is external: no Render PostgreSQL is provisioned.
+    # Neon is external: no Render PostgreSQL. The inert DHIS2 refresh is not provisioned for UAT.
     assert blueprint.get("databases") == []
+    assert "hpip-dhis2-refresh" not in names
     workers = [item for item in blueprint["services"] if item["type"] == "worker"]
     assert len(workers) == 1
     command = workers[0]["dockerCommand"]
     for queue in ("exports", "sync", "maintenance"):
         assert queue in command
     assert "celery" in command and "worker" in command
+    # Only the web service is public.
+    assert [item["name"] for item in blueprint["services"] if item["type"] == "web"] == ["hpip-web"]
+
+
+def test_render_references_resolve_to_defined_groups_services_and_keys():
+    blueprint = _render()
+    services = {item["name"]: item for item in blueprint["services"]}
+    groups = _groups()
+    for service in blueprint["services"]:
+        for item in service.get("envVars", []):
+            if "fromGroup" in item:
+                assert item["fromGroup"] in groups, f"{service['name']} uses undefined group {item['fromGroup']}"
+                continue
+            source = item.get("fromService")
+            if not source:
+                continue
+            target = services.get(source["name"])
+            assert target is not None, f"{service['name']}.{item['key']} references a missing service"
+            assert target["type"] == source["type"], f"{service['name']}.{item['key']} has the wrong service type"
+            if "envVarKey" in source:
+                assert source["envVarKey"] in {
+                    entry["key"] for entry in target.get("envVars", []) if "key" in entry
+                }, f"{service['name']}.{item['key']} copies an undeclared key"
+            else:
+                assert source["property"] in {"host", "port", "hostport", "connectionString"}
+
+
+def test_render_group_holds_no_secrets_and_no_sync_false():
+    for name, variables in _groups().items():
+        for item in variables:
+            assert "sync" not in item, f"{name}.{item['key']}: Render groups cannot prompt for values"
+            assert item["key"] not in SECRET_KEYS | DEPLOYMENT_SPECIFIC
+            assert "generateValue" not in item
 
 
 def test_render_contains_no_secret_values():
     text = RENDER.read_text(encoding="utf-8")
-    for forbidden in ("password=", "postgres://", "postgresql://", "redis://:", "sk-", "change-me"):
+    for forbidden in ("password=", "postgres://", "postgresql://h", "redis://:", "sk-", "change-me"):
         assert forbidden not in text.lower()
-    for service in _render()["services"]:
-        for variable in service.get("envVars", []):
-            if variable.get("key") in {
-                "DATABASE_URL",
-                "MIGRATION_DATABASE_URL",
-                "DHIS2_USERNAME",
-                "DHIS2_PASSWORD",
-                "DHIS2_PAT",
-                "WEB_ORIGIN",
-                "ALLOWED_ORIGINS",
-                "ALLOWED_HOSTS",
-            }:
-                assert variable.get("sync") is False, variable["key"]
-                assert "value" not in variable, variable["key"]
+    api = {item["key"]: item for item in _service("hpip-api")["envVars"] if "key" in item}
+    for key in ("DATABASE_URL", "MIGRATION_DATABASE_URL", *DEPLOYMENT_SPECIFIC):
+        assert api[key].get("sync") is False and "value" not in api[key], key
+    for key in ("AUTH_SECRET", "SEED_PASSWORD"):
+        assert api[key].get("generateValue") is True, key
 
 
-def test_render_api_is_configured_for_neon_and_database_artifacts():
-    values = {item["key"]: item for item in _service("hpip-api")["envVars"]}
-    assert values["APP_ENV"]["value"] == "production"
+def test_render_every_backend_process_receives_every_required_setting():
+    for name in BACKEND_SERVICES:
+        missing = REQUIRED_BACKEND_SETTINGS - set(_effective(_service(name)))
+        assert missing == set(), f"{name} is missing {sorted(missing)}"
+
+
+def test_render_secrets_are_declared_once_and_copied_identically():
+    for name in ("hpip-worker", "hpip-purge"):
+        variables = _effective(_service(name))
+        for key in ("DATABASE_URL", "AUTH_SECRET", "SEED_PASSWORD", *DEPLOYMENT_SPECIFIC):
+            source = variables[key].get("fromService")
+            assert source == {"type": "pserv", "name": "hpip-api", "envVarKey": key}, (name, key)
+            assert "value" not in variables[key] and "sync" not in variables[key]
+        for key in ("REDIS_URL", "CELERY_BROKER_URL", "CELERY_RESULT_BACKEND"):
+            assert variables[key]["fromService"] == {
+                "type": "keyvalue",
+                "name": "hpip-redis",
+                "property": "connectionString",
+            }
+
+
+def test_render_keys_are_real_settings():
+    fields = set(Settings.model_fields)
+    for name in BACKEND_SERVICES:
+        unknown = {key for key in _effective(_service(name)) if key.lower() not in fields}
+        assert unknown == set(), f"{name} sets unknown settings {sorted(unknown)}"
+
+
+@pytest.mark.parametrize("name", BACKEND_SERVICES)
+def test_render_backend_environment_passes_production_validation(name):
+    """Resolve the blueprint as Render would, with owner-supplied stand-ins for the prompted values."""
+    stand_ins = {
+        "DATABASE_URL": "postgresql://hpip_app:owner-supplied@ep-example-pooler.neon.test/hpip?sslmode=require",
+        "MIGRATION_DATABASE_URL": "postgresql://hpip_app:owner-supplied@ep-example.neon.test/hpip?sslmode=require",
+        "AUTH_SECRET": "render-generated-auth-secret-with-plenty-of-entropy",
+        "SEED_PASSWORD": "render-generated-unused-seed-password",
+        "WEB_ORIGIN": "https://hpip-web.example.test",
+        "ALLOWED_ORIGINS": "https://hpip-web.example.test",
+        "ALLOWED_HOSTS": "hpip-api",
+        "connectionString": "redis://red-example:6379",
+    }
+    environment: dict[str, str] = {}
+    for key, item in _effective(_service(name)).items():
+        if "value" in item:
+            environment[key] = str(item["value"])
+        elif "fromService" in item:
+            source = item["fromService"]
+            environment[key] = stand_ins[source.get("envVarKey") or source["property"]]
+        else:
+            environment[key] = stand_ins[key]
+    settings = Settings(_env_file=None, **{key.lower(): value for key, value in environment.items()})
+    assert validate_runtime_settings(settings) == []
+
+
+def test_render_api_runs_migrations_then_the_reference_bootstrap():
+    api = _service("hpip-api")
+    assert api["preDeployCommand"] == "alembic upgrade head && python scripts/bootstrap_reference_data.py"
+    assert "healthCheckPath" not in api  # private services have no public health check path
+    values = _effective(api)
     assert values["DB_SSLMODE"]["value"] == "require"
-    assert values["DB_REQUIRE_SSL"]["value"] == "true"
     assert int(values["DB_POOL_SIZE"]["value"]) + int(values["DB_MAX_OVERFLOW"]["value"]) <= 20
-    # Render services have separate disks, so artifacts must not rely on a shared filesystem.
     assert values["EXPORT_ARTIFACT_STORAGE"]["value"] == "database"
     assert values["EXPORT_SHARED_FILESYSTEM"]["value"] == "false"
-    assert values["EXPORT_EAGER"]["value"] == "false"
-    assert values["RATE_LIMIT_BACKEND"]["value"] == "redis"
-    assert _service("hpip-api")["preDeployCommand"] == "alembic upgrade head"
-    assert _service("hpip-api")["healthCheckPath"] == "/health"
 
 
 def test_render_keeps_dhis2_and_ai_switched_off():
-    values = {item["key"]: item for item in _service("hpip-api")["envVars"]}
+    values = _effective(_service("hpip-api"))
     assert values["DHIS2_ENABLED"]["value"] == "false"
+    assert values["SYNC_ENABLED"]["value"] == "false"
     assert values["AI_ENABLED"]["value"] == "false"
     assert values["DHIS2_BASE_URL"]["value"] == "https://hmis.health.go.ug"
-    refresh = _service("hpip-dhis2-refresh")
-    assert refresh["schedule"] == "0 */6 * * *"
-    assert "dhis2_refresh.py" in refresh["dockerCommand"]
+    for key in ("DHIS2_USERNAME", "DHIS2_PASSWORD", "DHIS2_PAT"):
+        assert key not in values
 
 
-def test_render_purge_job_uses_the_same_purge_service():
+def test_render_purge_job_uses_the_same_purge_service_and_retries():
     purge = _service("hpip-purge")
     assert purge["type"] == "cron"
-    assert "scripts/purge_expired.py" in purge["dockerCommand"]
+    command = purge["dockerCommand"]
+    assert "scripts/purge_expired.py" in command
+    assert "--max-attempts 3" in command and "--source scheduler" in command
     assert purge["schedule"]
 
 
-def test_render_web_service_proxies_and_never_publishes_the_api_host():
+def test_render_web_service_proxies_to_the_private_api_at_runtime():
     web = _service("hpip-web")
     values = {item["key"]: item for item in web["envVars"]}
-    assert "BACKEND_INTERNAL_URL" in values
-    assert values["BACKEND_INTERNAL_URL"]["fromService"]["name"] == "hpip-api"
+    assert values["BACKEND_INTERNAL_URL"]["fromService"] == {
+        "type": "pserv",
+        "name": "hpip-api",
+        "property": "hostport",
+    }
     assert "NEXT_PUBLIC_API_BASE_URL" not in values
     assert web["healthCheckPath"] == "/login"

@@ -1,48 +1,39 @@
-# Render blueprint for the pre-DHIS2 UAT deployment (~100 light users).
+# Render Blueprint for the pre-DHIS2 UAT deployment (~100 light users).
+#
+# PREPARED, NOT DEPLOYED, NOT VALIDATED BY RENDER. It has not been run through Render's
+# Blueprint validator or CLI (no Render account access was authorised). Check the current
+# Blueprint specification for every field before first use; see docs/DEPLOYMENT.md.
 #
 # Topology, deliberately small:
-#   web        Next.js frontend; proxies /api to the backend, so cookies stay same-origin
-#   api        FastAPI backend
-#   worker     one Celery worker consuming exports, sync and maintenance
-#   redis      Key Value instance for the broker, results and distributed rate limiting
-#   purge      scheduled retention job, running the same purge service as the Celery task
-#   sync       scheduled DHIS2 refresh, PREPARED BUT DISABLED (see DHIS2_ENABLED below)
+#   hpip-web     public web service (Next.js). The browser only calls /api on this origin; the
+#                /api route forwards server-side to the private API, so cookies stay same-origin.
+#   hpip-api     PRIVATE service (FastAPI). No public URL; reachable only on the private network.
+#   hpip-worker  one Celery worker consuming exports, sync and maintenance.
+#   hpip-redis   Key Value instance: broker, results and distributed rate limiting.
+#   hpip-purge   daily retention job, the same purge service as the Celery maintenance task.
 #
-# PostgreSQL is Neon (external): set DATABASE_URL to the pooled connection string and, if
-# migrations need a direct connection, MIGRATION_DATABASE_URL. No Render PostgreSQL is
-# provisioned here.
+# Not included in the initial UAT topology: a scheduled DHIS2 refresh. DHIS2 is not authorised
+# and the command could do nothing; docs/DEPLOYMENT.md shows how to add it later.
 #
-# No secret values belong in this file. Every secret is declared `sync: false`, which makes
-# Render prompt for it once and keeps it out of the repository.
+# PostgreSQL is Neon (external). No Render PostgreSQL is provisioned.
 #
-# Before relying on plan names, instance types or cron behaviour, check Render's current
-# documentation: the values below are the intended shape, not a guarantee of provider limits.
+# Configuration pattern (Render does not allow `sync: false` inside a Blueprint environment group):
+#   - hpip-shared-config  Blueprint-defined group with NON-SECRET shared settings only.
+#   - Secrets and deployment-specific values are declared once, on hpip-api, as `sync: false`
+#     (entered by the operator) or `generateValue: true`.
+#   - hpip-worker and hpip-purge copy those exact values with `fromService ... envVarKey`, so
+#     every backend process receives identical secrets without retyping them.
 
 databases: []
 
-services:
-  - type: redis
-    name: hpip-redis
-    plan: starter
-    ipAllowList: []          # reachable only from services in this blueprint
-    maxmemoryPolicy: noeviction  # a broker must not silently drop queued jobs
-
-  - type: web
-    name: hpip-api
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    plan: starter
-    healthCheckPath: /health
-    # Migrations run before the new code serves traffic.
-    preDeployCommand: alembic upgrade head
+envVarGroups:
+  - name: hpip-shared-config
     envVars:
       - key: APP_ENV
         value: production
-      - key: DATABASE_URL          # Neon pooled connection string
-        sync: false
-      - key: MIGRATION_DATABASE_URL  # optional Neon direct connection for DDL
-        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      # Neon: TLS required; small pools (API + worker stay within a small connection budget).
       - key: DB_SSLMODE
         value: require
       - key: DB_REQUIRE_SSL
@@ -51,51 +42,24 @@ services:
         value: "5"
       - key: DB_MAX_OVERFLOW
         value: "5"
-      - key: AUTH_SECRET
-        generateValue: true
       - key: AUTH_COOKIE_SECURE
         value: "true"
       - key: SEED_DEV_DATA
         value: "false"
-      - key: SEED_PASSWORD
-        generateValue: true
-      - key: WEB_ORIGIN
-        sync: false            # https URL of the hpip-web service
-      - key: ALLOWED_ORIGINS
-        sync: false
-      - key: ALLOWED_HOSTS
-        sync: false            # include the API host and the internal hostname
-      - key: HEALTHCHECK_HOST
-        value: localhost
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: hpip-redis
-          property: connectionString
-      - key: CELERY_BROKER_URL
-        fromService:
-          type: redis
-          name: hpip-redis
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          type: redis
-          name: hpip-redis
-          property: connectionString
       - key: RATE_LIMIT_BACKEND
         value: redis
       - key: SYNC_EXECUTION
         value: queue
       - key: EXPORT_EAGER
         value: "false"
-      # Render services do not share a disk, so export bytes live in the database and
-      # expire with the 24-hour retention policy.
+      # Render services do not share a disk: export bytes live in the database and expire.
       - key: EXPORT_ARTIFACT_STORAGE
         value: database
       - key: EXPORT_SHARED_FILESYSTEM
         value: "false"
       - key: EXPORT_ARTIFACT_MAX_BYTES
         value: "26214400"
+      # Retention (owner decision D-043) and the operational-record engineering default.
       - key: RAW_AGGREGATE_RETENTION_DAYS
         value: "7"
       - key: MPDSR_EVENT_RETENTION_HOURS
@@ -108,25 +72,69 @@ services:
         value: "36"
       - key: AUDIT_LOG_RETENTION_MONTHS
         value: "24"
+      - key: OPERATIONAL_RECORD_RETENTION_DAYS
+        value: "90"
       - key: PURGE_ENABLED
         value: "true"
-      # DHIS2 is known but not connected: no credentials, no verified mappings, no sync.
+      - key: PURGE_DRY_RUN
+        value: "false"
+      # DHIS2 host is known (D-049) but not connected: no credentials, mappings or sync.
       - key: DHIS2_ENABLED
+        value: "false"
+      - key: SYNC_ENABLED
         value: "false"
       - key: DHIS2_BASE_URL
         value: https://hmis.health.go.ug
-      - key: DHIS2_AUTH_METHOD
-        value: basic
-      - key: DHIS2_USERNAME
-        sync: false
-      - key: DHIS2_PASSWORD
-        sync: false
-      - key: DHIS2_PAT
-        sync: false
       - key: AI_ENABLED
         value: "false"
-      - key: LOG_LEVEL
-        value: INFO
+
+services:
+  - type: keyvalue
+    name: hpip-redis
+    plan: starter
+    ipAllowList: []              # no external access; reachable from services in this workspace
+    maxmemoryPolicy: noeviction  # a broker must not silently drop queued jobs
+
+  - type: pserv
+    name: hpip-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    # Schema first, then the approved reference configuration, before new code takes traffic.
+    # The first administrator is created once, by hand, afterwards (docs/DEPLOYMENT.md).
+    preDeployCommand: alembic upgrade head && python scripts/bootstrap_reference_data.py
+    envVars:
+      - fromGroup: hpip-shared-config
+      - key: DATABASE_URL            # Neon pooled connection string (postgresql://... accepted)
+        sync: false
+      - key: MIGRATION_DATABASE_URL  # Neon direct connection string, used by the pre-deploy command
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: SEED_PASSWORD           # never used in production; must not be the development default
+        generateValue: true
+      - key: WEB_ORIGIN              # https URL of hpip-web
+        sync: false
+      - key: ALLOWED_ORIGINS         # the same https URL of hpip-web
+        sync: false
+      - key: ALLOWED_HOSTS           # hpip-api's private hostname (the proxy's Host header)
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hpip-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: hpip-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: hpip-redis
+          property: connectionString
 
   - type: worker
     name: hpip-worker
@@ -140,7 +148,25 @@ services:
       --queues=exports,sync,maintenance --concurrency=2 --loglevel=INFO
       --without-gossip --without-mingle
     envVars:
-      - fromGroup: hpip-shared   # same values as hpip-api; see docs/DEPLOYMENT.md
+      - fromGroup: hpip-shared-config
+      - key: DATABASE_URL
+        fromService: {type: pserv, name: hpip-api, envVarKey: DATABASE_URL}
+      - key: AUTH_SECRET
+        fromService: {type: pserv, name: hpip-api, envVarKey: AUTH_SECRET}
+      - key: SEED_PASSWORD
+        fromService: {type: pserv, name: hpip-api, envVarKey: SEED_PASSWORD}
+      - key: WEB_ORIGIN
+        fromService: {type: pserv, name: hpip-api, envVarKey: WEB_ORIGIN}
+      - key: ALLOWED_ORIGINS
+        fromService: {type: pserv, name: hpip-api, envVarKey: ALLOWED_ORIGINS}
+      - key: ALLOWED_HOSTS
+        fromService: {type: pserv, name: hpip-api, envVarKey: ALLOWED_HOSTS}
+      - key: REDIS_URL
+        fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
+      - key: CELERY_BROKER_URL
+        fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
+      - key: CELERY_RESULT_BACKEND
+        fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
 
   - type: web
     name: hpip-web
@@ -150,11 +176,11 @@ services:
     plan: starter
     healthCheckPath: /login
     envVars:
-      # Server-side proxy target. The browser only ever calls /api on this service, so the
-      # session and CSRF cookies belong to this origin.
+      # Read at request time by src/app/api/[...path]/route.ts. hostport is a bare host:port;
+      # the proxy normalises it to http://host:port. Not needed at build time.
       - key: BACKEND_INTERNAL_URL
         fromService:
-          type: web
+          type: pserv
           name: hpip-api
           property: hostport
       - key: NODE_ENV
@@ -166,22 +192,27 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: starter
-    # Daily retention pass. Calls the same purge service as the Celery maintenance task.
+    # Daily retention pass through the shared purge service. A failed policy is retried within
+    # the run and a remaining failure exits non-zero, so Render records the run as failed.
     schedule: "30 1 * * *"
-    dockerCommand: python scripts/purge_expired.py --source scheduler
+    dockerCommand: python scripts/purge_expired.py --source scheduler --max-attempts 3 --retry-delay-seconds 120
     envVars:
-      - fromGroup: hpip-shared
-
-  - type: cron
-    name: hpip-dhis2-refresh
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    plan: starter
-    # PREPARED BUT INERT. Six-hourly refresh of recent periods, per the owner decision.
-    # It cannot do anything until DHIS2_ENABLED=true, credentials exist and mappings are
-    # verified: the command exits without contacting DHIS2 while the feature is disabled.
-    schedule: "0 */6 * * *"
-    dockerCommand: python scripts/dhis2_refresh.py --scheduled
-    envVars:
-      - fromGroup: hpip-shared
+      - fromGroup: hpip-shared-config
+      - key: DATABASE_URL
+        fromService: {type: pserv, name: hpip-api, envVarKey: DATABASE_URL}
+      - key: AUTH_SECRET
+        fromService: {type: pserv, name: hpip-api, envVarKey: AUTH_SECRET}
+      - key: SEED_PASSWORD
+        fromService: {type: pserv, name: hpip-api, envVarKey: SEED_PASSWORD}
+      - key: WEB_ORIGIN
+        fromService: {type: pserv, name: hpip-api, envVarKey: WEB_ORIGIN}
+      - key: ALLOWED_ORIGINS
+        fromService: {type: pserv, name: hpip-api, envVarKey: ALLOWED_ORIGINS}
+      - key: ALLOWED_HOSTS
+        fromService: {type: pserv, name: hpip-api, envVarKey: ALLOWED_HOSTS}
+      - key: REDIS_URL
+        fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
+      - key: CELERY_BROKER_URL
+        fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
+      - key: CELERY_RESULT_BACKEND
+        fromService: {type: keyvalue, name: hpip-redis, property: connectionString}

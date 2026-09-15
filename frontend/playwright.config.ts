@@ -28,14 +28,15 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      // Same-origin proxy, exactly as deployed: the browser calls /api on port 3000 and
-      // Next forwards it to the disposable API. No API origin is baked into the bundle.
-      command: "npx next build && npx next start --port 3000",
+      // Same-origin proxy, exactly as deployed: a production build made without any backend
+      // address, then `next start` with the backend given only at runtime in Render's bare
+      // host:port form. The browser calls /api on port 3000.
+      command: "node scripts/e2e-web.mjs",
       url: "http://localhost:3000",
       reuseExistingServer,
       timeout: 240_000,
       env: {
-        BACKEND_INTERNAL_URL: "http://127.0.0.1:8010",
+        E2E_BACKEND_HOSTPORT: "127.0.0.1:8010",
       },
     },
   ],
