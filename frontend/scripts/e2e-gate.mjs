@@ -218,7 +218,12 @@ if (!existsSync(report) || statSync(report).mtimeMs <= reportMtimeBefore) {
 }
 
 const status = spawnSync("git", ["status", "--short", "--untracked-files=all"], { cwd: repo, encoding: "utf8" });
-summary.git_status_short = status.stdout.trim().split("\n").filter(Boolean);
+if (status.status !== 0) failures.push("git status could not be read");
+// Keep the leading status column: " M path" and "M  path" differ, and the path starts at column 3.
+summary.git_status_short = status.stdout
+  .split(/\r?\n/)
+  .map((line) => line.trimEnd())
+  .filter(Boolean);
 // An explicit evidence refresh may change tracked screenshots and nothing else.
 const evidenceRefresh = process.env.UPDATE_VISUAL_EVIDENCE === "1";
 const unexpectedChanges = summary.git_status_short.filter(
