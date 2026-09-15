@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import { downloadExportFile, listExportJobs, retryExportJob } from "@/lib/api";
 import type { ExportJobSummary } from "@/lib/types";
+import { Panel } from "../panels/Panel";
 
 /**
  * The caller's own export jobs. Every field shown here comes from the server: status,
  * retryability and expiry are decided there, not inferred in the browser.
  */
-export function ExportHistory() {
+export function ExportHistory({ className }: { className?: string }) {
   const [jobs, setJobs] = useState<ExportJobSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -28,13 +29,16 @@ export function ExportHistory() {
   }, []);
 
   return (
-    <section className="card" aria-label="Export job history">
-      <div className="card-head">
-        <h2>Recent export jobs</h2>
+    <Panel
+      title="Recent export jobs"
+      subtitle="Your own jobs; status and expiry come from the server"
+      className={className}
+      actions={
         <button type="button" className="link-button" onClick={() => void refresh()}>
           Refresh
         </button>
-      </div>
+      }
+    >
       {error ? <p className="banner-info">{error}</p> : null}
       {jobs === null ? (
         <p className="muted">Loading job history…</p>
@@ -122,10 +126,10 @@ export function ExportHistory() {
           </table>
         </div>
       )}
-      <p className="muted">
+      <p className="panel-note">
         Generated files are kept for a limited retention window; the job record and its checksum outlive the file, so an
         expired download is explained rather than silently missing.
       </p>
-    </section>
+    </Panel>
   );
 }

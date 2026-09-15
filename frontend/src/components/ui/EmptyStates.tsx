@@ -26,8 +26,8 @@ export function PermissionDenied({ message }: { message: string }) {
 
 export function NoDataState({ title, detail }: { title: string; detail: string }) {
   return (
-    <div className="state-panel" role="status">
-      <h2>{title}</h2>
+    <div className="state-inline" role="status">
+      <h3 className="state-title">{title}</h3>
       <p>{detail}</p>
     </div>
   );

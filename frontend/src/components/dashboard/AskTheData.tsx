@@ -3,15 +3,20 @@
 import { FormEvent, useState } from "react";
 import { askAi } from "@/lib/api";
 import type { AiResponse, DashboardResponse } from "@/lib/types";
+import { Panel } from "../panels/Panel";
 
 export function AskTheData({
   dashboard,
   period,
   comparison,
+  className,
+  compact,
 }: {
   dashboard: DashboardResponse;
   period: string;
   comparison?: string;
+  className?: string;
+  compact?: boolean;
 }) {
   const [question, setQuestion] = useState("Why is this red?");
   const [busy, setBusy] = useState<string | null>(null);
@@ -50,61 +55,63 @@ export function AskTheData({
   const text = result?.result.text;
 
   return (
-    <section className="card ask-panel">
-      <h2>Ask the Data</h2>
-      <p className="muted">
-        Answers use the verified calculation-run evidence only. AI does not calculate official values. When no
-        provider is configured, the platform returns a deterministic interpretation.
-      </p>
-      <div className="export-actions">
-        <button type="button" className="export-report" disabled={busy !== null} onClick={() => void run("findings")}>
+    <Panel
+      title="Ask the Data"
+      subtitle="Answers from this snapshot's verified evidence only"
+      className={`ask-panel ${className ?? ""}`}
+    >
+      <div className="ask-actions">
+        <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => void run("findings")}>
           {busy === "findings" ? "Working…" : "Key findings"}
         </button>
-        <button type="button" className="link-button" disabled={busy !== null} onClick={() => void run("explain")}>
+        <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => void run("explain")}>
           {busy === "explain" ? "Working…" : "Explain first KPI"}
         </button>
         {canReport ? (
-          <button type="button" className="link-button" disabled={busy !== null} onClick={() => void run("report")}>
-            {busy === "report" ? "Working…" : "Management brief"}
+          <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => void run("report")}>
+            {busy === "report" ? "Working…" : "Generate brief"}
           </button>
         ) : null}
       </div>
-      <form className="filter-bar" onSubmit={onAsk}>
-        <label>
-          Question
-          <input
-            aria-label="Ask the Data question"
-            value={question}
-            maxLength={500}
-            onChange={(event) => setQuestion(event.target.value)}
-          />
-        </label>
+      <form className="ask-form" onSubmit={onAsk}>
+        <input
+          aria-label="Ask the Data question"
+          value={question}
+          maxLength={500}
+          onChange={(event) => setQuestion(event.target.value)}
+        />
         <button type="submit" className="primary-button" disabled={busy !== null || !question.trim()}>
           {busy === "ask" ? "Working…" : "Ask"}
         </button>
       </form>
+      {!compact || result || error ? (
+        <p className="panel-note">
+          AI does not calculate official values. Without a configured provider the platform answers deterministically.
+        </p>
+      ) : null}
       {error ? <p className="banner-info">{error}</p> : null}
       {result ? (
         <div className="ask-result">
-          <p className="muted">
+          <p className="panel-note">
             Mode {result.mode}
             {result.fallback_used ? " · deterministic fallback" : ""}
-            {result.calculation_run_id ? ` · run ${result.calculation_run_id}` : ""}
-            {result.prompt_version ? ` · ${result.prompt_version}` : ""}
+            {result.calculation_run_id ? ` · run ${result.calculation_run_id.slice(0, 8)}` : ""}
           </p>
           {findings.length ? (
-            <ul className="alert-list">
+            <ul className="insight-list">
               {findings.map((item) => (
-                <li key={`${item.title}-${item.indicator_code ?? "none"}`} className="alert alert-info">
-                  <strong>{item.title}</strong>
-                  <p>{item.detail}</p>
+                <li key={`${item.title}-${item.indicator_code ?? "none"}`} className="insight insight-info">
+                  <div>
+                    <p className="insight-title">{item.title}</p>
+                    <p className="insight-detail">{item.detail}</p>
+                  </div>
                 </li>
               ))}
             </ul>
           ) : null}
-          {text ? <p>{text}</p> : null}
+          {text ? <p className="panel-copy">{text}</p> : null}
         </div>
       ) : null}
-    </section>
+    </Panel>
   );
 }

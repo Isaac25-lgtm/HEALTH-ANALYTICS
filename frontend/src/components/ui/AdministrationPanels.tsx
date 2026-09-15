@@ -1,4 +1,5 @@
 import type { CurrentContext, DashboardResponse } from "@/lib/types";
+import { Panel } from "../panels/Panel";
 
 /**
  * Administration workspace. Registries are governed server-side; this surface states what is
@@ -7,18 +8,19 @@ import type { CurrentContext, DashboardResponse } from "@/lib/types";
 export function AdministrationPanels({
   dashboard,
   context,
+  className,
 }: {
   dashboard: DashboardResponse;
   context: CurrentContext;
+  className?: string;
 }) {
   if (!context.actions.includes("manage_users")) {
     return (
-      <section className="card" aria-label="Administration">
-        <h2>Administration</h2>
+      <Panel title="Administration" className={className}>
         <p className="banner-info" role="status">
           Your role does not include administration. The server enforces this regardless of navigation.
         </p>
-      </section>
+      </Panel>
     );
   }
   const population = dashboard.population;
@@ -58,8 +60,7 @@ export function AdministrationPanels({
     },
   ];
   return (
-    <section className="card" aria-label="Administration">
-      <h2>Administration</h2>
+    <Panel title="Administration" subtitle="Registry health and pending owner decisions" className={className}>
       <div className="health-grid">
         {panels.map((panel) => (
           <article key={panel.title} className={`health-card health-${panel.state}`}>
@@ -68,10 +69,10 @@ export function AdministrationPanels({
           </article>
         ))}
       </div>
-      <p className="muted">
+      <p className="panel-note">
         Population imports, alias decisions, boundary activation and user provisioning run through audited server
         commands with separation of duties; see docs/DEPLOYMENT.md.
       </p>
-    </section>
+    </Panel>
   );
 }

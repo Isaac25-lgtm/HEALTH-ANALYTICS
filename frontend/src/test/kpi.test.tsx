@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { KpiCard } from "@/components/ui/KpiCard";
-import { Scorecard } from "@/components/ui/Scorecard";
+import { IndicatorTable } from "@/components/panels/ScorecardPanels";
 import { StatusPill } from "@/components/ui/StatusPill";
 import type { Measure } from "@/lib/types";
 
@@ -27,11 +27,12 @@ describe("dashboard presentation", () => {
     render(<StatusPill status="missing" />);
     expect(screen.getByText("No data")).toBeInTheDocument();
     render(
-      <Scorecard
+      <IndicatorTable
         rows={[
           { ...base, raw_value: 0, display_value: "0.0", status: "red", indicator_code: "ZERO" },
           { ...base, raw_value: null, display_value: null, status: "n_a", indicator_code: "MISSING" },
         ]}
+        onOpen={() => undefined}
       />,
     );
     expect(screen.getByText("0.0")).toBeInTheDocument();

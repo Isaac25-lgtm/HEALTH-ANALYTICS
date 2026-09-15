@@ -6,6 +6,7 @@ import { logout } from "@/lib/api";
 import { dashboardHref, MODULE_LABELS, screenForLevel } from "@/lib/scope";
 import type { CurrentContext } from "@/lib/types";
 import { WORKSPACES } from "@/lib/workspaces";
+import { roleLabel } from "../dashboard/DashboardFrame";
 
 const GEO_NAV = [
   { screen: "national", label: "National" },
@@ -23,11 +24,13 @@ export function AppShell({
   context,
   screen,
   workspace,
+  subtitle,
   children,
 }: {
   context: CurrentContext;
   screen: string;
   workspace?: string;
+  subtitle?: string;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -45,10 +48,19 @@ export function AppShell({
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to dashboard
+      </a>
       <aside className="sidebar">
         <div className="brand">
-          <p className="eyebrow">Ministry of Health Uganda</p>
-          <p className="brand-title">Health Performance Intelligence</p>
+          {/* No official crest is extracted or invented; the slot is reserved for an approved asset. */}
+          <div className="brand-slot" role="img" aria-label="Reserved for the approved Ministry of Health crest">
+            <span aria-hidden="true">Crest</span>
+          </div>
+          <div>
+            <p className="brand-title">Ministry of Health</p>
+            <p className="brand-subtitle">Uganda · Health Performance Intelligence</p>
+          </div>
         </div>
         <nav aria-label="Geography screens">
           {GEO_NAV.map((item) => (
@@ -87,22 +99,32 @@ export function AppShell({
           ) : null}
         </nav>
         <p className="sidebar-note">
-          Authorised programmes: {context.programmes.map((code) => MODULE_LABELS[code.toLowerCase()] ?? code).join(", ") || "None"}
+          Authorised programmes:{" "}
+          {context.programmes.map((code) => MODULE_LABELS[code.toLowerCase()] ?? code).join(", ") || "None"}
         </p>
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <div>
-            <h1>Uganda Health Performance Intelligence</h1>
-            <p className="muted">
-              {context.display_name} · {landing ? `${landing.name} (${landing.level_type})` : "No landing geography"}
-            </p>
+          <div className="topbar-titles">
+            <h1>Health Performance Intelligence</h1>
+            <p className="topbar-subtitle">{subtitle ?? (landing ? landing.name : "No landing geography")}</p>
           </div>
-          <button type="button" className="ghost-button" onClick={onLogout}>
-            Sign out
-          </button>
+          <div className="topbar-user">
+            <span className="user-avatar" aria-hidden="true">
+              {(context.display_name || context.username).slice(0, 1).toUpperCase()}
+            </span>
+            <span className="user-names">
+              <strong>{context.display_name}</strong>
+              {roleLabel(context) !== context.display_name ? <span>{roleLabel(context)}</span> : null}
+            </span>
+            <button type="button" className="ghost-button" onClick={onLogout}>
+              Sign out
+            </button>
+          </div>
         </header>
-        {children}
+        <main id="main-content" className="workspace-main">
+          {children}
+        </main>
       </div>
     </div>
   );

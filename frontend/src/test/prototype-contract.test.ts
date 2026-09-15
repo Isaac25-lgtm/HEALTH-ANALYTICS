@@ -28,6 +28,10 @@ const FORBIDDEN: Array<[RegExp, string]> = [
   [/population\s*\*\s*0\.0|\*\s*coefficient|periodFraction/, "client-side denominator calculation"],
   [/numerator\s*\/\s*denominator/, "client-side indicator calculation"],
   [/national\.analyst/, "prefilled synthetic account"],
+  [/\*\s*100(?![\d.])/, "client-side percentage calculation"],
+  [/raw_value\s*[-+]\s*[\w.?]*raw_value/, "client-side change calculation"],
+  [/reduce\([^)]*raw_value/, "client-side aggregation of indicator values"],
+  [/(?:NATIONAL|REGION|DISTRICT)_TARGETS?\s*=|green_min\s*:\s*\d/, "client-side thresholds"],
 ];
 
 describe("prototype contract", () => {

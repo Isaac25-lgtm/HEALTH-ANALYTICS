@@ -112,6 +112,10 @@ export async function proxyRequest(
       ...(hasBody ? { duplex: "half" } : {}),
     } as RequestInit);
   } catch {
+    if (request.signal.aborted) {
+      // The browser navigated away or cancelled; nothing failed upstream.
+      return new Response(null, { status: 499 });
+    }
     // Never echo the backend address or the network error to the browser.
     console.error("[api-proxy] backend request failed");
     return errorResponse(502, "backend_unavailable", "The analytics service is temporarily unavailable.");
