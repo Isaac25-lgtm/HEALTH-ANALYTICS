@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T09:22:43.028778+00:00",
+  "generated_at": "2026-09-15T14:45:24.055045+00:00",
   "effective_date_status": "effective date not yet verified",
   "candidates": [
     {
@@ -33,28 +33,43 @@
       "qualified_name_collisions": {},
       "findings": [],
       "crosswalk": {
+        "purpose": "boundary_geometry",
+        "level": "district",
         "reference_scope": "synthetic_development_fixtures",
-        "internal_units_at_level": 3,
-        "matched_exact": 3,
+        "hierarchy_approval_reference": null,
+        "units_at_level": 3,
+        "required_units": 146,
+        "source_features": 146,
+        "reconciliation_matched": 3,
+        "reconciliation_unmatched": 143,
         "ambiguous": 0,
-        "production_unresolved": 143,
+        "invalid": 0,
+        "duplicate_targets": 0,
+        "production_resolved": 0,
+        "production_unresolved": 146,
+        "non_production_candidates": [
+          "KITGUM",
+          "PADER",
+          "SOROTI"
+        ],
         "unmatched_examples": [
-          "Abim",
-          "Adjumani",
-          "Agago",
-          "Alebtong",
-          "Amolatar",
-          "Amudat",
-          "Amuria",
-          "Amuru",
-          "Apac",
-          "Arua",
-          "Arua City",
-          "Budaka",
-          "Bududa",
-          "Bugiri",
-          "Bugweri"
-        ]
+          "ABIM",
+          "ADJUMANI",
+          "AGAGO",
+          "ALEBTONG",
+          "AMOLATAR",
+          "AMUDAT",
+          "AMURIA",
+          "AMURU",
+          "APAC",
+          "ARUA",
+          "ARUA CITY",
+          "BUDAKA",
+          "BUDUDA",
+          "BUGIRI",
+          "BUGWERI"
+        ],
+        "ambiguous_examples": []
       }
     },
     {
@@ -144,28 +159,39 @@
         "44 duplicated names at this level."
       ],
       "crosswalk": {
+        "purpose": "boundary_geometry",
+        "level": "sub_county",
         "reference_scope": "synthetic_development_fixtures",
-        "internal_units_at_level": 1,
-        "matched_exact": 0,
+        "hierarchy_approval_reference": null,
+        "units_at_level": 1,
+        "required_units": 2190,
+        "source_features": 2190,
+        "reconciliation_matched": 0,
+        "reconciliation_unmatched": 2190,
         "ambiguous": 0,
+        "invalid": 0,
+        "duplicate_targets": 0,
+        "production_resolved": 0,
         "production_unresolved": 2190,
+        "non_production_candidates": [],
         "unmatched_examples": [
-          "Abako",
-          "Abanga",
-          "Abarilela",
-          "Abeja",
-          "Aber",
-          "Abia",
-          "Abia",
-          "Abiliyep",
-          "Abim",
-          "Abim Town Council",
-          "Abindu Division",
-          "Abok",
-          "Aboke",
-          "Aboke Town Council",
-          "Abongomola"
-        ]
+          "ABAKO",
+          "ABANGA",
+          "ABARILELA",
+          "ABEJA",
+          "ABER",
+          "ABIA",
+          "ABIA",
+          "ABILIYEP",
+          "ABIM",
+          "ABIM TOWN COUNCIL",
+          "ABINDU DIVISION",
+          "ABOK",
+          "ABOKE",
+          "ABOKE TOWN COUNCIL",
+          "ABONGOMOLA"
+        ],
+        "ambiguous_examples": []
       }
     },
     {

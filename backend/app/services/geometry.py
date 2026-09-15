@@ -116,9 +116,7 @@ def iter_geojson_features(path: Path):
                         raise GeometryImportError("The GeoJSON features array is truncated or invalid.") from exc
                     buffer += chunk
                     if len(buffer) > 64 * 1024 * 1024:
-                        raise GeometryImportError(
-                            "A single GeoJSON feature exceeds the 64 MB safety limit."
-                        ) from exc
+                        raise GeometryImportError("A single GeoJSON feature exceeds the 64 MB safety limit.") from exc
             if not isinstance(item, dict) or item.get("type") != "Feature":
                 raise GeometryImportError("Every item in the features array must be a GeoJSON Feature.")
             yield item
@@ -163,9 +161,7 @@ def _validate_geometry_shape(kind: str, coordinates: object) -> None:
             raise GeometryImportError("Point geometry must contain one coordinate position.")
         return
     if kind == "MultiPoint":
-        if not isinstance(coordinates, list) or not coordinates or not all(
-            _is_position(item) for item in coordinates
-        ):
+        if not isinstance(coordinates, list) or not coordinates or not all(_is_position(item) for item in coordinates):
             raise GeometryImportError("MultiPoint geometry must contain coordinate positions.")
         return
     polygons = [coordinates] if kind == "Polygon" else coordinates
@@ -248,9 +244,7 @@ def prepare_geometry_import(session: Session, path: Path, level_type: str) -> Ge
             continue
         matches = index.get(key, [])
         if not matches:
-            plan.unmatched.append(
-                {"feature": feature_index, "name": feature_name, "district": district_name}
-            )
+            plan.unmatched.append({"feature": feature_index, "name": feature_name, "district": district_name})
             continue
         if len(matches) != 1:
             plan.ambiguous.append(
@@ -292,33 +286,134 @@ def intervals_overlap(
     return start_left <= end_right and start_right <= end_left
 
 
+def boundary_authority(session: Session, plan: GeometryImportPlan):
+    """The hierarchy authority that governs activating this plan's level."""
+    from app.services.hierarchy_authority import (
+        DISTRICT_CITY_COHORT,
+        LEVEL_DISTRICT,
+        PURPOSE_BOUNDARY,
+        hierarchy_authority,
+    )
+
+    required = DISTRICT_CITY_COHORT if plan.level_type == LEVEL_DISTRICT else max(plan.total_features, 1)
+    return hierarchy_authority(session, purpose=PURPOSE_BOUNDARY, level=plan.level_type, required_units=required)
+
+
+def boundary_crosswalk_semantics(plan: GeometryImportPlan, authority) -> dict:
+    """Separate what reconciled by name from what may become a production boundary mapping.
+
+    Nothing is production-resolved unless the hierarchy for this level is authoritative; until
+    then every source feature is production-unresolved and name matches are only candidates.
+    """
+    duplicates = set(plan.duplicate_org_unit_codes)
+    clean = [record for record in plan.records if record.org_unit_code not in duplicates]
+    resolved = len(clean) if authority.authoritative else 0
+    return {
+        **authority.as_dict(),
+        "source_features": plan.total_features,
+        "reconciliation_matched": len(plan.records),
+        "reconciliation_unmatched": len(plan.unmatched),
+        "ambiguous": len(plan.ambiguous),
+        "invalid": len(plan.invalid),
+        "duplicate_targets": len(duplicates),
+        "production_resolved": resolved,
+        "production_unresolved": plan.total_features - resolved,
+        "non_production_candidates": []
+        if authority.authoritative
+        else sorted({record.feature_name for record in plan.records}),
+    }
+
+
+def _require_reference(value: str | None, code: str, message: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise AuthorizationError(code, message)
+    return cleaned
+
+
 def apply_geometry_import(
     session: Session,
     user: User,
     plan: GeometryImportPlan,
     *,
     valid_from: date,
-    allow_unmatched: bool = False,
     effective_date_verified: bool = False,
+    effective_date_reference: str | None = None,
+    mapping_decision_reference: str | None = None,
+    allow_unmatched: bool = False,
+    partial_activation_reference: str | None = None,
 ) -> dict:
-    """Activate boundary geometry.
+    """Activate boundary geometry only under recorded owner authority.
 
-    ``valid_from`` is the date from which the geometry is authoritative. It must come from the
-    owner: the caller has to state explicitly that the boundary effective date was verified, so
-    an unverified date can never be assumed just to satisfy the column.
+    Every condition is checked independently, before any row changes:
+
+    - the caller holds ``manage_mappings``;
+    - the hierarchy for this purpose and level is authoritative (approval reference configured and a
+      complete cohort present), so synthetic fixtures can never become production boundaries;
+    - every matched organisation unit is at the plan's level (no cross-level substitution);
+    - the mapping is unambiguous, free of invalid features and duplicate targets, and a mapping
+      decision reference is recorded;
+    - the source checksum is present;
+    - the effective date is confirmed (``effective_date_verified``) **and** its approval reference is
+      recorded: the flag confirms a recorded approval, it does not create one;
+    - unmatched features are allowed only with ``allow_unmatched`` and a recorded partial-activation
+      approval reference; neither bypasses hierarchy approval.
     """
+    from app.services.hierarchy_authority import LEVEL_TYPES
+
     require_action(session, user, ActionPermission.MANAGE_MAPPINGS)
+    if plan.level_type not in LEVEL_TYPES:
+        raise AuthorizationError("boundary_level_unsupported", "Only district and sub-county boundaries are supported.")
+    authority = boundary_authority(session, plan)
+    if not authority.authoritative:
+        raise AuthorizationError(
+            "boundary_hierarchy_not_approved",
+            "The organisation-unit hierarchy for this boundary level is not owner-approved and complete, "
+            "so no geometry can be activated.",
+        )
+    if len(plan.source_sha256 or "") != 64:
+        raise AuthorizationError("boundary_checksum_missing", "The source file checksum is not recorded.")
+    reference = _require_reference(
+        effective_date_reference,
+        "boundary_effective_date_unverified",
+        "The boundary effective date has no recorded owner approval reference, so geometry cannot be activated.",
+    )
     if not effective_date_verified:
         raise AuthorizationError(
             "boundary_effective_date_unverified",
-            "The boundary effective date is not yet verified by the owner, so geometry cannot be activated.",
+            "The boundary effective date is not confirmed against its approval reference.",
         )
+    mapping_reference = _require_reference(
+        mapping_decision_reference,
+        "boundary_mapping_decision_missing",
+        "No feature-to-organisation-unit mapping decision is recorded.",
+    )
     if not plan.records:
         raise AuthorizationError("invalid_input", "The geometry import did not match any organisation units.")
     if plan.invalid or plan.ambiguous or plan.duplicate_org_unit_codes:
-        raise AuthorizationError("invalid_input", "Geometry import validation failed; no rows were changed.")
-    if plan.unmatched and not allow_unmatched:
-        raise AuthorizationError("invalid_input", "Unmatched geometry features exist; no rows were changed.")
+        raise AuthorizationError(
+            "boundary_mapping_ambiguous",
+            "Invalid, ambiguous or duplicate feature mappings exist; no rows were changed.",
+        )
+    partial_reference = None
+    if plan.unmatched:
+        if not allow_unmatched:
+            raise AuthorizationError(
+                "boundary_mapping_incomplete", "Unmatched geometry features exist; no rows were changed."
+            )
+        partial_reference = _require_reference(
+            partial_activation_reference,
+            "boundary_partial_activation_unapproved",
+            "Partial boundary activation needs a recorded owner approval reference.",
+        )
+    allowed_levels = set(LEVEL_TYPES[plan.level_type])
+    for record in plan.records:
+        unit = session.get(OrgUnit, record.org_unit_id)
+        if unit is None or not unit.active or unit.level_type not in allowed_levels:
+            raise AuthorizationError(
+                "boundary_level_mismatch",
+                "A feature maps to an organisation unit outside the approved geography level.",
+            )
 
     source = f"{plan.source_path.name}:sha256:{plan.source_sha256}"
     inserted = 0
@@ -373,13 +468,18 @@ def apply_geometry_import(
         resource_id=plan.source_sha256,
         after={
             "source_file": plan.source_path.name,
+            "source_sha256": plan.source_sha256,
             "level_type": plan.level_type,
+            "hierarchy_approval_reference": authority.approval_reference,
+            "mapping_decision_reference": mapping_reference,
+            "effective_date": valid_from.isoformat(),
+            "effective_date_reference": reference,
+            "partial_activation_reference": partial_reference,
             "matched": len(plan.records),
             "inserted": inserted,
             "unchanged": unchanged,
             "superseded": superseded,
             "unmatched": len(plan.unmatched),
-            "valid_from": valid_from.isoformat(),
         },
         commit=False,
     )
@@ -451,8 +551,7 @@ def simplify_geojson(geometry: dict | None, epsilon: float = SIMPLIFY_EPSILON_DE
         return {
             "type": "MultiPolygon",
             "coordinates": [
-                [simplify_ring(ring, epsilon) for ring in polygon]
-                for polygon in geometry.get("coordinates") or []
+                [simplify_ring(ring, epsilon) for ring in polygon] for polygon in geometry.get("coordinates") or []
             ],
         }
     return geometry
@@ -620,9 +719,7 @@ def map_feature_collection(
 ) -> dict:
     effective_date = as_of or date.today()
     units = [
-        unit
-        for unit in descendants(session, selected, include_self=True)
-        if can_access_org_unit(session, user, unit)
+        unit for unit in descendants(session, selected, include_self=True) if can_access_org_unit(session, user, unit)
     ]
     ids = [unit.id for unit in units]
     geometry_rows = session.scalars(
@@ -643,16 +740,11 @@ def map_feature_collection(
         {
             ORG_UNIT_LEVEL_RANK.get(OrgUnitLevel(unit.level_type), 99)
             for unit in units
-            if unit.id in current_by_unit
-            and ORG_UNIT_LEVEL_RANK.get(OrgUnitLevel(unit.level_type), 99) > selected_rank
+            if unit.id in current_by_unit and ORG_UNIT_LEVEL_RANK.get(OrgUnitLevel(unit.level_type), 99) > selected_rank
         }
     )
     render_rank = available_ranks[0] if available_ranks else selected_rank
-    target_units = [
-        unit
-        for unit in units
-        if ORG_UNIT_LEVEL_RANK.get(OrgUnitLevel(unit.level_type), 99) == render_rank
-    ]
+    target_units = [unit for unit in units if ORG_UNIT_LEVEL_RANK.get(OrgUnitLevel(unit.level_type), 99) == render_rank]
     mapped_units = [unit for unit in target_units if unit.id in current_by_unit]
     features = []
     for unit in mapped_units:
@@ -670,9 +762,7 @@ def map_feature_collection(
                     "valid_from": row.valid_from.isoformat() if row.valid_from else None,
                     "valid_to": row.valid_to.isoformat() if row.valid_to else None,
                 },
-                "geometry": (
-                    simplify_geojson(row.geojson) if simplify else row.geojson
-                ),
+                "geometry": (simplify_geojson(row.geojson) if simplify else row.geojson),
             }
         )
     awaiting_mapping = len(features) == 0
@@ -688,9 +778,7 @@ def map_feature_collection(
         "effective_date": effective_date.isoformat(),
         "feature_count": len(features),
         "eligible_unit_count": len(target_units),
-        "mapping_state": (
-            "mapped" if features else "boundaries_awaiting_approved_mapping"
-        ),
+        "mapping_state": ("mapped" if features else "boundaries_awaiting_approved_mapping"),
         "simplify_applied": simplify,
         "simplify_version": SIMPLIFY_VERSION if simplify else None,
         "mapping_note": (

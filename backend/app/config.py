@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     # decision-register ID). Empty until supplied: population crosswalk matches then stay
     # candidates and never count as production mappings.
     population_hierarchy_approval_reference: str = ""
+    # Owner approval references for boundary geometry, per level. Approving the population crosswalk
+    # does not approve boundaries. Empty until supplied: geometry activation fails closed.
+    boundary_district_hierarchy_approval_reference: str = ""
+    boundary_sub_county_hierarchy_approval_reference: str = ""
     purge_enabled: bool = True
     purge_dry_run: bool = False
     purge_schedule_enabled: bool = False

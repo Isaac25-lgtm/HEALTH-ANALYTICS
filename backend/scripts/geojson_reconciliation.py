@@ -23,10 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import select  # noqa: E402
-
 from app.db.session import get_session_factory  # noqa: E402
-from app.models import OrgUnit  # noqa: E402
+from app.services.geometry import (  # noqa: E402
+    boundary_authority,
+    boundary_crosswalk_semantics,
+    prepare_geometry_import,
+)
 
 REPORT_DIR = REPO / "docs" / "reconciliation"
 # Uganda's bounding box with a generous margin; anything outside is not a Uganda boundary.
@@ -131,8 +133,7 @@ def _walk_positions(node, stats: dict) -> None:
             if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
                 stats["out_of_range"] += 1
             elif not (
-                UGANDA_BOUNDS[0] <= longitude <= UGANDA_BOUNDS[2]
-                and UGANDA_BOUNDS[1] <= latitude <= UGANDA_BOUNDS[3]
+                UGANDA_BOUNDS[0] <= longitude <= UGANDA_BOUNDS[2] and UGANDA_BOUNDS[1] <= latitude <= UGANDA_BOUNDS[3]
             ):
                 stats["outside_uganda"] += 1
             return
@@ -256,17 +257,13 @@ def analyse(path: Path, spec: dict) -> CandidateReport:
     report.qualified_name_collisions = {key: count for key, count in qualified.items() if count > 1}
 
     if report.detected_format != report.expected_format:
-        report.findings.append(
-            f"Detected {report.detected_format}, expected {report.expected_format}."
-        )
+        report.findings.append(f"Detected {report.detected_format}, expected {report.expected_format}.")
     if report.feature_count != report.expected_features:
         report.findings.append(
             f"Feature count {report.feature_count} differs from the expected {report.expected_features}."
         )
     if report.null_geometry or report.empty_geometry:
-        report.findings.append(
-            f"{report.null_geometry} null and {report.empty_geometry} empty geometries."
-        )
+        report.findings.append(f"{report.null_geometry} null and {report.empty_geometry} empty geometries.")
     if report.out_of_range_positions:
         report.findings.append(f"{report.out_of_range_positions} coordinates outside valid WGS84 ranges.")
     if report.positions_outside_uganda:
@@ -285,44 +282,22 @@ def analyse(path: Path, spec: dict) -> CandidateReport:
             f"{len(report.qualified_name_collisions)} district-qualified sub-county name collisions."
         )
     if report.role == "comparison_only":
-        report.findings.append(
-            "Esri JSON comparison source. It is never treated as the canonical GeoJSON layer."
-        )
+        report.findings.append("Esri JSON comparison source. It is never treated as the canonical GeoJSON layer.")
     return report
 
 
-def crosswalk(session, report: CandidateReport, spec: dict, path: Path) -> dict:
-    """Match feature names against organisation units, exactly and case-insensitively only."""
-    level = "district" if spec["level"] == "district" else "sub_county"
-    units = session.scalars(
-        select(OrgUnit).where(OrgUnit.active.is_(True), OrgUnit.level_type.in_([level, "city"]))
-    ).all()
-    by_name: dict[str, list[OrgUnit]] = {}
-    for unit in units:
-        by_name.setdefault(unit.name.strip().upper(), []).append(unit)
-    matched, unmatched, ambiguous = 0, 0, 0
-    unmatched_examples: list[str] = []
-    for feature in iter_features(path):
-        attributes = feature.get("properties") or feature.get("attributes") or {}
-        name = str(attributes.get(spec["name_property"]) or "").strip().upper()
-        candidates = by_name.get(name, [])
-        if len(candidates) == 1:
-            matched += 1
-        elif len(candidates) > 1:
-            ambiguous += 1
-        else:
-            unmatched += 1
-            if len(unmatched_examples) < 15:
-                unmatched_examples.append(name.title())
-    reference = "authoritative_org_units" if len(units) >= 146 else "synthetic_development_fixtures"
-    return {
-        "reference_scope": reference,
-        "internal_units_at_level": len(units),
-        "matched_exact": matched,
-        "ambiguous": ambiguous,
-        "production_unresolved": unmatched,
-        "unmatched_examples": unmatched_examples,
-    }
+def crosswalk(session, spec: dict, path: Path) -> dict:
+    """Reconcile with exactly the matcher and authority gate that activation uses.
+
+    Name matches are reported separately from production resolution: while the hierarchy for this
+    level lacks an owner approval reference or a complete cohort, every feature stays
+    production-unresolved and matches are listed as non-production candidates.
+    """
+    plan = prepare_geometry_import(session, path, spec["level"])
+    semantics = boundary_crosswalk_semantics(plan, boundary_authority(session, plan))
+    semantics["unmatched_examples"] = [item["name"] for item in plan.unmatched[:15]]
+    semantics["ambiguous_examples"] = [item["name"] for item in plan.ambiguous[:15]]
+    return semantics
 
 
 def _markdown(payload: dict) -> str:
@@ -367,21 +342,38 @@ def _markdown(payload: dict) -> str:
         lines.extend(f"- {finding}" for finding in item["findings"] or ["No structural problems found."])
         crosswalk_data = item.get("crosswalk")
         if crosswalk_data:
+            approval = crosswalk_data["hierarchy_approval_reference"] or "not supplied"
             lines.extend(
                 [
                     "",
-                    f"Crosswalk against {crosswalk_data['internal_units_at_level']} internal organisation units "
-                    f"({crosswalk_data['reference_scope']}):",
+                    f"Crosswalk against {crosswalk_data['units_at_level']} active internal organisation units at "
+                    f"this level (reference scope `{crosswalk_data['reference_scope']}`, hierarchy approval "
+                    f"reference: {approval}):",
                     "",
-                    f"- exact matches: {crosswalk_data['matched_exact']}",
-                    f"- ambiguous: {crosswalk_data['ambiguous']}",
-                    f"- production-unresolved: {crosswalk_data['production_unresolved']}",
+                    "| Measure | Features |",
+                    "|---|---|",
+                    f"| `source_features` | {crosswalk_data['source_features']} |",
+                    f"| `reconciliation_matched` | {crosswalk_data['reconciliation_matched']} |",
+                    f"| `reconciliation_unmatched` | {crosswalk_data['reconciliation_unmatched']} |",
+                    f"| `ambiguous` | {crosswalk_data['ambiguous']} |",
+                    f"| `invalid` | {crosswalk_data['invalid']} |",
+                    f"| `duplicate_targets` | {crosswalk_data['duplicate_targets']} |",
+                    f"| `production_resolved` | {crosswalk_data['production_resolved']} |",
+                    f"| **`production_unresolved`** | **{crosswalk_data['production_unresolved']}** |",
+                    f"| `non_production_candidates` | {len(crosswalk_data['non_production_candidates'])} |",
+                    "",
                 ]
             )
-            if crosswalk_data["reference_scope"] == "synthetic_development_fixtures":
+            if crosswalk_data["non_production_candidates"]:
                 lines.append(
-                    "- **These matches are against synthetic development fixtures. None of them is a "
-                    "production boundary mapping.**"
+                    "Non-production candidates (name matches that are **not** boundary mappings): "
+                    + ", ".join(crosswalk_data["non_production_candidates"][:50])
+                    + "."
+                )
+            if crosswalk_data["reference_scope"] != "authoritative_org_units":
+                lines.append(
+                    "- **No owner-approved hierarchy is recorded for this level, so every feature is "
+                    "production-unresolved.**"
                 )
     lines.extend(
         [
@@ -389,9 +381,11 @@ def _markdown(payload: dict) -> str:
             "## Effective date",
             "",
             f"**{payload['effective_date_status']}** — no boundary effective date has been supplied or "
-            "verified by the owner. Geometry cannot be activated until it is: "
-            "`apply_geometry_import` refuses unless the caller passes `effective_date_verified`, and the "
-            "CLI requires `--effective-date-verified`. No date is invented to satisfy the column.",
+            "verified by the owner. `apply_geometry_import` refuses activation unless the hierarchy for the "
+            "level is owner-approved (`BOUNDARY_DISTRICT_HIERARCHY_APPROVAL_REFERENCE` or "
+            "`BOUNDARY_SUB_COUNTY_HIERARCHY_APPROVAL_REFERENCE`) and complete, the mapping is unambiguous with "
+            "a recorded mapping decision reference, and the effective date has a recorded approval reference "
+            "confirmed with `--effective-date-verified`. No date or reference is invented.",
             "",
             "## Rules that still apply",
             "",
@@ -431,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
             report = analyse(path, spec)
             item = report.as_dict()
             if session is not None and spec["role"] != "comparison_only":
-                item["crosswalk"] = crosswalk(session, report, spec, path)
+                item["crosswalk"] = crosswalk(session, spec, path)
             payload["candidates"].append(item)
     finally:
         if session is not None:

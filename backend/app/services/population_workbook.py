@@ -685,18 +685,15 @@ def detect_reference_scope(session: Session, settings=None) -> str:
 
     Only the last one may turn a candidate match into a production mapping.
     """
-    settings = settings or get_settings()
-    candidates = session.scalars(
-        select(OrgUnit.id).where(
-            OrgUnit.active.is_(True),
-            OrgUnit.level_type.in_([OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value]),
-        )
-    ).all()
-    if len(candidates) < EXPECTED_UNITS:
-        return REFERENCE_SYNTHETIC
-    if not settings.population_hierarchy_approval_reference.strip():
-        return REFERENCE_UNAPPROVED
-    return REFERENCE_AUTHORITATIVE
+    from app.services.hierarchy_authority import LEVEL_DISTRICT, PURPOSE_POPULATION, hierarchy_authority
+
+    return hierarchy_authority(
+        session,
+        purpose=PURPOSE_POPULATION,
+        level=LEVEL_DISTRICT,
+        required_units=EXPECTED_UNITS,
+        settings=settings or get_settings(),
+    ).reference_scope
 
 
 def reference_fingerprint(session: Session, settings=None) -> str:

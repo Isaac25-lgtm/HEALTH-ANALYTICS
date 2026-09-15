@@ -1,6 +1,6 @@
 # Boundary (GeoJSON) reconciliation
 
-Generated 2026-09-14T09:22:43.028778+00:00 by `scripts/geojson_reconciliation.py`. Read-only and streaming; no geometry was imported or activated.
+Generated 2026-09-15T14:45:24.055045+00:00 by `scripts/geojson_reconciliation.py`. Read-only and streaming; no geometry was imported or activated.
 
 ## Candidate sources
 
@@ -25,12 +25,22 @@ Generated 2026-09-14T09:22:43.028778+00:00 by `scripts/geojson_reconciliation.py
 Findings:
 - No structural problems found.
 
-Crosswalk against 3 internal organisation units (synthetic_development_fixtures):
+Crosswalk against 3 active internal organisation units at this level (reference scope `synthetic_development_fixtures`, hierarchy approval reference: not supplied):
 
-- exact matches: 3
-- ambiguous: 0
-- production-unresolved: 143
-- **These matches are against synthetic development fixtures. None of them is a production boundary mapping.**
+| Measure | Features |
+|---|---|
+| `source_features` | 146 |
+| `reconciliation_matched` | 3 |
+| `reconciliation_unmatched` | 143 |
+| `ambiguous` | 0 |
+| `invalid` | 0 |
+| `duplicate_targets` | 0 |
+| `production_resolved` | 0 |
+| **`production_unresolved`** | **146** |
+| `non_production_candidates` | 3 |
+
+Non-production candidates (name matches that are **not** boundary mappings): KITGUM, PADER, SOROTI.
+- **No owner-approved hierarchy is recorded for this level, so every feature is production-unresolved.**
 
 ### UGANDA_SUBCOUNTIES.json
 
@@ -48,12 +58,21 @@ Findings:
 - 1 duplicated feature identifiers (OBJECTID=1240).
 - 44 duplicated names at this level.
 
-Crosswalk against 1 internal organisation units (synthetic_development_fixtures):
+Crosswalk against 1 active internal organisation units at this level (reference scope `synthetic_development_fixtures`, hierarchy approval reference: not supplied):
 
-- exact matches: 0
-- ambiguous: 0
-- production-unresolved: 2190
-- **These matches are against synthetic development fixtures. None of them is a production boundary mapping.**
+| Measure | Features |
+|---|---|
+| `source_features` | 2190 |
+| `reconciliation_matched` | 0 |
+| `reconciliation_unmatched` | 2190 |
+| `ambiguous` | 0 |
+| `invalid` | 0 |
+| `duplicate_targets` | 0 |
+| `production_resolved` | 0 |
+| **`production_unresolved`** | **2190** |
+| `non_production_candidates` | 0 |
+
+- **No owner-approved hierarchy is recorded for this level, so every feature is production-unresolved.**
 
 ### UGANDA_DISTRICTS.json
 
@@ -72,7 +91,7 @@ Findings:
 
 ## Effective date
 
-**effective date not yet verified** — no boundary effective date has been supplied or verified by the owner. Geometry cannot be activated until it is: `apply_geometry_import` refuses unless the caller passes `effective_date_verified`, and the CLI requires `--effective-date-verified`. No date is invented to satisfy the column.
+**effective date not yet verified** — no boundary effective date has been supplied or verified by the owner. `apply_geometry_import` refuses activation unless the hierarchy for the level is owner-approved (`BOUNDARY_DISTRICT_HIERARCHY_APPROVAL_REFERENCE` or `BOUNDARY_SUB_COUNTY_HIERARCHY_APPROVAL_REFERENCE`) and complete, the mapping is unambiguous with a recorded mapping decision reference, and the effective date has a recorded approval reference confirmed with `--effective-date-verified`. No date or reference is invented.
 
 ## Rules that still apply
 
