@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.db.urls import driver_error, is_postgres, is_well_formed, normalise_database_url, tls_errors
+
 DEV_TEST_ENVS = frozenset({"development", "dev", "test"})
 PLACEHOLDER_CREDENTIALS = ("change-me", "changeme", "replace-with-", "dev-only-")
 
@@ -168,6 +170,12 @@ class Settings(BaseSettings):
     def normalize_env(cls, value: str) -> str:
         return value.lower().strip()
 
+    @field_validator("database_url", "migration_database_url", mode="before")
+    @classmethod
+    def normalise_database_driver(cls, value: object) -> object:
+        # Never raise here: a validation error would echo the URL (and its password).
+        return normalise_database_url(value) if isinstance(value, str) else value
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
@@ -272,28 +280,38 @@ def database_configuration_errors(settings: Settings) -> list[str]:
     if not url:
         errors.append("DATABASE_URL is required.")
         return errors
-    if "://" not in url or url.split("://", 1)[1] == "":
+    if not is_well_formed(url):
         errors.append("DATABASE_URL is malformed.")
         return errors
+    migration = settings.migration_database_url.strip()
+    if migration and not is_well_formed(migration):
+        errors.append("MIGRATION_DATABASE_URL is malformed.")
+        migration = ""
+    for label, value in (("DATABASE_URL", url), ("MIGRATION_DATABASE_URL", migration)):
+        problem = driver_error(value, label)
+        if problem:
+            errors.append(problem)
     if not settings.is_production:
         return errors
     if settings.is_sqlite:
         errors.append("DATABASE_URL must be PostgreSQL in staging/production.")
         return errors
-    if not url.startswith("postgresql"):
+    if not is_postgres(url):
         errors.append("DATABASE_URL must use a PostgreSQL driver in staging/production.")
-    declared = settings.db_sslmode.strip().lower() in {"require", "verify-ca", "verify-full"}
-    in_url = "sslmode=require" in url or "sslmode=verify" in url
-    if settings.db_require_ssl and not (declared or in_url):
-        errors.append(
-            "DB_SSLMODE must require TLS in staging/production (or set sslmode in DATABASE_URL). "
-            "Set DB_REQUIRE_SSL=false only for a database on a private network you control."
-        )
-    if settings.db_require_ssl and "sslmode=disable" in url:
-        errors.append("DATABASE_URL disables TLS while DB_REQUIRE_SSL is true.")
-    migration = settings.migration_database_url.strip()
-    if migration and not migration.startswith("postgresql"):
+    if migration and not is_postgres(migration):
         errors.append("MIGRATION_DATABASE_URL must use a PostgreSQL driver.")
+    errors.extend(
+        tls_errors(url, "DATABASE_URL", configured=settings.db_sslmode, require_ssl=settings.db_require_ssl)
+    )
+    if migration:
+        errors.extend(
+            tls_errors(
+                migration,
+                "MIGRATION_DATABASE_URL",
+                configured=settings.db_sslmode,
+                require_ssl=settings.db_require_ssl,
+            )
+        )
     if migration and any(marker in migration.lower() for marker in PLACEHOLDER_CREDENTIALS):
         errors.append("MIGRATION_DATABASE_URL still uses a documented placeholder credential.")
     if settings.db_pool_size + settings.db_max_overflow > 20:

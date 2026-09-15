@@ -14,29 +14,27 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.config import Settings, get_settings
+from app.db.urls import connect_args, normalise_database_url
 
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
 
 
-def _connect_args(settings: Settings, url: str) -> dict:
-    if url.startswith("sqlite"):
-        return {"check_same_thread": False}
-    args: dict = {"connect_timeout": settings.db_connect_timeout_seconds}
-    if settings.db_sslmode:
-        # psycopg accepts sslmode in connect args; a URL that already carries sslmode wins.
-        if "sslmode=" not in url:
-            args["sslmode"] = settings.db_sslmode
-    if settings.db_application_name:
-        args["application_name"] = settings.db_application_name
-    return args
+def _connect_args(settings: Settings, url: str, *, application_name: str | None = None) -> dict:
+    return connect_args(
+        url,
+        sslmode=settings.db_sslmode.strip().lower(),
+        connect_timeout=settings.db_connect_timeout_seconds,
+        application_name=settings.db_application_name if application_name is None else application_name,
+    )
 
 
 def create_db_engine(settings: Settings | None = None, *, url: str | None = None) -> Engine:
     settings = settings or get_settings()
-    target = url or settings.database_url
+    target = normalise_database_url(url or settings.database_url)
     if target.startswith("sqlite"):
         return create_engine(
             target,
@@ -59,7 +57,20 @@ def create_db_engine(settings: Settings | None = None, *, url: str | None = None
 def migration_url(settings: Settings | None = None) -> str:
     """Direct (unpooled) URL for migrations when the runtime URL is a pooled endpoint."""
     settings = settings or get_settings()
-    return (settings.migration_database_url or settings.database_url).strip()
+    return normalise_database_url(settings.migration_database_url or settings.database_url)
+
+
+def create_migration_engine(settings: Settings | None = None) -> Engine:
+    """Alembic's online engine: the migration URL, the same TLS/timeout arguments, no pool."""
+    settings = settings or get_settings()
+    target = migration_url(settings)
+    name = f"{settings.db_application_name}-migrations" if settings.db_application_name else ""
+    return create_engine(
+        target,
+        future=True,
+        poolclass=NullPool,
+        connect_args=_connect_args(settings, target, application_name=name),
+    )
 
 
 def get_engine() -> Engine:
