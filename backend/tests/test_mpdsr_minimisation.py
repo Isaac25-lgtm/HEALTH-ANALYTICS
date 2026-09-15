@@ -15,12 +15,13 @@ import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.domain.mpdsr_cause_taxonomy import CauseTaxonomy
 from app.domain.mpdsr_minimisation import (
     APPROVED_EVENT_SEMANTIC_FIELDS,
+    DROP_INVALID_FORMAT,
     DROP_NESTED,
     DROP_NOT_APPROVED,
-    DROP_TOO_LONG,
-    MAX_VALUE_LENGTH,
+    DROP_NOT_IN_TAXONOMY,
     minimise_event_values,
 )
 from app.integrations.dhis2.types import EventObservation
@@ -44,6 +45,14 @@ IDENTIFYING = {
 }
 
 
+# A test-only taxonomy. The production taxonomy is not configured (owner input required).
+TEST_TAXONOMY = CauseTaxonomy(
+    version="test-only",
+    approval_reference="synthetic test fixture, not an approved taxonomy",
+    labels={"O72": "Test category A", "O15": "Test category B"},
+)
+
+
 def _unit(session, code="PADER"):
     return session.scalar(select(OrgUnit).where(OrgUnit.code == code))
 
@@ -64,13 +73,14 @@ def test_unexpected_and_nested_payloads_are_refused():
     result = minimise_event_values(
         {
             "death_date": "2025-01-04",
-            "cause_mentions": ["haemorrhage", {"patient": "Jane"}],
+            "structured_cause_mentions": ["O72", {"patient": "Jane"}],
             "event_type": {"nested": {"patient_name": "Jane"}},
             "surprise_attribute": "anything",
-        }
+        },
+        taxonomy=TEST_TAXONOMY,
     )
     assert result.values["death_date"] == "2025-01-04"
-    assert result.values["cause_mentions"] == ["haemorrhage"]
+    assert result.values["structured_cause_mentions"] == ["O72"]
     assert "event_type" not in result.values
     assert result.dropped["event_type"] == DROP_NESTED
     assert result.dropped["surprise_attribute"] == DROP_NOT_APPROVED
@@ -78,22 +88,27 @@ def test_unexpected_and_nested_payloads_are_refused():
 
 
 def test_narratives_cannot_hide_inside_an_approved_field():
-    narrative = "x" * (MAX_VALUE_LENGTH + 1)
-    result = minimise_event_values({"cause_mentions": narrative, "death_date": "2025-01-04"})
-    assert "cause_mentions" not in result.values
-    assert result.dropped["cause_mentions"] == DROP_TOO_LONG
+    narrative = "The mother was seen late by the midwife at the health centre."
+    result = minimise_event_values(
+        {"structured_cause_mentions": narrative, "event_type": narrative, "death_date": "2025-01-04"},
+        taxonomy=TEST_TAXONOMY,
+    )
+    assert "structured_cause_mentions" not in result.values and "event_type" not in result.values
+    assert result.dropped["structured_cause_mentions"] == DROP_NOT_IN_TAXONOMY
+    assert result.dropped["event_type"] == DROP_INVALID_FORMAT
     assert result.values == {"death_date": "2025-01-04"}
 
 
 def test_whitelist_stays_minimal_and_excludes_identity():
+    # There is no free-text cause field: only taxonomy codes in structured_cause_mentions.
     assert APPROVED_EVENT_SEMANTIC_FIELDS == {
         "event_type",
         "death_date",
         "notification_date",
         "review_date",
-        "cause_mentions",
         "structured_cause_mentions",
     }
+    assert "cause_mentions" not in APPROVED_EVENT_SEMANTIC_FIELDS
     for forbidden in IDENTIFYING:
         assert forbidden not in APPROVED_EVENT_SEMANTIC_FIELDS
 
@@ -203,7 +218,7 @@ def test_event_uid_is_the_only_identifier_and_never_leaves_the_cache(client, ses
         death_date=date(2024, 8, 1),
         notification_date=date(2024, 8, 2),
         review_date=date(2024, 8, 5),
-        data_values={"event_type": "maternal_death", "cause_mentions": ["haemorrhage"]},
+        data_values={"event_type": "maternal_death", "structured_cause_mentions": ["O72"]},
     )
     session.commit()
     headers = auth_header(login(client, "admin.user"))

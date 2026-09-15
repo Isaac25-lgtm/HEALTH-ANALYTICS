@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.domain.enums import ActionPermission, OrgUnitLevel, ProgrammeCode
 from app.domain.interpretation import interpret_change
 from app.domain.modules import MODULE_INDICATORS, MODULE_PROGRAMME
+from app.domain.mpdsr_cause_taxonomy import CauseTaxonomy, current_cause_taxonomy
 from app.domain.periods import parse_period, previous_period, trend_periods
 from app.models import (
     CalculatedValue,
@@ -288,12 +289,15 @@ CAUSE_DISCLOSURE_LEVELS = {
 }
 
 
-def _structured_cause_categories(payload: dict) -> list[str]:
-    """Only structured cause categories are counted. Free-text cause fields never are."""
-    values = payload.get("structured_cause_mentions") or payload.get("cause_mentions") or []
+def _structured_cause_categories(payload: dict, taxonomy: CauseTaxonomy) -> list[str]:
+    """Only approved taxonomy codes are counted. There is no free-text cause fallback, and a value
+    that is not an exact approved code (a label, a narrative, a name) is ignored, not matched."""
+    values = payload.get("structured_cause_mentions") or []
     if isinstance(values, str):
         values = [values]
-    return [item.strip() for item in values if isinstance(item, str) and item.strip()]
+    if not isinstance(values, list | tuple):
+        return []
+    return [item for item in values if taxonomy.contains(item)]
 
 
 def _mpdsr_extras(
@@ -310,6 +314,7 @@ def _mpdsr_extras(
     except AuthorizationError:
         can_view_events = False
     min_cell = get_settings().mpdsr_cause_min_cell_count
+    taxonomy = current_cause_taxonomy()
     extras: dict = {
         "structured_cause_mentions": [],
         "cause_chart": "horizontal_bar",
@@ -326,6 +331,11 @@ def _mpdsr_extras(
             "status": "withheld",
             "reason": "Cause patterns require MPDSR programme access and MPDSR event permission.",
         }
+    elif taxonomy is None:
+        extras["cause_disclosure"] = {
+            "status": "withheld",
+            "reason": "No approved MPDSR cause taxonomy is configured; cause values are not stored or shown.",
+        }
     elif min_cell is None or min_cell < 1:
         extras["cause_disclosure"] = {
             "status": "withheld",
@@ -335,19 +345,20 @@ def _mpdsr_extras(
         mentions: Counter[str] = Counter()
         sources: dict[str, set] = {}
         for event in cohort:
-            for category in set(_structured_cause_categories(event.data_values or {})):
+            for category in set(_structured_cause_categories(event.data_values or {}, taxonomy)):
                 mentions[category] += 1
                 sources.setdefault(category, set()).add(event.org_unit_id)
         # A category is shown only when it meets the approved minimum cell count and its
         # mentions come from more than one reporting unit, so no single facility is exposed.
         shown = [
-            {"category": name, "mentions": count}
+            {"code": name, "category": taxonomy.label(name), "mentions": count}
             for name, count in sorted(mentions.items(), key=lambda item: (-item[1], item[0]))
             if count >= min_cell and len(sources[name]) > 1
         ]
         extras["structured_cause_mentions"] = shown
         extras["cause_disclosure"] = {
             "status": "disclosed",
+            "taxonomy_version": taxonomy.version,
             "level": org_unit.level_type,
             "min_cell_count": min_cell,
             "suppressed_categories": len(mentions) - len(shown),

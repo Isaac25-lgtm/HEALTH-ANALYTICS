@@ -153,7 +153,7 @@ export type CauseDisclosure = {
 };
 
 export type MpdsrExtras = {
-  structured_cause_mentions: Array<{ category: string; mentions: number }>;
+  structured_cause_mentions: Array<{ code?: string; category: string; mentions: number }>;
   cause_note?: string;
   cause_disclosure?: CauseDisclosure;
   active_events: { label?: string; count?: number } | null;
