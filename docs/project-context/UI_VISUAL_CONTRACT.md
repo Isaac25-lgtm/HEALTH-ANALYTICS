@@ -55,6 +55,14 @@ The owner-supplied HTML prototype may guide layout, density and interaction patt
 
 The Next.js application remains the implementation target.
 
+## Implementation status (2026-09-15, second corrective pass)
+
+- Shell: local outline icons (`components/ui/Icon.tsx`, no icon font or external asset) on navigation, filter fields, panel headings, insights, alerts and downloads. Navigation is grouped (geography screens, workspaces) with a filled active pill.
+- Topbar: title and screen/scope subtitle on the left; data-quality alert link with the snapshot's open-flag count, avatar, name, role, sign out and a platform note on the right. No slogan or national colours are used because none was supplied.
+- Filter strip: scope and role chips, five labelled selects with icons, Apply, and a real authorised search (`GET /search`: organisation units inside the user's geography scope and indicators in authorised programmes; never events or users).
+- KPI cards: direction arrow from the server's change value, colour from the server's interpretation, status pill with dot.
+- DOM contract gate: "reference layout contract at 1680x945" in `frontend/e2e/visual-acceptance.spec.ts`. Comparison matrix: `docs/evidence/VISUAL_COMPARISON.md`.
+
 ## Implementation status (2026-09-15, corrective visual pass)
 
 - Structure: `DashboardView` loads the snapshot; `components/dashboard/DashboardFrame.tsx` renders the compact filter strip and status line; `components/workspaces/registry.tsx` maps each screen family and workspace to its own composition component (`GeographyOverview`, `FacilityProfile`, `AncWorkspace`, `IntrapartumWorkspace`, `ImmunizationWorkspace`, `MpdsrWorkspace`, `MapsWorkspace`, `TrendsWorkspace`, `QualityWorkspace`, `ReportsWorkspace`, `AiWorkspace`, `AdminWorkspace`), all built from shared panels in `components/panels/`.

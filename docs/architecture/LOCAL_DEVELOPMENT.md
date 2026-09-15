@@ -65,7 +65,7 @@ SQLite is used by the default suite. PostgreSQL tests run only when `HPIP_POSTGR
 ```powershell
 & 'C:\Program Files\PostgreSQL\18\bin\pg_ctl.exe' start -D backend\.grok-pg18-verify -w
 $env:HPIP_POSTGRES_TEST_URL = 'postgresql+psycopg://hpip@127.0.0.1:55432/postgres'
-pytest -q -rs
+pytest -q -rs --basetemp C:/hpt/run   # short base path: long temp paths exceed the Windows path limit
 & 'C:\Program Files\PostgreSQL\18\bin\pg_ctl.exe' stop -D backend\.grok-pg18-verify
 ```
 
@@ -92,7 +92,7 @@ Next.js 15.5.25 clears `.next` at the start of `next build` and retries `EPERM` 
 
 ### Playwright
 
-Playwright starts the disposable API (`backend/scripts/run_e2e_api.py`, port 8010) and a production Next server whose `/api` proxy points at it (`BACKEND_INTERNAL_URL`). It writes `playwright-report/results.json` and screenshots to `e2e-screenshots/`; `node scripts/assert-no-skips.mjs playwright-report/results.json` fails on skipped or missing tests. CI uses Playwright-managed Chromium; locally, set `HPIP_PYTHON` and optionally `HPIP_BROWSER_EXECUTABLE` (for example the installed Chrome). Server reuse is opt-in (`HPIP_REUSE_E2E_SERVER=true`) so runs do not strand processes. Authentication is cookie-only; the frontend must not store an access token.
+Playwright starts the disposable API (`backend/scripts/run_e2e_api.py`, port 8010) and, through `scripts/e2e-web.mjs`, a production Next build served with the backend given only at runtime (`host:port`). The wrapper owns its `next start` child: it never shares Playwright's stdio, and on stop it signals only that child, waits, then force-terminates only that child. Use `npm run e2e:gate` for acceptance: it fails unless Playwright exits 0 by itself within 60 s of its summary, nothing is skipped, ports 3000/8010 are closed, no descendant of the run survives, and `git status` is clean. Ordinary runs write screenshots to ignored `test-results/visual-evidence/` (volatile snapshot IDs and timestamps masked); refresh tracked evidence in `docs/evidence/screenshots/` only with `npm run e2e:evidence` (`UPDATE_VISUAL_EVIDENCE=1`). Playwright writes `playwright-report/results.json` and legacy screenshots to `e2e-screenshots/`; `node scripts/assert-no-skips.mjs playwright-report/results.json` fails on skipped or missing tests. CI uses Playwright-managed Chromium; locally, set `HPIP_PYTHON` and optionally `HPIP_BROWSER_EXECUTABLE` (for example the installed Chrome). Server reuse is opt-in (`HPIP_REUSE_E2E_SERVER=true`) so runs do not strand processes. Authentication is cookie-only; the frontend must not store an access token.
 
 ## Migration history
 

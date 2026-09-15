@@ -19,8 +19,10 @@ Both GeoJSON files passed the streaming parser, supported-geometry, non-empty-co
 - District features match a unique active district/city by normalized canonical name.
 - Sub-county features match a unique active sub-county by both district ancestor and normalized canonical name.
 - Invalid geometry, ambiguous names, or duplicate target units block the entire apply operation.
-- Unmatched features also block apply unless `--allow-unmatched` is explicitly used after reviewing the report.
-- Apply requires `--user` for an active user with `manage_mappings` and an explicit `--valid-from` date.
+- Unmatched features also block apply unless `--allow-unmatched` is used **and** `--partial-activation-reference` records the owner's approval of partial activation.
+- Apply requires `--user` for an active user with `manage_mappings`, an explicit `--valid-from` date, `--effective-date-reference` confirmed with `--effective-date-verified`, and `--mapping-decision-reference`.
+- Apply refuses unless the hierarchy for the level is authoritative (`app/services/hierarchy_authority.py`): the level's approval reference is configured (`BOUNDARY_DISTRICT_HIERARCHY_APPROVAL_REFERENCE` or `BOUNDARY_SUB_COUNTY_HIERARCHY_APPROVAL_REFERENCE`, both empty by default) and a complete cohort exists (146 district/city units; for sub-counties, at least as many units as source features). Authority is never inferred from a unit count alone, and approving the population crosswalk does not approve boundaries.
+- Every matched unit must be at the requested level; a feature can never be attached to a unit of another level.
 - A new dataset versions existing current geometry by closing the prior validity interval and records one audit event. Re-applying the same file hash is idempotent.
 
 Example dry run from `backend/`:
@@ -30,7 +32,7 @@ python scripts/import_geojson.py ..\UGANDA_DISTRICT.json --level district
 python scripts/import_geojson.py ..\UGANDA_SUBCOUNTIES.json --level sub_county
 ```
 
-Do not use `--apply` until the approved national analytical hierarchy, city treatment, canonical names/codes, and boundary effective date are confirmed. Against the synthetic seed only, the district source matched 3 of 146 units and the sub-county source matched 0 of 2,190. This is expected and is not evidence of bad geometry.
+Do not use `--apply` until the approved national analytical hierarchy, city treatment, canonical names/codes, and boundary effective date are confirmed and their references recorded. Against the synthetic seed only: district/city `reconciliation_matched = 3`, `reconciliation_unmatched = 143`, `non_production_candidates = 3`, `production_unresolved = 146`; sub-county `reconciliation_matched = 0`, `production_unresolved = 2,190`. This is expected and is not evidence of bad geometry.
 
 ## Adaptive map data contract
 
@@ -55,7 +57,7 @@ Dashboards no longer join a separately fetched geometry layer in the browser. `P
 
 `GET /analysis-snapshots/{id}/map-features` returns those features with values copied from the snapshot and access re-checked. District polygons are never substituted for regions; district screens map facility points or polygons, not the district outline. The browser performs no calculation and no `as_of` derivation.
 
-The earlier Phase 4 map joined the features below to authorised dashboard comparison values by organisation-unit ID. It does not calculate indicators in the browser or load the owner source set in the client. A 2026-09-12 dry-run report is stored at `docs/architecture/GEOJSON_DRY_RUN.json`. Name matches against the synthetic seed are not approved production mappings.
+The earlier Phase 4 map joined the features below to authorised dashboard comparison values by organisation-unit ID. It does not calculate indicators in the browser or load the owner source set in the client. A historical 2026-09-12 dry-run report is stored at `docs/architecture/GEOJSON_DRY_RUN.json`; its `matched_features` and `unmatched_count` are reconciliation counts only and are superseded by `docs/reconciliation/GEOJSON_RECONCILIATION.{md,json}`, which reports `production_unresolved`. Name matches against the synthetic seed are not approved production mappings.
 
 ## Validation and reconciliation (2026-09-14)
 
@@ -65,4 +67,4 @@ The earlier Phase 4 map joined the features below to authorised dashboard compar
 - `UGANDA_SUBCOUNTIES.json`: GeoJSON, 2,190 features (2,080 Polygon, 110 MultiPolygon), 1,671,234 positions, all in range. `OBJECTID=1240` is shared by two different features; 44 sub-county names repeat nationally, with no collision once qualified by district.
 - `UGANDA_DISTRICTS.json`: Esri JSON (`esriGeometryPolygon`, wkid 4326), 146 features — comparison only, never canonical.
 
-Crosswalk results are against synthetic development fixtures and are not production mappings. **Effective date not yet verified.** `apply_geometry_import` now refuses unless the caller passes `effective_date_verified=True`, and `scripts/import_geojson.py --apply` requires `--effective-date-verified`; no date is invented to satisfy the column.
+Crosswalk results use the same matcher and authority gate as activation and report `source_features`, `reconciliation_matched`, `reconciliation_unmatched`, `ambiguous`, `invalid`, `duplicate_targets`, `production_resolved`, `production_unresolved`, `non_production_candidates`, `reference_scope` and `hierarchy_approval_reference`. While the hierarchy is synthetic or unapproved every feature is production-unresolved. **Effective date not yet verified.** No date or approval reference is invented. A successful activation (only possible after owner approval) is audited with actor, source file, full checksum, level, hierarchy approval reference, mapping decision reference, effective date and its reference, and inserted/unchanged/superseded counts.

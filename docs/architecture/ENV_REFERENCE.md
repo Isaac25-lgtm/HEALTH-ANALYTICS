@@ -46,6 +46,7 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | `RAW_AGGREGATE_RETENTION_DAYS` / `MPDSR_EVENT_RETENTION_HOURS` / `EXPORT_FILE_RETENTION_HOURS` / `EXPORT_JOB_RETENTION_DAYS` / `CALCULATION_SNAPSHOT_RETENTION_MONTHS` / `AUDIT_LOG_RETENTION_MONTHS` | Retention windows (7 d / 24 h / 24 h / 90 d / 36 months / 24 months) |
 | `OPERATIONAL_RECORD_RETENTION_DAYS` | Maintenance run records and operational events (90 d; engineering default pending owner confirmation) |
 | `POPULATION_HIERARCHY_APPROVAL_REFERENCE` | Reference to the owner's approval of the district/city hierarchy. Empty keeps every population crosswalk match a non-production candidate. |
+| `BOUNDARY_DISTRICT_HIERARCHY_APPROVAL_REFERENCE` / `BOUNDARY_SUB_COUNTY_HIERARCHY_APPROVAL_REFERENCE` | Owner approval references for the district/city and sub-county boundary hierarchies. Empty (default) keeps every boundary feature production-unresolved and refuses geometry activation at that level. Independent of the population reference. |
 | `PURGE_ENABLED` / `PURGE_DRY_RUN` / `PURGE_SCHEDULE_ENABLED` / `PURGE_BATCH_SIZE` / `PURGE_MAX_BATCHES` / `PURGE_LOCK_TIMEOUT_SECONDS` | Purge controls |
 | `FORMULA_UNDATED_FALLBACK` | Whether undated legacy formula versions may be used; unset = development/test only |
 | `MPDSR_CAUSE_MIN_CELL_COUNT` | Unset keeps cause patterns withheld |

@@ -1,5 +1,14 @@
 # Context Changelog
 
+## 2026-09-15 — Corrective pre-UAT implementation (second pass)
+
+Follows the audit of `fbf8a3a`. **Nothing was deployed or pushed, no remote was created, live DHIS2, Neon, Render and external AI providers were not contacted, no population was imported, no boundary was activated, no user or credential was created, and nothing is owner-accepted.** Details are in `DEFECT_MATRIX.md` ("second pass").
+
+- **Bootstrap drift:** every bootstrap-owned field is compared before any write; any conflict writes nothing and exits 3 (29 mutations on SQLite and PostgreSQL).
+- **Boundary governance:** district/city `source_features = 146`, `reconciliation_matched = 3`, `reconciliation_unmatched = 143`, `non_production_candidates = 3` (Kitgum, Pader, Soroti), `production_resolved = 0`, `production_unresolved = 146`; sub-county `source_features = 2,190`, `production_unresolved = 2,190`. Activation now needs recorded hierarchy, mapping-decision and effective-date approval references; `--effective-date-verified` alone is not approval.
+- **Playwright shutdown:** the earlier entry below says the runner "exited"; the audit could not reproduce a clean return, and that statement is withdrawn. The cause was the `next start` child inheriting Playwright's stdio. `npm run e2e:gate` now proves exit 0 within a bound, free ports, no surviving descendants and a clean tree.
+- **Visual contract:** icons, grouped navigation, alerts/profile area, authorised search, KPI and panel anatomy, with DOM-contract assertions.
+
 ## 2026-09-15 — Corrective pre-UAT implementation and final audit
 
 Corrects eight code-controlled blockers found after the 2026-09-14 pass. **Nothing was deployed or pushed, no Neon or Render account was contacted, live DHIS2 was not contacted, no population was approved or imported into a production database, no boundary was activated, no real user was created, and nothing is owner-accepted.** Details per item are in `DEFECT_MATRIX.md` ("Corrective pre-UAT pass").
@@ -22,7 +31,7 @@ Verification on 2026-09-15 (Windows workstation):
 | Frontend typecheck / lint / unit | `npx tsc --noEmit`, `npx eslint .`, `npx vitest run` | 0 errors / 0 errors / **87 passed** |
 | Production build (real repository, no backend address) | `npm run build` | exit 0 |
 | Proxy build verification | `node scripts/verify-proxy-build.mjs` | passed: 0 rewrites, 0 of 28 client chunks with a backend address, `hpip-api:10000` → 502 with 0 localhost requests, unset → 500 |
-| End-to-end | `npx playwright test` then `node scripts/assert-no-skips.mjs playwright-report/results.json` | **22 passed, 0 skipped** in 93 s; runner exited; ports 3000/8010 free |
+| End-to-end | `npx playwright test` then `node scripts/assert-no-skips.mjs playwright-report/results.json` | **22 passed, 0 skipped** in 93 s; ports 3000/8010 free (the claim that the runner exited by itself was not reproduced by the audit; see the second-pass entry) |
 
 Test-environment note: with a long pytest `--basetemp` under the scratchpad directory, six export tests failed because the generated artifact paths exceeded the Windows path limit. They pass with the short basetemp above. That was an environment limitation, not an application failure; Render runs Linux and stores export bytes in the database. One stale assertion (the removed `NEXT_PUBLIC_API_BASE_URL` fallback) was updated to the new same-origin contract.
 
