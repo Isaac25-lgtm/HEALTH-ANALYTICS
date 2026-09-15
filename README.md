@@ -2,7 +2,7 @@
 
 National analytical layer above DHIS2. First production module: MNCH (ANC, intrapartum/newborn, immunization/EPI, MPDSR).
 
-**Current status (2026-09-14):** pre-DHIS2 UAT preparation for Render + Neon. Phases 1–7 plus corrective work are implemented: persistent analytical snapshots, queued exports with durable failure and database-backed artifacts, retention and purge, MPDSR minimisation, a central population/period resolver, governed population staging, boundary reconciliation and a same-origin frontend. Alembic head is `0011_population_import_staging`. **Nothing is deployed, DHIS2 is not connected, and nothing is owner-accepted.** Owner inputs in `docs/project-context/OPEN_ITEMS.md` remain unresolved.
+**Current status (2026-09-15):** pre-DHIS2 UAT preparation for Render + Neon. Phases 1–7 plus corrective work are implemented: persistent analytical snapshots, queued exports with durable failure and database-backed artifacts, retention and purge, MPDSR minimisation, a central population/period resolver, governed population staging, boundary reconciliation and a same-origin frontend. Alembic head is `0012_population_staging_identity`; releases run migrations then `scripts/bootstrap_reference_data.py`. **Nothing is deployed, DHIS2 is not connected, and nothing is owner-accepted.** Owner inputs in `docs/project-context/OPEN_ITEMS.md` remain unresolved.
 
 Do not treat passing local tests as production acceptance.
 
@@ -22,7 +22,7 @@ Do not treat passing local tests as production acceptance.
 | `docs/project-context/` | Binding product context |
 | `docker-compose.dev.yml` | Development API/web (SQLite, explicit development gates) |
 | `docker-compose.yml` | Production-like stack: PostgreSQL, Redis, migrations, API, worker, web; no default credentials |
-| `render.yaml` | Render UAT blueprint (web, API, one worker, Redis, purge cron, inert DHIS2 refresh); Neon is external |
+| `render.yaml` | Render UAT blueprint, not validated by Render (public web, private API, one worker, Key Value, purge cron); Neon is external |
 | `docs/reconciliation/` | Population workbook and boundary reconciliation reports |
 | `docs/DEPLOYMENT.md` | Render + Neon runbook, retention, backup, rotation |
 

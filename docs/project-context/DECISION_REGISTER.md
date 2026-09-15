@@ -76,3 +76,13 @@ Recorded from the owner's written execution instruction of 2026-09-14. Engineeri
 - Purge runs daily at 01:30 UTC through one purge service; the six-hourly DHIS2 refresh command exists but exits without contacting DHIS2.
 - Boundary geometry cannot be activated without an explicit `effective_date_verified` confirmation.
 - Undated legacy formula versions are permitted in development/test only unless `FORMULA_UNDATED_FALLBACK` is set (see OPEN_ITEMS).
+
+### Engineering implementation choices, corrective pre-UAT pass (2026-09-15; not owner decisions)
+
+- A production reference bootstrap (`scripts/bootstrap_reference_data.py`) creates the approved non-secret configuration after migrations; the neutral country root uses code `UG` with no DHIS2 UID. Conflicting existing rows fail closed.
+- The Next.js `/api` proxy is a runtime route handler, not a build-time rewrite, so the backend address is never captured by `next build`. The Render API is a private service.
+- Render secrets are declared once on `hpip-api` and copied to other services with `fromService … envVarKey`; the Blueprint group holds non-secret values only. The inert DHIS2 refresh cron is omitted from the initial topology.
+- Plain `postgresql://` URLs are normalised to psycopg 3; URL `sslmode` takes precedence over `DB_SSLMODE` and a conflict is a configuration error.
+- Maintenance run records and operational events are purged after 90 days (`OPERATIONAL_RECORD_RETENTION_DAYS`) pending owner confirmation.
+- MPDSR causes are stored only as codes from an approved taxonomy; with none configured they are dropped. Event dates are stored as calendar dates only.
+- Population `production_unresolved` counts every source unit unless `POPULATION_HIERARCHY_APPROVAL_REFERENCE` is recorded and the full cohort exists.

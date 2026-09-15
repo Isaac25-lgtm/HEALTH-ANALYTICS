@@ -5,7 +5,7 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | Variable | Purpose |
 |---|---|
 | `APP_ENV` | `development`, `test`, `staging`, or `production` |
-| `DATABASE_URL` | SQLAlchemy URL. PostgreSQL required outside local tests; on Neon, the pooled connection string. |
+| `DATABASE_URL` | SQLAlchemy URL. PostgreSQL required outside local tests; on Neon, the pooled connection string. Plain `postgresql://` is normalised to `postgresql+psycopg`. |
 | `MIGRATION_DATABASE_URL` | Optional direct (unpooled) URL that Alembic prefers for DDL |
 | `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | Per-process pool (defaults 5/5; production rejects a total above 20) |
 | `DB_POOL_RECYCLE_SECONDS` / `DB_POOL_TIMEOUT_SECONDS` / `DB_CONNECT_TIMEOUT_SECONDS` / `DB_POOL_PRE_PING` | Connection hygiene |
@@ -44,6 +44,8 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | `EXPORT_MAX_ATTEMPTS` / `EXPORT_RETRY_BACKOFF_SECONDS` / `EXPORT_RETRY_BACKOFF_MAX_SECONDS` / `EXPORT_JOB_LEASE_SECONDS` | Bounded worker retries and stale-claim recovery |
 | `EXPORT_ARTIFACT_STORAGE` / `EXPORT_SHARED_FILESYSTEM` / `EXPORT_ARTIFACT_MAX_BYTES` | `filesystem` (shared disk) or `database` (Render); size cap |
 | `RAW_AGGREGATE_RETENTION_DAYS` / `MPDSR_EVENT_RETENTION_HOURS` / `EXPORT_FILE_RETENTION_HOURS` / `EXPORT_JOB_RETENTION_DAYS` / `CALCULATION_SNAPSHOT_RETENTION_MONTHS` / `AUDIT_LOG_RETENTION_MONTHS` | Retention windows (7 d / 24 h / 24 h / 90 d / 36 months / 24 months) |
+| `OPERATIONAL_RECORD_RETENTION_DAYS` | Maintenance run records and operational events (90 d; engineering default pending owner confirmation) |
+| `POPULATION_HIERARCHY_APPROVAL_REFERENCE` | Reference to the owner's approval of the district/city hierarchy. Empty keeps every population crosswalk match a non-production candidate. |
 | `PURGE_ENABLED` / `PURGE_DRY_RUN` / `PURGE_SCHEDULE_ENABLED` / `PURGE_BATCH_SIZE` / `PURGE_MAX_BATCHES` / `PURGE_LOCK_TIMEOUT_SECONDS` | Purge controls |
 | `FORMULA_UNDATED_FALLBACK` | Whether undated legacy formula versions may be used; unset = development/test only |
 | `MPDSR_CAUSE_MIN_CELL_COUNT` | Unset keeps cause patterns withheld |
@@ -55,6 +57,6 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | `AI_PROVIDER` / `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` / `AI_ENABLED` | AI Gateway; disabled unless enabled with a key and base URL |
 | `AI_TIMEOUT_SECONDS` / `AI_MAX_TOKENS` / `AI_PROMPT_VERSION` / `AI_MAX_EVIDENCE_CHARS` / `AI_RATE_LIMIT` | Gateway bounds |
 | `EXPORT_DIR` / `EXPORT_RATE_LIMIT` | Publishing artifact directory and per-user rate limit |
-| `BACKEND_INTERNAL_URL` | Server-side proxy target for the frontend's same-origin `/api/*` path (default `http://127.0.0.1:8000`) |
-| `NEXT_PUBLIC_API_BASE_URL` | Optional; set only for a deliberate cross-origin deployment. Default is the same-origin `/api` path. |
+| `BACKEND_INTERNAL_URL` | Read **at request time** by the `/api/[...path]` route. `http(s)://host[:port]` or a bare `host:port` (Render `hostport`, normalised to `http://`). Required in production (unset → HTTP 500 `proxy_misconfigured`); development falls back to `http://127.0.0.1:8000`. Not needed at build time and never exposed to the browser. |
+| `E2E_BACKEND_HOSTPORT` | Playwright only: backend given to `next start` by `scripts/e2e-web.mjs` |
 | `HPIP_PYTHON` / `HPIP_BROWSER_EXECUTABLE` / `HPIP_REUSE_E2E_SERVER` | Playwright: Python for the disposable API, optional local browser, opt-in server reuse |

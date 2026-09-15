@@ -83,7 +83,7 @@ celery --app=app.workers.celery_app:celery_app worker --queues=exports,sync,main
 |---|---|---|
 | `exports` | `app.workers.tasks.generate_export_job` | Late acknowledgement; atomic claim per job; bounded by `EXPORT_MAX_ATTEMPTS` (3) with backoff; a claim older than `EXPORT_JOB_LEASE_SECONDS` can be taken over; duplicate deliveries are no-ops. |
 | `sync` | `app.workers.tasks.execute_sync_job` | `max_retries=3`. Inert while DHIS2 is disabled. |
-| `maintenance` | `app.workers.tasks.purge_expired_data` | Same purge service as the CLI and cron; per-policy lease; `max_retries=2`. |
+| `maintenance` | `app.workers.tasks.purge_expired_data` | Same purge service as the CLI and cron. A failed policy is recorded, then raised; the task retries only the failed policies (`max_retries=2`, 3 attempts) and finally fails. |
 | any | `app.workers.tasks.queue_health_probe` | Echo task used by `scripts/queue_smoke.py`. |
 
 Checks: `celery --app=app.workers.celery_app:celery_app inspect ping`, `python scripts/queue_smoke.py`, and `GET /ops/status` (worker count, export jobs by status, permanent failures).
@@ -96,4 +96,18 @@ Checks: `celery --app=app.workers.celery_app:celery_app inspect ping`, `python s
 
 ## Retention purge
 
-Daily: `python scripts/purge_expired.py --source scheduler`. Use `--dry-run` first after any window change (it writes nothing). Each policy pass is recorded in `maintenance_runs`. `skipped_locked` means another purge process holds that policy; `failed` carries `purge_failed` and the exception class only.
+Daily: `python scripts/purge_expired.py --source scheduler --max-attempts 3 --retry-delay-seconds 120`. Use `--dry-run` first after any window change (it writes nothing). Each policy pass is recorded in `maintenance_runs` with its attempt number.
+
+| Status / code | Meaning | Operator action |
+|---|---|---|
+| `completed` | Policy finished; `files_absent` counts files that were already gone | None |
+| `skipped_locked` | Another purge holds the lease; not a failure | None, unless it persists beyond `PURGE_LOCK_TIMEOUT_SECONDS` |
+| `failed` / `artifact_delete_failed` | One or more export files could not be deleted. Their paths and jobs were kept for retry. | Check file permissions on the export volume; the next run retries |
+| `failed` / `lease_lost` | Another process took the lease mid-run; the purge stopped before the next batch | Look for overlapping schedules |
+| `failed` / `purge_failed` | Any other error; only the exception class is recorded | Check logs for that run time |
+
+The CLI exits non-zero when any requested policy is still failed after its last attempt, so the scheduler records a failed run. Nothing persisted contains file paths, exception messages or deleted content.
+
+## Reference bootstrap
+
+Runs after migrations on every release (`preDeployCommand`). Exit 0: created or already present. Exit 2: configuration invalid or the database is not at the Alembic head. Exit 3: existing reference rows differ from the approved reference; the listed rows must be reviewed with the configuration owner, and the bootstrap never overwrites them. `--check` reports what would be created without writing.

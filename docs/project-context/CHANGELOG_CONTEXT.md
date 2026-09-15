@@ -1,5 +1,33 @@
 # Context Changelog
 
+## 2026-09-15 — Corrective pre-UAT implementation and final audit
+
+Corrects eight code-controlled blockers found after the 2026-09-14 pass. **Nothing was deployed or pushed, no Neon or Render account was contacted, live DHIS2 was not contacted, no population was approved or imported into a production database, no boundary was activated, no real user was created, and nothing is owner-accepted.** Details per item are in `DEFECT_MATRIX.md` ("Corrective pre-UAT pass").
+
+- **A. Fresh database:** `scripts/bootstrap_reference_data.py` creates the approved reference configuration after migrations, so empty → head → bootstrap → first administrator → login now works (proven on SQLite and PostgreSQL 18.1).
+- **B/C. Proxy and Blueprint:** the build-time rewrite is replaced by a runtime `/api` route. `render.yaml` now has a private API service, `type: keyvalue`, a Blueprint-defined non-secret group, secrets declared once and copied with `envVarKey`, migrations then bootstrap before deploy, and no inert DHIS2 cron. Render's own Blueprint validation was **not** run.
+- **D. Neon URLs:** plain `postgresql://` URLs are normalised to psycopg 3, TLS is validated for both URLs, and Alembic uses the runtime connection arguments with NullPool.
+- **E. Purge failures:** failed policies now fail the execution and retry, undeleted files keep their path and job, and the lease is renewed and checked inside every batch.
+- **F. MPDSR:** there is no free-text cause field. Causes are taxonomy codes only, and with no taxonomy configured they are dropped. Dates and event types have strict formats.
+- **G. Population staging:** `production_unresolved` = 146/146 while the hierarchy is unapproved (143 reconciliation-unmatched, 3 non-production candidates). Migration `0012_population_staging_identity` makes staging idempotent, and there is a governed review transition. Reports were regenerated.
+- **H. Visual acceptance:** information-dense 16:9 compositions per screen and workspace, built from shared panels, with Playwright visual gates. Screenshots are in `docs/evidence/screenshots/`.
+
+Verification on 2026-09-15 (Windows workstation):
+
+| Gate | Command | Result |
+|---|---|---|
+| Backend lint | `python -m ruff check app tests scripts alembic` | clean |
+| Backend, PostgreSQL 18.1 disposable cluster (port 55432) | `HPIP_POSTGRES_TEST_URL=postgresql+psycopg://hpip@127.0.0.1:55432/postgres python -m pytest -q -rs -p no:cacheprovider --basetemp C:/hpt/pg` | **749 passed, 2 skipped** (Redis) in 532 s |
+| Backend, SQLite | `python -m pytest -q -rs -p no:cacheprovider --basetemp C:/hpt/sq` | **722 passed, 29 skipped** (27 PostgreSQL-only, 2 Redis) in 489 s |
+| Frontend typecheck / lint / unit | `npx tsc --noEmit`, `npx eslint .`, `npx vitest run` | 0 errors / 0 errors / **87 passed** |
+| Production build (real repository, no backend address) | `npm run build` | exit 0 |
+| Proxy build verification | `node scripts/verify-proxy-build.mjs` | passed: 0 rewrites, 0 of 28 client chunks with a backend address, `hpip-api:10000` → 502 with 0 localhost requests, unset → 500 |
+| End-to-end | `npx playwright test` then `node scripts/assert-no-skips.mjs playwright-report/results.json` | **22 passed, 0 skipped** in 93 s; runner exited; ports 3000/8010 free |
+
+Test-environment note: with a long pytest `--basetemp` under the scratchpad directory, six export tests failed because the generated artifact paths exceeded the Windows path limit. They pass with the short basetemp above. That was an environment limitation, not an application failure; Render runs Linux and stores export bytes in the database. One stale assertion (the removed `NEXT_PUBLIC_API_BASE_URL` fallback) was updated to the new same-origin contract.
+
+Not executed locally: Render Blueprint validation (no Render access authorised), queued export generation over real Redis/Celery (no Redis on the workstation; the Playwright export uses `EXPORT_EAGER=true`), Docker image builds and Compose (Docker not installed), any deployment, and live DHIS2.
+
 ## 2026-09-14 — Pre-DHIS2 productionisation (Render + Neon UAT preparation)
 
 This entry prepares UAT on Render with Neon PostgreSQL for about 100 light users (D-042 to D-049). **Nothing was deployed, no Neon database was connected, live DHIS2 was not contacted, and nothing is owner-accepted.** Work is committed to a local Git repository on `master` with no remote.

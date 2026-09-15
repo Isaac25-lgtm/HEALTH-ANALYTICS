@@ -55,6 +55,14 @@ The owner-supplied HTML prototype may guide layout, density and interaction patt
 
 The Next.js application remains the implementation target.
 
+## Implementation status (2026-09-15, corrective visual pass)
+
+- Structure: `DashboardView` loads the snapshot; `components/dashboard/DashboardFrame.tsx` renders the compact filter strip and status line; `components/workspaces/registry.tsx` maps each screen family and workspace to its own composition component (`GeographyOverview`, `FacilityProfile`, `AncWorkspace`, `IntrapartumWorkspace`, `ImmunizationWorkspace`, `MpdsrWorkspace`, `MapsWorkspace`, `TrendsWorkspace`, `QualityWorkspace`, `ReportsWorkspace`, `AiWorkspace`, `AdminWorkspace`), all built from shared panels in `components/panels/`.
+- Desktop at 1680×945: header, one-row filter strip, status line, six KPI cards, then map | priority insights | unit scorecard, then trends | top and bottom performers | Ask the Data, then a compact downloads footer. Panels have fixed grid heights and scroll internally. Insights show four prioritised items with "View all" to the Data quality workspace; flags paginate there.
+- Missing population or geometry is stated inside the panel it affects; the layout does not collapse and missing values never render as zero.
+- Brand: a dashed, labelled "reserved crest" slot. No crest or official mark was extracted from the reference PNGs.
+- Gates (`frontend/e2e/visual-acceptance.spec.ts`): no horizontal overflow at 1680×945, 820×1180 and 390×844 for the geography screens and every workspace; desktop document height at most 1.5 screens; KPI strip and main-row panels end above the fold on the national view; no visible text below 12px; mobile filters within the viewport; tables scroll inside their containers. Acceptance screenshots: `docs/evidence/screenshots/`.
+
 ## Implementation status (2026-09-14)
 
 - `frontend/src/app/globals.css` carries the prototype's visual tokens only: navy scale `#061a31`–`#1a4a74`, blue scale `#12509e`–`#edf4fd`, RAG backgrounds, canvas `#f2f7fc`, 10px radius, 14px gap, 30px control and row height, 236px navy-gradient sidebar, subtle radial canvas background, sticky table headers, 430px evidence drawer, Excel/PowerPoint/report button colours. System fonts only.

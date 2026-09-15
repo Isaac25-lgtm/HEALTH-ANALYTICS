@@ -16,8 +16,8 @@ from app.db.urls import connect_args, effective_sslmode, normalise_database_url,
 from tests.test_runtime_gates import PRODUCTION_BASE
 
 # Neon-shaped examples. Hosts and passwords are invented and never contacted.
-POOLED = "postgresql://hpip_app:Np4ss-Word@ep-quiet-lake-a1b2c3-pooler.eu-central-1.aws.neon.tech/hpip?sslmode=require&channel_binding=require"  # noqa: E501
-DIRECT = "postgresql://hpip_app:Np4ss-Word@ep-quiet-lake-a1b2c3.eu-central-1.aws.neon.tech/hpip?sslmode=require"
+POOLED = "postgresql://hpip_app:Np4ss-Word@ep-quiet-lake-a1b2c3-pooler.neon.example.invalid/hpip?sslmode=require&channel_binding=require"  # noqa: E501
+DIRECT = "postgresql://hpip_app:Np4ss-Word@ep-quiet-lake-a1b2c3.neon.example.invalid/hpip?sslmode=require"
 SECRET = "Np4ss-Word"
 
 
@@ -48,7 +48,7 @@ def test_neon_pooled_and_direct_urls_keep_host_query_and_credentials():
     assert settings.migration_database_url.startswith("postgresql+psycopg://")
     pooled = make_url(settings.database_url)
     assert pooled.drivername == "postgresql+psycopg"
-    assert pooled.host.endswith("-pooler.eu-central-1.aws.neon.tech")
+    assert pooled.host.endswith("-pooler.neon.example.invalid")
     assert pooled.query["channel_binding"] == "require" and pooled.query["sslmode"] == "require"
     assert pooled.password == SECRET
     assert validate_runtime_settings(settings) == []

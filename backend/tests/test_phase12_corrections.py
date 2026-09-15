@@ -668,9 +668,10 @@ def test_login_does_not_return_or_document_localstorage_token(client):
     source = frontend.read_text(encoding="utf-8")
     assert "localStorage" not in source
     assert "hpip_token" not in source
-    # Same-origin proxy (D-042): the browser defaults to /api on the web origin, so the session and
-    # CSRF cookies are first-party. No absolute backend origin is compiled into the client.
-    assert '?? "/api"' in source
+    # Same-origin proxy (D-042): the browser always calls /api on the web origin, so the session and
+    # CSRF cookies are first-party. No backend origin or override variable is compiled into the client.
+    assert 'const API_BASE = "/api";' in source
+    assert "NEXT_PUBLIC_API_BASE_URL" not in source
     assert '"http://localhost:8000"' not in source
     assert '"http://127.0.0.1:8000"' not in source
 

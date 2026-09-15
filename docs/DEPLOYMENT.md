@@ -1,67 +1,100 @@
 # Deployment — Render + Neon UAT
 
-This runbook prepares a small, secure UAT deployment for about 100 light users (decisions D-042 to D-049). **Nothing described here has been deployed**, no Neon database has been connected, and live DHIS2 is not authorised. Passing tests is not owner acceptance.
+This runbook prepares a small, secure UAT deployment for about 100 light users (decisions D-042 to D-049). **Nothing described here has been deployed**, no Neon database has been connected, `render.yaml` has **not** been validated by Render's Blueprint validator or CLI, and live DHIS2 is not authorised. Passing tests is not owner acceptance.
 
 ## Topology
 
-| Component | Where | Notes |
+| Component | Render type | Notes |
 |---|---|---|
-| `hpip-web` | Render web service (`frontend/Dockerfile`) | Next.js. The browser calls same-origin `/api/*`; Next forwards it server-side to `BACKEND_INTERNAL_URL`. Session and CSRF cookies therefore belong to the web origin. |
-| `hpip-api` | Render web service (`backend/Dockerfile`) | FastAPI. `preDeployCommand: alembic upgrade head` runs migrations before new code receives traffic. |
-| `hpip-worker` | Render background worker (same backend image) | One Celery worker for `exports`, `sync` and `maintenance`, concurrency 2. |
-| `hpip-redis` | Render Key Value | Celery broker, result backend and distributed rate limiting. `noeviction`, so queued jobs are never dropped. |
-| `hpip-purge` | Render cron job | Daily at 01:30 UTC: `python scripts/purge_expired.py --source scheduler` — the same service as the Celery maintenance task. |
-| `hpip-dhis2-refresh` | Render cron job | Six-hourly, **prepared but inert**: exits without contacting DHIS2 while `DHIS2_ENABLED`/`SYNC_ENABLED` are false. |
+| `hpip-web` | Web service (public, `frontend/Dockerfile`) | Next.js. The browser only calls same-origin `/api/*`. The route `src/app/api/[...path]/route.ts` forwards each request **at request time** to `BACKEND_INTERNAL_URL`, so session and CSRF cookies belong to the web origin and nothing about the backend is compiled into the build. |
+| `hpip-api` | **Private service** (`backend/Dockerfile`) | FastAPI with no public URL, reachable only on Render's private network. Pre-deploy: `alembic upgrade head && python scripts/bootstrap_reference_data.py`. |
+| `hpip-worker` | Background worker (backend image) | One Celery worker for `exports`, `sync` and `maintenance`, concurrency 2. |
+| `hpip-redis` | Key Value (`type: keyvalue`) | Broker, result backend and distributed rate limiting; `noeviction`. |
+| `hpip-purge` | Cron job | Daily 01:30 UTC: `python scripts/purge_expired.py --source scheduler --max-attempts 3 --retry-delay-seconds 120`. |
 | PostgreSQL | **Neon** (external) | No Render PostgreSQL is provisioned. |
 
-The blueprint is `render.yaml`. Check Render's current documentation for plan names, cron and Key Value behaviour before relying on them; the file records the intended shape, not verified provider limits.
+A scheduled DHIS2 refresh is **not** in the initial Blueprint: DHIS2 is not authorised and the command could do nothing, so it would only add cost. When DHIS2 is authorised, add a cron such as:
+
+```yaml
+  - type: cron
+    name: hpip-dhis2-refresh
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    schedule: "0 */6 * * *"          # D-047
+    dockerCommand: python scripts/dhis2_refresh.py --scheduled
+    envVars:
+      - fromGroup: hpip-shared-config
+      # plus the same fromService envVarKey entries as hpip-purge and the DHIS2 secrets
+```
+
+### Why the API is private
+
+The web service is the only public entry point. The proxy strips hop-by-hop headers, forwards `Cookie` and `X-CSRF-Token`, returns every `Set-Cookie` separately, streams downloads, and answers with generic errors (`backend_unavailable`, `proxy_misconfigured`) that never name the backend. Render's `hostport` value has no scheme (for example `hpip-api:10000`); the proxy normalises it to `http://hpip-api:10000` and rejects any other scheme, credentials, query strings or path traversal. A missing `BACKEND_INTERNAL_URL` in production fails closed with HTTP 500 instead of falling back to localhost.
+
+## Configuration pattern
+
+Render does not allow `sync: false` inside a Blueprint-defined environment group, so the Blueprint is self-contained **except for the values Render prompts for**:
+
+1. **`hpip-shared-config`** (defined in `render.yaml`) holds non-secret shared settings only: `APP_ENV`, TLS and pool settings, queue and rate-limit settings, export storage, all retention windows, `PURGE_*`, and `DHIS2_ENABLED=false`, `SYNC_ENABLED=false`, `AI_ENABLED=false`, `DHIS2_BASE_URL`.
+2. **Secrets and deployment-specific values are declared once, on `hpip-api`:**
+
+   | Key | How it is set | Value to enter |
+   |---|---|---|
+   | `DATABASE_URL` | prompted (`sync: false`) | Neon **pooled** connection string. A plain `postgresql://` URL is accepted and normalised to the psycopg 3 driver. Keep `sslmode=require`. |
+   | `MIGRATION_DATABASE_URL` | prompted | Neon **direct** connection string (used by the pre-deploy command). Must also require TLS. |
+   | `WEB_ORIGIN`, `ALLOWED_ORIGINS` | prompted | The `https://` URL of `hpip-web`. |
+   | `ALLOWED_HOSTS` | prompted | `hpip-api`'s private hostname as shown on its Render dashboard (the proxy's `Host` header). |
+   | `AUTH_SECRET`, `SEED_PASSWORD` | `generateValue: true` | Generated by Render. `SEED_PASSWORD` is never used in production but must not be the development default. |
+
+3. `hpip-worker` and `hpip-purge` copy `DATABASE_URL`, `AUTH_SECRET`, `SEED_PASSWORD`, `WEB_ORIGIN`, `ALLOWED_ORIGINS` and `ALLOWED_HOSTS` from `hpip-api` with `fromService … envVarKey`, so every backend process receives **identical** values without retyping. Redis URLs come from `hpip-redis` (`property: connectionString`).
+
+`backend/tests/test_deployment_config.py` resolves every `fromGroup`/`fromService` reference, checks that each backend process receives every required setting, rejects secrets in the group, and runs each resolved environment through the production validation. That is a structural check, not Render's own validator.
 
 ## 1. Neon
 
-1. Create a Neon project in a region close to the Render region you choose.
+1. Create a Neon project in a region close to the Render region.
 2. Create a database (for example `hpip`) and an application role with its own password. Do not reuse any workstation credential.
-3. Copy two connection strings from the Neon console:
-   - the **pooled** connection string → `DATABASE_URL` (runtime);
-   - the **direct** connection string → `MIGRATION_DATABASE_URL` (DDL, only if migrations fail through the pooler).
-4. Prefix both with `postgresql+psycopg://` and keep `sslmode=require` (or set `DB_SSLMODE=require`). Production validation rejects a non-TLS database unless `DB_REQUIRE_SSL=false` is set explicitly for a private network, which does not apply to Neon.
-5. Keep the pool small. Defaults are `DB_POOL_SIZE=5` and `DB_MAX_OVERFLOW=5` per process. With the API, one worker, the migration command and the purge cron, the ceiling is about 40 connections; validation rejects a per-process total above 20.
+3. Copy the **pooled** string for `DATABASE_URL` and the **direct** string for `MIGRATION_DATABASE_URL`. Standard `postgresql://…?sslmode=require&channel_binding=require` strings work as supplied.
+4. TLS: an `sslmode` in the URL is used as written; otherwise `DB_SSLMODE=require` applies. If both are present they must match. Production validation rejects `sslmode=disable` (or no TLS) on either URL while `DB_REQUIRE_SSL=true`, and rejects any PostgreSQL driver other than `postgresql+psycopg`. Alembic uses the same URL normalisation, TLS mode and connect timeout as the runtime, with `NullPool`.
+5. Pools stay small: `DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=5` per process; validation rejects a per-process total above 20.
 
-Never paste a connection string into the repository, an issue or a log. The application does not log connection strings.
+Never paste a connection string into the repository, an issue or a log. Configuration errors never echo URLs.
 
 ## 2. Render
 
-1. Create a Blueprint from `render.yaml`. Render prompts once for every `sync: false` value.
-2. Put the shared backend values in an environment group named `hpip-shared` (used by the worker and both crons): the same `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `AUTH_SECRET`, Redis URLs, retention and feature switches as `hpip-api`.
-3. Set `WEB_ORIGIN` and `ALLOWED_ORIGINS` to the `https://` URL of `hpip-web`, and `ALLOWED_HOSTS` to the API public host plus its internal hostname.
-4. Leave `DHIS2_ENABLED=false`, `SYNC_ENABLED=false` and `AI_ENABLED=false`.
-5. Export files use `EXPORT_ARTIFACT_STORAGE=database`, because Render services do not share a disk. Validation rejects `filesystem` storage when `EXPORT_SHARED_FILESYSTEM=false`.
+1. Create a Blueprint from `render.yaml`. Render prompts once for each `sync: false` value on `hpip-api`; enter the values from the table above.
+2. After the first deploy, open `hpip-api` → Connect and confirm its private hostname; set `ALLOWED_HOSTS` to it if the prompt was filled with a guess, then redeploy. Proxied requests are rejected with 400 until the host matches.
+3. Leave `DHIS2_ENABLED`, `SYNC_ENABLED` and `AI_ENABLED` false.
 
-## 3. Release
+Check Render's current Blueprint specification for plan names, `pserv` pre-deploy support, Key Value naming and cron behaviour before relying on them.
+
+## 3. Release order
+
+The pre-deploy command runs, in order, on every release:
 
 ```bash
-# Runs automatically as preDeployCommand; to run by hand from an API shell:
-alembic upgrade head
-alembic current            # expect 0011_population_import_staging (head)
-python -c "from sqlalchemy import text; from app.db.session import get_engine; print(get_engine().connect().execute(text('SELECT 1')).scalar())"
+alembic upgrade head                           # schema (head: 0012_population_staging_identity)
+python scripts/bootstrap_reference_data.py     # approved reference configuration
 ```
 
-The API and worker refuse to start in production when `validate_runtime_settings` reports a blocking error (missing broker, Redis, TLS, secrets, eager exports, per-process rate limiting, incomplete DHIS2 configuration when enabled). Development seed data is never created in production.
+`bootstrap_reference_data.py` creates, only if missing: the MNCH, EPI and MPDSR programmes; roles and server-side action permissions; the versioned indicator catalogue (without effective dates, so production keeps them unavailable until dated or the governed fallback is enabled); the quality-rule catalogue; the D-045 population-period rules for 2024–2030; and a neutral `UG` country root. It never creates users, sub-national geography, DHIS2 UIDs, raw values, populations or boundaries. It is idempotent, serialised by a PostgreSQL advisory lock, refuses a database that is not at the Alembic head (exit 2), and refuses to overwrite configuration that differs from the approved reference (exit 3, nothing written). `--check` reports without writing.
 
-### First administrator
+### First administrator (once, after the first release)
 
 ```bash
 python scripts/create_initial_admin.py --username <name> --display-name "<full name>"
 ```
 
-There is no default username or password. The password is read from a prompt (or `HPIP_ADMIN_PASSWORD`), never printed, and the command is audited and idempotent. MPDSR programme access is not granted automatically.
+No default username or password. The password is read from a prompt (or `HPIP_ADMIN_PASSWORD`), never printed, and the command is audited and idempotent. The administrator is scoped to `UG`; MPDSR programme access is not granted automatically.
 
 ### Checks after release
 
-- `GET /health` — process liveness.
-- `GET /ready` — database, configuration, queue and Redis (no secrets). DHIS2 is reported separately as `disabled` and does not fail readiness.
-- `GET /ops/status` (administrator) — worker ping, export job counts including permanent failures, retention and formula policy.
-- Sign in through the web origin, run a dashboard query (CSRF POST), request an export and download it.
-- From the API shell: `python scripts/queue_smoke.py --timeout 120` proves dispatch, consumption and results.
+- `/login` on `hpip-web` loads (the web health check).
+- Sign in through the web origin, run a dashboard (CSRF POST through `/api`), request an export and download it.
+- `GET /api/ready` — database, configuration, queue and Redis; DHIS2 is reported separately as `disabled`.
+- `GET /api/ops/status` (administrator) — worker ping, export job counts, retention and formula policy.
+- From an `hpip-api` shell: `python scripts/queue_smoke.py --timeout 120`.
 
 ## 4. Retention and purge
 
@@ -73,20 +106,23 @@ There is no default username or password. The password is read from a prompt (or
 | Export job metadata (terminal jobs) | 90 days | `EXPORT_JOB_RETENTION_DAYS` |
 | Snapshots, runs, values, evidence | 36 calendar months | `CALCULATION_SNAPSHOT_RETENTION_MONTHS` |
 | Audit log | 24 calendar months | `AUDIT_LOG_RETENTION_MONTHS` |
+| Maintenance runs and operational events | 90 days (engineering default, owner confirmation pending) | `OPERATIONAL_RECORD_RETENTION_DAYS` |
 
 ```bash
-python scripts/purge_expired.py --show-policies     # current windows and cutoffs
-python scripts/purge_expired.py --dry-run           # counts only; writes nothing
-python scripts/purge_expired.py                     # purge, recorded in maintenance_runs
+python scripts/purge_expired.py --show-policies
+python scripts/purge_expired.py --dry-run
+python scripts/purge_expired.py --max-attempts 3 --retry-delay-seconds 120
 ```
 
-Purges are leased per policy, batched, idempotent and restartable. Queued and running export jobs are never purged by age; a snapshot still referenced by a retained export job is skipped until that job ages out. Records contain counts and safe codes only.
+Failure semantics:
+
+- A policy that fails is recorded in `maintenance_runs` with a safe code (`purge_failed`, `artifact_delete_failed`, `lease_lost`) and no paths or exception text. The CLI then retries only failed policies within its attempt budget and **exits non-zero** if any remain, so the Render cron run is marked failed. The Celery maintenance task raises after recording, and retries only the failed policies (at most 3 attempts).
+- A file that is deleted or already absent counts as gone. A file that cannot be deleted keeps its `file_path`, stays un-deleted, and its export job is **not** purged, so the next attempt retries it.
+- Each batch renews the policy lease with a holder-checked update in the same transaction. A purge that loses its lease stops before the next batch; a skipped (locked) policy is not a failure.
 
 ## 5. Backup and restore
 
 Back up what cannot be re-derived: users, roles and scopes; indicator registry; population registry, staging batches and aliases; geography and mappings; compact snapshots, runs, values and provenance; audit; data-quality workflow; export job metadata.
-
-Expired caches and export bytes are temporary by design and must not become a permanent archive. A logical backup can keep their schema but exclude their rows:
 
 ```bash
 pg_dump "$MIGRATION_DATABASE_URL" --format=custom --no-owner \
@@ -97,19 +133,20 @@ pg_dump "$MIGRATION_DATABASE_URL" --format=custom --no-owner \
 pg_restore --dbname "$TARGET_DATABASE_URL" --no-owner --clean --if-exists hpip-YYYYMMDD.dump
 ```
 
-Neon also provides point-in-time restore; confirm the retention of that history matches D-043 before relying on it. Test a restore into a separate Neon branch before UAT sign-off.
+Neon also provides point-in-time restore; confirm its history window against D-043. Test a restore into a separate Neon branch before UAT sign-off.
 
 ## 6. Credential rotation
 
 1. Create the new Neon role password (or Redis/DHIS2 secret) alongside the old one.
-2. Update the value in Render (service or `hpip-shared` group) and redeploy the API, worker and crons.
-3. Confirm `/ready`, then revoke the old credential.
-4. Rotating `AUTH_SECRET` signs every user out; schedule it.
+2. Update the value on `hpip-api`; the worker and purge cron copy it through `envVarKey`. Redeploy all backend services.
+3. Confirm `/api/ready`, then revoke the old credential. Rotating `AUTH_SECRET` signs every user out.
+
+Any DHIS2 password previously disclosed in conversation must be treated as compromised and rotated before DHIS2 is enabled.
 
 ## 7. Local production-like stack
 
-`docker-compose.yml` runs PostgreSQL, Redis, migrations, API, worker and web with **no usable default credentials** (`docker compose --env-file .env.production config -q` fails until every secret is set). Its PostgreSQL is a container on a private network, so it sets `DB_REQUIRE_SSL=false` explicitly. CI renders the compose file, builds images and runs the queue smoke test; Docker was not available on the development workstation, so that job has not been executed locally.
+`docker-compose.yml` runs PostgreSQL, Redis, migrations, API, worker and web with **no usable default credentials**. Its web service sets `BACKEND_INTERNAL_URL=http://api:8000` at runtime. Its PostgreSQL is a container on a private network, so it sets `DB_REQUIRE_SSL=false` explicitly. Docker was not available on the development workstation, so compose and image builds have not been executed locally.
 
 ## Still required before production sign-off
 
-DHIS2 credentials, verified metadata mappings and a supervised bounded validation; an approved organisation-unit hierarchy with alias decisions; boundary effective date; formula-version effective dates or an explicit undated-version decision; MPDSR date semantics; monitoring, alerting and a tested restore. See `docs/project-context/OPEN_ITEMS.md`.
+DHIS2 credentials, verified metadata mappings and a supervised bounded validation; an approved organisation-unit hierarchy (`POPULATION_HIERARCHY_APPROVAL_REFERENCE`) with alias decisions; boundary effective date; formula-version effective dates or an explicit undated-version decision; MPDSR date semantics and cause taxonomy; an official crest asset and templates; Render Blueprint validation; monitoring, alerting and a tested restore. See `docs/project-context/OPEN_ITEMS.md`.

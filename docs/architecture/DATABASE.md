@@ -15,18 +15,25 @@ Schema is defined in `backend/app/models/__init__.py`. Historical Alembic revisi
 | `0009_retention_artifacts` | `maintenance_runs`, `maintenance_locks`, `export_artifacts`, artifact expiry on export jobs, retention indexes | `backend/alembic/versions/0009_retention_artifacts.py` |
 | `0010_denominator_provenance` | `calculated_values.denominator_provenance` | `backend/alembic/versions/0010_denominator_provenance.py` |
 | `0011_population_import_staging` | `population_import_batches`, `population_import_rows` | `backend/alembic/versions/0011_population_import_staging.py` |
+| `0012_population_staging_identity` | `population_import_batches.reference_fingerprint` and unique staging identity (checksum, importer version, fingerprint) | `backend/alembic/versions/0012_population_staging_identity.py` |
 
-**Current head: `0011_population_import_staging`.** Revisions 0001–0008 are historical and immutable; add forward revisions only.
+**Current head: `0012_population_staging_identity`.** Revisions 0001–0008 are historical and immutable; add forward revisions only.
 
 Historical files must not import application ORM models, call `Base.metadata.create_all()`, or copy live columns. Importing a future model must not change what 0001 or 0002 creates.
 
-No production populations, DHIS2 UIDs, indicator result values, or MPDSR cases are stored in seeds. Development geography uses synthetic codes (`UG`, `ACHOLI`, `PADER`, `PADER_HC_III`, plus sibling `TESO` for isolation tests).
+Revision ids must be at most 32 characters (PostgreSQL `alembic_version.version_num`); a static test enforces it.
+
+## Reference bootstrap (production) versus development seed
+
+A migrated database holds schema only. `python scripts/bootstrap_reference_data.py` (service `app/services/reference_bootstrap.py`) then creates the approved, non-secret reference configuration if missing: programmes MNCH/EPI/MPDSR, roles and role permissions, the indicator catalogue with undated `v1` versions, the quality-rule catalogue, D-045 period rules for 2024–2030, and a neutral `UG` country root. It creates no users, sub-national geography, DHIS2 UIDs, raw values, populations or boundaries. Rows that differ from the approved reference are reported as conflicts and nothing is written; PostgreSQL releases are serialised with `pg_advisory_xact_lock`.
+
+`seed_reference_data()` (development and tests only) runs the same bootstrap and adds synthetic geography (`ACHOLI`, `TESO`, `PADER`, `KITGUM`, `SOROTI`, `PADER_TOWN`, `PADER_HC_III`) and synthetic users. No production populations, DHIS2 UIDs, indicator result values, or MPDSR cases are stored in either.
 
 ## Pre-production migration-history correction
 
 No shared or staging database that had already applied the previous dynamic revisions was identified in this repository.
 
-- **Fresh databases:** run Alembic from empty to head (`0011_population_import_staging`). Rewritten 0001/0002 are the intended history.
+- **Fresh databases:** run Alembic from empty to head (`0012_population_staging_identity`), then the reference bootstrap. Rewritten 0001/0002 are the intended history.
 - **A database already stamped at the old 0002 head:** apply only `0003_phase12_corrections`. Do not drop that database and do not replay 0001/0002.
 - **A database created by the old dynamic 0001** (which could have created later tables): treat it as already containing later objects; stamp/upgrade with care and do not assume it can be deleted.
 
@@ -78,10 +85,12 @@ Historical calculation rows reference indicator version, population version or f
 ## Retention and maintenance
 
 - `maintenance_runs`: one row per purge policy pass — counts, cutoff, status, safe error code, source, software version. Never deleted content, event UIDs or paths.
-- `maintenance_locks`: provider-neutral lease so two purge processes never share a policy.
+- `maintenance_locks`: provider-neutral lease so two purge processes never share a policy. The holder renews it with a holder-checked update inside every batch transaction.
+- `maintenance_runs` and `operational_events` are themselves purged after `OPERATIONAL_RECORD_RETENTION_DAYS` (90, engineering default pending owner confirmation).
+- `population_import_batches.reference_fingerprint`: SHA-256 of the candidate district/city hierarchy, approved aliases and `POPULATION_HIERARCHY_APPROVAL_REFERENCE`. Re-staging the same checksum, importer version and fingerprint reuses the batch. `review_status` moves from `pending_review` to `reviewed` or `rejected` only through `review_staged_batch` (second reviewer with `approve_population`, recorded reason, audited); `reviewed` requires an authoritative, fully resolved batch. Review never creates or approves population values.
 - `export_artifacts`: temporary export bytes for deployments without a shared disk, bounded by `EXPORT_ARTIFACT_MAX_BYTES` and purged after 24 hours. `export_jobs` keeps checksum, size, media type and `artifact_deleted_at` for 90 days.
 - Retention windows and purge order are described in `docs/DEPLOYMENT.md` (section 4).
 
 ## Connection settings
 
-`DATABASE_URL` is the runtime (pooled) URL; `MIGRATION_DATABASE_URL` optionally supplies a direct URL that Alembic prefers. Pools are small and configurable (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_RECYCLE_SECONDS`, `DB_POOL_TIMEOUT_SECONDS`, `DB_CONNECT_TIMEOUT_SECONDS`), with pre-ping enabled. Production requires TLS (`DB_SSLMODE=require`) unless `DB_REQUIRE_SSL=false` is set for a private network.
+`DATABASE_URL` is the runtime (pooled) URL; `MIGRATION_DATABASE_URL` optionally supplies a direct URL that Alembic prefers. Plain `postgresql://` and `postgres://` URLs are normalised to `postgresql+psycopg`; other PostgreSQL drivers are rejected. Alembic builds its engine through `create_migration_engine` with the same TLS mode, connect timeout and application name, and `NullPool`. An `sslmode` in the URL takes precedence over `DB_SSLMODE`; a conflict between them is a configuration error. Pools are small and configurable (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_RECYCLE_SECONDS`, `DB_POOL_TIMEOUT_SECONDS`, `DB_CONNECT_TIMEOUT_SECONDS`), with pre-ping enabled. Production requires TLS (`DB_SSLMODE=require`) unless `DB_REQUIRE_SSL=false` is set for a private network.
