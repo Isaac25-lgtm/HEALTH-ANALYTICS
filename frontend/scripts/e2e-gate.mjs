@@ -27,34 +27,50 @@ const EXIT_BOUND_SECONDS = Number(process.env.E2E_EXIT_BOUND_SECONDS ?? 60);
 const OVERALL_TIMEOUT_SECONDS = Number(process.env.E2E_OVERALL_TIMEOUT_SECONDS ?? 1800);
 const isWindows = process.platform === "win32";
 
-function processTable() {
+const WINDOWS_QUERY =
+  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate | ConvertTo-Json -Compress";
+
+function parseTable(stdout) {
   if (isWindows) {
-    const result = spawnSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate | ConvertTo-Json -Compress",
-      ],
-      { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
-    );
-    const rows = JSON.parse(result.stdout || "[]");
-    return rows.map((row) => ({
+    const rows = JSON.parse(stdout || "[]");
+    return (Array.isArray(rows) ? rows : [rows]).map((row) => ({
       pid: row.ProcessId,
       ppid: row.ParentProcessId,
       name: row.Name,
       created: String(row.CreationDate),
     }));
   }
-  const result = spawnSync("ps", ["-eo", "pid=,ppid=,lstart=,comm="], { encoding: "utf8" });
-  return result.stdout
+  return stdout
     .split("\n")
     .filter(Boolean)
     .map((line) => {
       const parts = line.trim().split(/\s+/);
       return { pid: Number(parts[0]), ppid: Number(parts[1]), created: parts.slice(2, 7).join(" "), name: parts.slice(7).join(" ") };
     });
+}
+
+/**
+ * Asynchronous process listing. A synchronous listing would block this process's event loop, stop it
+ * draining Playwright's output pipe, and so stall Playwright itself.
+ */
+function processTable() {
+  return new Promise((resolve) => {
+    const command = isWindows ? "powershell.exe" : "ps";
+    const args = isWindows ? ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_QUERY] : ["-eo", "pid=,ppid=,lstart=,comm="];
+    const lister = spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    let stdout = "";
+    lister.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    lister.once("error", () => resolve([]));
+    lister.once("close", () => {
+      try {
+        resolve(parseTable(stdout));
+      } catch {
+        resolve([]);
+      }
+    });
+  });
 }
 
 function descendants(table, rootPid) {
@@ -128,11 +144,18 @@ child.stdout.on("data", onOutput(process.stdout));
 child.stderr.on("data", onOutput(process.stderr));
 
 const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
-const snapshot = setInterval(() => {
-  for (const row of descendants(processTable(), child.pid)) {
-    seen.set(row.pid, row);
+let snapshotting = false;
+const snapshot = setInterval(async () => {
+  if (snapshotting) return;
+  snapshotting = true;
+  try {
+    for (const row of descendants(await processTable(), child.pid)) {
+      seen.set(row.pid, row);
+    }
+  } finally {
+    snapshotting = false;
   }
-}, 4000);
+}, 8000);
 
 let outcome = null;
 let hung = false;
@@ -146,7 +169,7 @@ while (outcome === null) {
     hung = true;
   }
   if (hung && outcome === null) {
-    const survivors = descendants(processTable(), child.pid);
+    const survivors = descendants(await processTable(), child.pid);
     summary.hang_survivors = survivors.map((row) => `${row.name}#${row.pid}`);
     failures.push(`Playwright did not exit within ${EXIT_BOUND_SECONDS}s of its summary`);
     killKnownTree(child.pid);
@@ -165,7 +188,7 @@ if (summaryAt === null) failures.push("Playwright never printed a result summary
 
 // Known descendants of this run must be gone (matched by pid and creation time, so a reused pid is not confused).
 await new Promise((resolve) => setTimeout(resolve, 1500));
-const table = processTable();
+const table = await processTable();
 const alive = [...seen.values()].filter((row) => table.some((now) => now.pid === row.pid && now.created === row.created));
 summary.descendants_observed = seen.size;
 summary.descendants_still_alive = alive.map((row) => `${row.name}#${row.pid}`);
