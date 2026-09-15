@@ -159,3 +159,127 @@ def test_postgres_purge_lease_admits_exactly_one_holder_under_contention(monkeyp
         engine.dispose()
     finally:
         _cleanup(admin, monkeypatch)
+
+
+def _slow_audit_purge(test_url: str, monkeypatch, *, rows: int, ttl: int, delay: float):
+    """Set up expired audit rows and a purge whose batches each take ``delay`` seconds."""
+    import time as _time
+
+    from app.config import get_settings
+    from app.domain import retention
+    from app.models import AuditLog
+
+    engine = create_engine(test_url, future=True, pool_size=4)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    with factory() as setup:
+        old = datetime.now(UTC) - timedelta(days=2000)
+        setup.add_all(AuditLog(action=f"old_{index}", resource_type="test", created_at=old) for index in range(rows))
+        setup.commit()
+    settings = get_settings().model_copy(
+        update={"purge_batch_size": 1, "purge_lock_timeout_seconds": ttl, "purge_enabled": True}
+    )
+    real_delete = purge._delete_by_ids
+
+    def slow_delete(session, model, ids):
+        _time.sleep(delay)
+        return real_delete(session, model, ids)
+
+    monkeypatch.setattr(purge, "_delete_by_ids", slow_delete)
+    return engine, factory, settings, retention.AUDIT_LOGS
+
+
+@requires_postgres
+def test_postgres_short_ttl_long_purge_keeps_its_lease_against_a_second_session(monkeypatch):
+    import time as _time
+
+    admin, test_url = _prepare_verify_db(_admin_url())
+    _point_alembic(monkeypatch, test_url)
+    try:
+        command.upgrade(_alembic_cfg(), "head")
+        engine, factory, settings, policy = _slow_audit_purge(test_url, monkeypatch, rows=8, ttl=2, delay=0.8)
+        outcome: dict = {}
+
+        def run() -> None:
+            with factory() as session:
+                outcome["result"] = purge.purge_policy(session, policy, settings=settings, dry_run=False)
+
+        released: list[float] = []
+        real_release = purge.release_lease
+
+        def timed_release(session, name, holder):
+            if holder != "intruder":
+                released.append(_time.monotonic() - started)
+            return real_release(session, name, holder)
+
+        monkeypatch.setattr(purge, "release_lease", timed_release)
+        worker = Thread(target=run)
+        started = _time.monotonic()
+        worker.start()
+        attempts = []
+        with factory() as intruder:
+            while worker.is_alive():
+                elapsed = _time.monotonic() - started
+                taken = purge.acquire_lease(intruder, f"retention_purge:{policy}", "intruder", 2)
+                attempts.append((round(elapsed, 2), taken))
+                if taken:
+                    purge.release_lease(intruder, f"retention_purge:{policy}", "intruder")
+                _time.sleep(0.3)
+        worker.join(timeout=60)
+        total = _time.monotonic() - started
+        result = outcome["result"]
+        assert total > 3 * 2, "the purge must outlive several TTLs for this test to mean anything"
+        assert result.status == purge.STATUS_COMPLETED, result
+        assert result.rows_deleted == 8
+        # Only attempts made while the purge still held its lease count; once it has released the
+        # lease another process may legitimately take the policy.
+        while_active = [taken for elapsed, taken in attempts if elapsed < released[0]]
+        assert len([elapsed for elapsed, _taken in attempts if 2.5 < elapsed < released[0]]) >= 3, attempts
+        assert not any(while_active), attempts
+        with factory() as check:
+            assert check.get(MaintenanceLock, f"retention_purge:{policy}") is None
+        engine.dispose()
+    finally:
+        _cleanup(admin, monkeypatch)
+
+
+@requires_postgres
+def test_postgres_lease_stolen_mid_purge_stops_further_deletions(monkeypatch):
+    import time as _time
+
+    from sqlalchemy import func, select, update
+
+    from app.models import AuditLog
+
+    admin, test_url = _prepare_verify_db(_admin_url())
+    _point_alembic(monkeypatch, test_url)
+    try:
+        command.upgrade(_alembic_cfg(), "head")
+        engine, factory, settings, policy = _slow_audit_purge(test_url, monkeypatch, rows=6, ttl=30, delay=0.5)
+        outcome: dict = {}
+
+        def run() -> None:
+            with factory() as session:
+                outcome["result"] = purge.purge_policy(session, policy, settings=settings, dry_run=False)
+
+        worker = Thread(target=run)
+        worker.start()
+        _time.sleep(1.2)
+        with factory() as operator:
+            # An operator (or a process that wrongly believed the lease expired) takes it over.
+            operator.execute(
+                update(MaintenanceLock)
+                .where(MaintenanceLock.name == f"retention_purge:{policy}")
+                .values(holder="replacement", expires_at=datetime.now(UTC) + timedelta(hours=1))
+            )
+            operator.commit()
+        worker.join(timeout=60)
+        result = outcome["result"]
+        assert result.status == purge.STATUS_FAILED and result.error_code == purge.ERROR_LEASE_LOST
+        assert 0 < result.rows_deleted < 6
+        with factory() as check:
+            remaining = check.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action.like("old_%")))
+            assert remaining == 6 - result.rows_deleted
+            assert check.get(MaintenanceLock, f"retention_purge:{policy}").holder == "replacement"
+        engine.dispose()
+    finally:
+        _cleanup(admin, monkeypatch)

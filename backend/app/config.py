@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     export_job_retention_days: int = Field(default=90, ge=1, le=3650)
     calculation_snapshot_retention_months: int = Field(default=36, ge=1, le=600)
     audit_log_retention_months: int = Field(default=24, ge=1, le=600)
+    # Engineering default, not an owner decision (see OPEN_ITEMS): maintenance run records and
+    # operational events are counts and codes only, kept as long as export job metadata.
+    operational_record_retention_days: int = Field(default=90, ge=1, le=3650)
     purge_enabled: bool = True
     purge_dry_run: bool = False
     purge_schedule_enabled: bool = False

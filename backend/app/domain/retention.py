@@ -17,8 +17,17 @@ EXPORT_FILES = "export_files"
 EXPORT_JOBS = "export_jobs"
 SNAPSHOTS = "calculation_snapshots"
 AUDIT_LOGS = "audit_logs"
+OPERATIONAL_RECORDS = "operational_records"
 
-POLICY_ORDER = (RAW_AGGREGATES, MPDSR_EVENTS, EXPORT_FILES, EXPORT_JOBS, SNAPSHOTS, AUDIT_LOGS)
+POLICY_ORDER = (
+    RAW_AGGREGATES,
+    MPDSR_EVENTS,
+    EXPORT_FILES,
+    EXPORT_JOBS,
+    SNAPSHOTS,
+    AUDIT_LOGS,
+    OPERATIONAL_RECORDS,
+)
 
 
 def utc_now() -> datetime:
@@ -60,6 +69,8 @@ class RetentionPolicy:
             return subtract_months(moment, settings.calculation_snapshot_retention_months)
         if self.name == AUDIT_LOGS:
             return subtract_months(moment, settings.audit_log_retention_months)
+        if self.name == OPERATIONAL_RECORDS:
+            return moment - timedelta(days=settings.operational_record_retention_days)
         raise ValueError(f"Unknown retention policy: {self.name}")
 
 
@@ -105,6 +116,16 @@ POLICIES: dict[str, RetentionPolicy] = {
         description="Audit trail of user and system actions.",
         basis="created_at",
         window="AUDIT_LOG_RETENTION_MONTHS",
+    ),
+    OPERATIONAL_RECORDS: RetentionPolicy(
+        name=OPERATIONAL_RECORDS,
+        entity="maintenance_runs",
+        description=(
+            "Maintenance run records and operational events (counts and codes only). "
+            "Engineering default pending owner confirmation."
+        ),
+        basis="created_at",
+        window="OPERATIONAL_RECORD_RETENTION_DAYS",
     ),
 }
 
