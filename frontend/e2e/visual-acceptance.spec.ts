@@ -5,7 +5,21 @@ import { expect, test, type Page } from "@playwright/test";
  * synthetic e2e fixtures. Acceptance screenshots are written to the tracked evidence folder.
  */
 const password = process.env.SEED_PASSWORD ?? "dev-only-change-me";
-const EVIDENCE = "../docs/evidence/screenshots";
+// Ordinary runs write to ignored test output. Tracked acceptance evidence changes only when explicitly
+// requested with UPDATE_VISUAL_EVIDENCE=1, so a normal run never dirties the working tree.
+const EVIDENCE =
+  process.env.UPDATE_VISUAL_EVIDENCE === "1" ? "../docs/evidence/screenshots" : "test-results/visual-evidence";
+
+/** Deterministic screenshots: volatile identifiers and timestamps are masked, motion is disabled. */
+async function evidence(page: Page, name: string) {
+  await page.screenshot({
+    path: `${EVIDENCE}/${name}`,
+    animations: "disabled",
+    caret: "hide",
+    mask: [page.locator("[data-volatile]")],
+    maskColor: "#dfe8f2",
+  });
+}
 const DESKTOP = { width: 1680, height: 945 };
 const MAX_DESKTOP_HEIGHT = Math.round(DESKTOP.height * 1.5);
 
@@ -73,7 +87,7 @@ test.describe("desktop 1680x945", () => {
     // Long lists are bounded: the insight panel shows a short list with a path to all of them.
     expect(await page.locator(".area-insights .insight").count()).toBeLessThanOrEqual(4);
     await expect(page.locator(".area-insights").getByRole("link", { name: /View all/ })).toBeVisible();
-    await page.screenshot({ path: `${EVIDENCE}/national-desktop-1680x945.png` });
+    await evidence(page, "national-desktop-1680x945.png");
   });
 
   test("regional, district and facility views keep the same density", async ({ page }) => {
@@ -82,7 +96,7 @@ test.describe("desktop 1680x945", () => {
     let metrics = await layoutMetrics(page);
     expect(metrics.overflow).toBeLessThanOrEqual(1);
     expect(metrics.height).toBeLessThanOrEqual(MAX_DESKTOP_HEIGHT);
-    await page.screenshot({ path: `${EVIDENCE}/regional-desktop-1680x945.png` });
+    await evidence(page, "regional-desktop-1680x945.png");
 
     await page.getByRole("link", { name: "Pader" }).first().click();
     await page.waitForURL(/dashboard\/district.*snapshot=/, { timeout: 30_000 });
@@ -92,7 +106,7 @@ test.describe("desktop 1680x945", () => {
     expect(metrics.height).toBeLessThanOrEqual(MAX_DESKTOP_HEIGHT);
     const primary = await bottomOf(page, ".area-primary");
     expect(primary.bottom).toBeLessThanOrEqual(DESKTOP.height);
-    await page.screenshot({ path: `${EVIDENCE}/district-desktop-1680x945.png` });
+    await evidence(page, "district-desktop-1680x945.png");
   });
 
   test("facility profile shows the missing population inside its panels", async ({ page }) => {
@@ -103,7 +117,7 @@ test.describe("desktop 1680x945", () => {
     expect(metrics.overflow).toBeLessThanOrEqual(1);
     expect(metrics.height).toBeLessThanOrEqual(MAX_DESKTOP_HEIGHT);
     await expect(page.locator(".kpi-strip").getByText("Population denominator unavailable").first()).toBeVisible();
-    await page.screenshot({ path: `${EVIDENCE}/facility-desktop-1680x945.png` });
+    await evidence(page, "facility-desktop-1680x945.png");
   });
 
   test("MPDSR workspace is its own composition", async ({ page }) => {
@@ -117,7 +131,7 @@ test.describe("desktop 1680x945", () => {
     const metrics = await layoutMetrics(page);
     expect(metrics.overflow).toBeLessThanOrEqual(1);
     expect(metrics.height).toBeLessThanOrEqual(MAX_DESKTOP_HEIGHT);
-    await page.screenshot({ path: `${EVIDENCE}/mpdsr-desktop-1680x945.png` });
+    await evidence(page, "mpdsr-desktop-1680x945.png");
   });
 });
 
@@ -131,7 +145,7 @@ test.describe("tablet 820x1180", () => {
     const metrics = await layoutMetrics(page);
     expect(metrics.overflow).toBeLessThanOrEqual(1);
     expect(metrics.smallText).toEqual([]);
-    await page.screenshot({ path: `${EVIDENCE}/national-tablet-820x1180.png` });
+    await evidence(page, "national-tablet-820x1180.png");
   });
 });
 
@@ -160,7 +174,7 @@ test.describe("mobile 390x844", () => {
     for (const right of tables) {
       expect(right).toBeLessThanOrEqual(390 + 0.5);
     }
-    await page.screenshot({ path: `${EVIDENCE}/national-mobile-390x844.png` });
+    await evidence(page, "national-mobile-390x844.png");
   });
 });
 

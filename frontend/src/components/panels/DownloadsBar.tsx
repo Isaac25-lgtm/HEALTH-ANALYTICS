@@ -70,9 +70,10 @@ export function DownloadsBar({
       <div className="download-buttons">{buttons}</div>
       <p className="downloads-meta">
         {message ? <span role="status">{message} · </span> : null}
-        Snapshot {dashboard.analysis_snapshot_id.slice(0, 8)} · data {freshness.availability.replaceAll("_", " ")}
-        {freshness.latest_extracted_at ? ` · extracted ${freshness.latest_extracted_at}` : ""} · platform-default
-        templates (official MoH templates pending)
+        Snapshot <span data-volatile>{dashboard.analysis_snapshot_id.slice(0, 8)}</span> · data{" "}
+        {freshness.availability.replaceAll("_", " ")}
+        {freshness.latest_extracted_at ? <span data-volatile> · extracted {freshness.latest_extracted_at}</span> : null}{" "}
+        · platform-default templates (official MoH templates pending)
       </p>
     </section>
   );

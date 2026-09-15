@@ -147,10 +147,15 @@ export function StatusLine({
         <span>
           {" "}
           · data: {freshness.availability.replaceAll("_", " ")}
-          {freshness.latest_source_freshness_at ? ` · source ${freshness.latest_source_freshness_at}` : ""}
-          {freshness.latest_extracted_at ? ` · extracted ${freshness.latest_extracted_at}` : ""}
+          {freshness.latest_source_freshness_at ? (
+            <span data-volatile> · source {freshness.latest_source_freshness_at}</span>
+          ) : null}
+          {freshness.latest_extracted_at ? <span data-volatile> · extracted {freshness.latest_extracted_at}</span> : null}
         </span>
-        <span title={`Run ${dashboard.module_result.current_run_id}`}> · snapshot {dashboard.analysis_snapshot_id}</span>{" "}
+        <span title={`Run ${dashboard.module_result.current_run_id}`}>
+          {" "}
+          · snapshot <span data-volatile>{dashboard.analysis_snapshot_id}</span>
+        </span>{" "}
         <button type="button" className="link-button" onClick={onRecalculate}>
           Recalculate
         </button>

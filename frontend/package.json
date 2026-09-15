@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "verify:proxy": "node scripts/verify-proxy-build.mjs"
+    "verify:proxy": "node scripts/verify-proxy-build.mjs",
+    "e2e:gate": "node scripts/e2e-gate.mjs",
+    "e2e:evidence": "node scripts/e2e-evidence.mjs"
   },
   "dependencies": {
     "maplibre-gl": "^5.6.0",
