@@ -910,11 +910,9 @@ def seed_quality_rules(session: Session) -> None:
     for item in QUALITY_RULE_CATALOG:
         if item["code"] in existing:
             continue
-        config = None
-        if item["code"] == "UNEXPECTED_ZERO":
-            config = {"require_prior_nonzero": True}
-        if item["code"] == "ANOMALOUS_SPIKE_DROP":
-            config = {"ratio": 3.0}
+        from app.services.reference_bootstrap import quality_rule_config
+
+        config = quality_rule_config(item["code"])
         session.add(
             QualityRule(
                 code=item["code"],

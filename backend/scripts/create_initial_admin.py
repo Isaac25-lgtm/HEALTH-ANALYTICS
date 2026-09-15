@@ -8,6 +8,9 @@ nothing.
 It refuses to run when the deployment's own configuration validation reports blocking errors,
 so an insecure production instance cannot be given an administrator.
 
+Run it after ``alembic upgrade head`` and ``scripts/bootstrap_reference_data.py``, which create
+the roles, programmes and country root this command needs.
+
 Usage (inside the API container or with the production environment loaded):
     python scripts/create_initial_admin.py --username <name> --display-name "<full name>"
     HPIP_ADMIN_PASSWORD=... python scripts/create_initial_admin.py --username <name> --no-prompt
@@ -40,6 +43,7 @@ from app.models import (  # noqa: E402
 )
 from app.services.audit import write_audit  # noqa: E402
 from app.services.passwords import hash_password  # noqa: E402
+from app.services.reference_bootstrap import ROOT_ORG_UNIT_CODE  # noqa: E402
 
 MIN_PASSWORD_LENGTH = 14
 WEAK_MARKERS = ("password", "change-me", "changeme", "admin123", "dev-only", "hpip123", "letmein")
@@ -71,7 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--username", required=True, help="Account name for the first administrator.")
     parser.add_argument("--display-name", help="Full name shown in the interface.")
     parser.add_argument("--email")
-    parser.add_argument("--org-unit-code", help="Geography scope (defaults to the root organisation unit).")
+    parser.add_argument(
+        "--org-unit-code",
+        default=ROOT_ORG_UNIT_CODE,
+        help=f"Geography scope (defaults to the country root {ROOT_ORG_UNIT_CODE}).",
+    )
     parser.add_argument("--no-prompt", action="store_true", help="Require HPIP_ADMIN_PASSWORD instead of prompting.")
     args = parser.parse_args(argv)
 
@@ -99,15 +107,17 @@ def main(argv: list[str] | None = None) -> int:
         _check_password(password)
         role = session.scalar(select(Role).where(Role.code == "system_administrator"))
         if role is None:
-            print("The system_administrator role is missing. Run the migrations and reference seed first.")
+            print(
+                "The system_administrator role is missing. Run the migrations and "
+                "scripts/bootstrap_reference_data.py first; nothing was created."
+            )
             return 2
-        org_unit = (
-            session.scalar(select(OrgUnit).where(OrgUnit.code == args.org_unit_code))
-            if args.org_unit_code
-            else session.scalar(select(OrgUnit).where(OrgUnit.parent_id.is_(None)).order_by(OrgUnit.code))
-        )
+        org_unit = session.scalar(select(OrgUnit).where(OrgUnit.code == args.org_unit_code, OrgUnit.active.is_(True)))
         if org_unit is None:
-            print("No organisation unit is available for the geography scope; nothing was created.")
+            print(
+                f"Organisation unit {args.org_unit_code} is not available. Run scripts/bootstrap_reference_data.py "
+                "or pass an existing --org-unit-code; nothing was created."
+            )
             return 2
         user = User(
             username=args.username,
