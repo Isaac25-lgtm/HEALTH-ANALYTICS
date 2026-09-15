@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     # Engineering default, not an owner decision (see OPEN_ITEMS): maintenance run records and
     # operational events are counts and codes only, kept as long as export job metadata.
     operational_record_retention_days: int = Field(default=90, ge=1, le=3650)
+    # Reference to the owner's approval of the national district/city hierarchy (for example a
+    # decision-register ID). Empty until supplied: population crosswalk matches then stay
+    # candidates and never count as production mappings.
+    population_hierarchy_approval_reference: str = ""
     purge_enabled: bool = True
     purge_dry_run: bool = False
     purge_schedule_enabled: bool = False

@@ -17,7 +17,7 @@ from app.db.session import reset_engine
 # HPIP_POSTGRES_TEST_URL, so the suite never attempts to log in to a workstation instance.
 DEFAULT_ADMIN_URL = ""
 VERIFY_DB = "hpip_p18_alembic_verify"
-HEAD_REVISION = "0011_population_import_staging"
+HEAD_REVISION = "0012_population_staging_identity"
 
 
 def _admin_url() -> str:

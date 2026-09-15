@@ -34,9 +34,11 @@ from app.models import User  # noqa: E402
 from app.services.authorization import AuthorizationError  # noqa: E402
 from app.services.population_workbook import (  # noqa: E402
     REFERENCE_AUTHORITATIVE,
+    REFERENCE_UNAPPROVED,
     VERIFIED_SHA256,
     PopulationWorkbookError,
     apply_population_workbook,
+    crosswalk_semantics,
     derived_national_totals,
     detect_reference_scope,
     read_population_workbook,
@@ -57,11 +59,14 @@ REPORT_DIR = REPO / "docs" / "reconciliation"
 def _markdown(payload: dict) -> str:
     workbook = payload["workbook"]
     counts = payload["counts"]
-    scope_note = (
-        "matched against an authoritative organisation-unit hierarchy"
-        if payload["reference_scope"] == REFERENCE_AUTHORITATIVE
-        else "matched only against synthetic development fixtures, so **no match below is a "
-        "production mapping**"
+    scope_notes = {
+        REFERENCE_AUTHORITATIVE: "matched against an authoritative, owner-approved organisation-unit hierarchy",
+        REFERENCE_UNAPPROVED: "matched against a full organisation-unit cohort whose approval has not been "
+        "recorded, so **no match below is a production mapping**",
+    }
+    scope_note = scope_notes.get(
+        payload["reference_scope"],
+        "matched only against synthetic development fixtures, so **no match below is a production mapping**",
     )
     lines = [
         "# Population workbook reconciliation",
@@ -133,8 +138,38 @@ def _markdown(payload: dict) -> str:
     lines.extend(
         [
             "",
-            f"Production-unresolved units: **{payload['production_unresolved']}** of {workbook['unit_rows']}.",
+            "| Measure | Units |",
+            "|---|---|",
+            f"| Reconciliation matched (exact or approved alias) | {payload['reconciliation_matched']} |",
+            f"| Reconciliation unmatched | {payload['reconciliation_unmatched']} |",
+            f"| Production resolved | {payload['production_resolved']} |",
+            f"| **Production unresolved** | **{payload['production_unresolved']}** of {workbook['unit_rows']} |",
             "",
+            "Only a match against an authoritative, owner-approved hierarchy reduces production-unresolved "
+            "units. Reconciliation matches against anything else are candidates only.",
+            "",
+        ]
+    )
+    if payload["non_production_candidates"]:
+        lines.extend(
+            [
+                "### Non-production candidates",
+                "",
+                "These names matched synthetic or unapproved organisation units. They are **not** production "
+                "mappings and create no denominator.",
+                "",
+                "| Row | Source unit | Type | Matched state | Candidate organisation unit |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for item in payload["non_production_candidates"]:
+            lines.append(
+                f"| {item['row_number']} | {item['source_unit_name']} | {item['source_unit_type']} | "
+                f"`{item['status']}` (non-production candidate) | {item['org_unit_name'] or ''} |"
+            )
+        lines.append("")
+    lines.extend(
+        [
             "### Units needing an explicit decision",
             "",
             "| Row | Source unit | Type | Region | State | Detail |",
@@ -184,6 +219,8 @@ def _payload(session, report, *, display_name: str) -> dict:
     watch_terms = ("kampala", "gulu", "manaf")
     units = base["units"]
     attention = [item for item in units if item["status"] not in {"matched_exact", "matched_alias"}]
+    scope = detect_reference_scope(session)
+    semantics = crosswalk_semantics(report, scope)
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "importer_version": base.get("importer_version", "hpip-population-workbook-2"),
@@ -198,8 +235,12 @@ def _payload(session, report, *, display_name: str) -> dict:
             "status": "not_calculated",
             "reason": "No approved health sub-region membership mapping exists for these units.",
         },
-        "reference_scope": detect_reference_scope(session),
-        "production_unresolved": len(attention),
+        "reference_scope": scope,
+        "reconciliation_matched": semantics["reconciliation_matched"],
+        "reconciliation_unmatched": semantics["reconciliation_unmatched"],
+        "production_resolved": semantics["production_resolved"],
+        "production_unresolved": semantics["production_unresolved"],
+        "non_production_candidates": semantics["non_production_candidates"],
         "attention": attention,
         "watchlist": [
             item for item in units if any(term in item["source_unit_name"].lower() for term in watch_terms)
@@ -253,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
                 "derived_national_totals",
                 "region_totals",
                 "reference_scope",
+                "reconciliation_unmatched",
                 "production_unresolved",
             )
         }
@@ -263,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
             if user is None:
                 raise PopulationWorkbookError("unknown_user", "The importing user does not exist.")
         if args.stage:
-            batch = stage_population_workbook(
+            outcome = stage_population_workbook(
                 session,
                 user,
                 report=report,
@@ -271,7 +313,8 @@ def main(argv: list[str] | None = None) -> int:
                 notes="Staged by scripts/import_population_workbook.py --stage",
             )
             session.commit()
-            summary["staged_batch"] = staging_summary(session, batch)
+            summary["staged_batch"] = staging_summary(session, outcome.batch)
+            summary["staged_batch"]["reused_existing_batch"] = outcome.reused
         if args.apply:
             if not args.version_code:
                 raise PopulationWorkbookError("arguments_required", "--apply needs --version-code.")

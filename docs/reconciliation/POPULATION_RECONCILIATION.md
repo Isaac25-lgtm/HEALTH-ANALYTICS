@@ -1,6 +1,6 @@
 # Population workbook reconciliation
 
-Generated 2026-09-14T09:10:14.086069+00:00 by `scripts/import_population_workbook.py` (hpip-population-workbook-2). Read-only: the workbook was not modified.
+Generated 2026-09-15T12:23:57.938209+00:00 by `scripts/import_population_workbook.py` (hpip-population-workbook-2). Read-only: the workbook was not modified.
 
 ## Source identity
 
@@ -53,7 +53,24 @@ Candidate matches were matched only against synthetic development fixtures, so *
 | `matched_exact` | 3 |
 | `unmatched` | 143 |
 
-Production-unresolved units: **143** of 146.
+| Measure | Units |
+|---|---|
+| Reconciliation matched (exact or approved alias) | 3 |
+| Reconciliation unmatched | 143 |
+| Production resolved | 0 |
+| **Production unresolved** | **146** of 146 |
+
+Only a match against an authoritative, owner-approved hierarchy reduces production-unresolved units. Reconciliation matches against anything else are candidates only.
+
+### Non-production candidates
+
+These names matched synthetic or unapproved organisation units. They are **not** production mappings and create no denominator.
+
+| Row | Source unit | Type | Matched state | Candidate organisation unit |
+|---|---|---|---|---|
+| 78 | Kitgum | District | `matched_exact` (non-production candidate) | Kitgum |
+| 131 | Pader | District | `matched_exact` (non-production candidate) | Pader |
+| 143 | Soroti | District | `matched_exact` (non-production candidate) | Soroti |
 
 ### Units needing an explicit decision
 

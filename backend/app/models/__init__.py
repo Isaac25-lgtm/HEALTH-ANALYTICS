@@ -1060,6 +1060,15 @@ class PopulationImportBatch(Base, TimestampMixin):
     """
 
     __tablename__ = "population_import_batches"
+    __table_args__ = (
+        Index(
+            "uq_population_import_batches_identity",
+            "source_sha256",
+            "importer_version",
+            "reference_fingerprint",
+            unique=True,
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     source_dataset: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
@@ -1080,6 +1089,9 @@ class PopulationImportBatch(Base, TimestampMixin):
     region_totals: Mapped[dict | None] = mapped_column(JSON)
     match_counts: Mapped[dict | None] = mapped_column(JSON)
     reference_scope: Mapped[str] = mapped_column(String(40), nullable=False)
+    # SHA-256 of the organisation-unit hierarchy, approved aliases and hierarchy approval reference
+    # the rows were matched against. Same source + importer + reference = the same governed batch.
+    reference_fingerprint: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     review_status: Mapped[str] = mapped_column(String(20), nullable=False)
     reviewed_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))

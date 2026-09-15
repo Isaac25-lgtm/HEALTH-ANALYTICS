@@ -24,8 +24,10 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.domain.enums import (
     ActionPermission,
     AggregationClass,
@@ -84,9 +86,13 @@ IMPORTER_VERSION = "hpip-population-workbook-2"
 SOURCE_TYPE = "national_statistical_office_workbook"
 # Candidate matches are only as authoritative as the organisation units they matched against.
 REFERENCE_SYNTHETIC = "synthetic_development_fixtures"
+REFERENCE_UNAPPROVED = "unapproved_hierarchy"
 REFERENCE_AUTHORITATIVE = "authoritative_org_units"
 STAGED = "staged"
 REVIEW_PENDING = "pending_review"
+REVIEW_REVIEWED = "reviewed"
+REVIEW_REJECTED = "rejected"
+MATCHED_STATUSES = frozenset({"matched_exact", "matched_alias"})
 
 LOWER_LEVEL_NOTE = (
     "Facility and sub-county populations are never derived from this workbook. "
@@ -669,20 +675,83 @@ def structure_findings(extract: WorkbookExtract) -> list[str]:
     return findings
 
 
-def detect_reference_scope(session: Session) -> str:
-    """Whether candidate matches are against synthetic fixtures or a full hierarchy.
+def detect_reference_scope(session: Session, settings=None) -> str:
+    """How authoritative the organisation units behind any candidate match are.
 
-    A synthetic development database has a handful of organisation units; an authoritative
-    hierarchy has the full district and city cohort. Synthetic matches are never reported as
-    production matches.
+    - ``synthetic_development_fixtures``: fewer district/city units than the national cohort;
+    - ``unapproved_hierarchy``: a full cohort exists but the owner's approval of the hierarchy has
+      not been recorded (``POPULATION_HIERARCHY_APPROVAL_REFERENCE`` is empty);
+    - ``authoritative_org_units``: a full cohort and a recorded approval reference.
+
+    Only the last one may turn a candidate match into a production mapping.
     """
+    settings = settings or get_settings()
     candidates = session.scalars(
-        select(OrgUnit).where(
+        select(OrgUnit.id).where(
             OrgUnit.active.is_(True),
             OrgUnit.level_type.in_([OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value]),
         )
     ).all()
-    return REFERENCE_AUTHORITATIVE if len(list(candidates)) >= EXPECTED_UNITS else REFERENCE_SYNTHETIC
+    if len(candidates) < EXPECTED_UNITS:
+        return REFERENCE_SYNTHETIC
+    if not settings.population_hierarchy_approval_reference.strip():
+        return REFERENCE_UNAPPROVED
+    return REFERENCE_AUTHORITATIVE
+
+
+def reference_fingerprint(session: Session, settings=None) -> str:
+    """Identity of everything a crosswalk decision depends on, as a SHA-256 hex digest."""
+    settings = settings or get_settings()
+    digest = hashlib.sha256()
+    digest.update(f"approval:{settings.population_hierarchy_approval_reference.strip()}\n".encode())
+    for unit in sorted(_candidate_units(session), key=lambda item: item.code):
+        digest.update(f"unit:{unit.code}|{unit.name}|{unit.level_type}|{unit.path}\n".encode())
+    aliases = session.scalars(
+        select(PopulationSourceAlias).where(PopulationSourceAlias.source_dataset == SOURCE_DATASET)
+    ).all()
+    for alias in sorted(aliases, key=lambda item: item.source_unit_name):
+        digest.update(f"alias:{alias.source_unit_name}|{alias.org_unit_id}|{alias.decision_status}\n".encode())
+    return digest.hexdigest()
+
+
+def crosswalk_semantics(report: ReconciliationReport, scope: str) -> dict:
+    """Separate what reconciled from what is usable in production.
+
+    ``reconciliation_unmatched`` counts source units without an exact or approved-alias match.
+    ``production_unresolved`` counts source units that are not a production mapping: every unit
+    unless the reference hierarchy is authoritative. Matches against anything else are listed as
+    non-production candidates.
+    """
+    total = len(report.units)
+    matched = [item for item in report.units if item.status in MATCHED_STATUSES]
+    authoritative = scope == REFERENCE_AUTHORITATIVE
+    return {
+        "reference_scope": scope,
+        "source_units": total,
+        "reconciliation_matched": len(matched),
+        "reconciliation_unmatched": total - len(matched),
+        "production_resolved": len(matched) if authoritative else 0,
+        "production_unresolved": total - len(matched) if authoritative else total,
+        "non_production_candidates": []
+        if authoritative
+        else [{**item.as_dict(), "non_production_candidate": True} for item in matched],
+    }
+
+
+@dataclass
+class StagingOutcome:
+    batch: PopulationImportBatch
+    reused: bool
+
+
+def _existing_batch(session: Session, sha256: str, fingerprint: str) -> PopulationImportBatch | None:
+    return session.scalar(
+        select(PopulationImportBatch).where(
+            PopulationImportBatch.source_sha256 == sha256,
+            PopulationImportBatch.importer_version == IMPORTER_VERSION,
+            PopulationImportBatch.reference_fingerprint == fingerprint,
+        )
+    )
 
 
 def stage_population_workbook(
@@ -692,15 +761,24 @@ def stage_population_workbook(
     report: ReconciliationReport,
     source_display_name: str | None = None,
     notes: str | None = None,
-) -> PopulationImportBatch:
+) -> StagingOutcome:
     """Record every source row and its match state without creating any denominator.
 
     Staging is deliberately separate from applying: it preserves all 146 rows and the state of
     each crosswalk decision while the authoritative organisation-unit hierarchy is still absent.
+
+    Idempotent: the same checksum, importer version and reference fingerprint reuse the existing
+    governed batch (``reused=True``) instead of creating another. A changed hierarchy, alias
+    decision or approval reference produces a new fingerprint and therefore a new batch.
     """
     require_action(session, user, ActionPermission.EDIT_POPULATION)
     extract = report.extract
     scope = detect_reference_scope(session)
+    fingerprint = reference_fingerprint(session)
+    existing = _existing_batch(session, extract.sha256, fingerprint)
+    if existing is not None:
+        return StagingOutcome(batch=existing, reused=True)
+    semantics = crosswalk_semantics(report, scope)
     types = Counter(unit.unit_type for unit in extract.units)
     batch = PopulationImportBatch(
         source_dataset=SOURCE_DATASET,
@@ -721,12 +799,21 @@ def stage_population_workbook(
         region_totals=region_totals(extract),
         match_counts=report.counts,
         reference_scope=scope,
+        reference_fingerprint=fingerprint,
         status=STAGED,
         review_status=REVIEW_PENDING,
         notes=notes,
     )
-    session.add(batch)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(batch)
+            session.flush()
+    except IntegrityError:
+        # A concurrent staging of the same identity won; reuse its batch.
+        winner = _existing_batch(session, extract.sha256, fingerprint)
+        if winner is None:
+            raise
+        return StagingOutcome(batch=winner, reused=True)
     findings = structure_findings(extract)
     for item in report.units:
         for year, value in sorted(item.unit.values.items()):
@@ -760,10 +847,68 @@ def stage_population_workbook(
             "units": len(extract.units),
             "cells": extract.cell_count,
             "reference_scope": scope,
+            "reference_fingerprint": fingerprint,
             "match_counts": report.counts,
+            "reconciliation_unmatched": semantics["reconciliation_unmatched"],
+            "production_unresolved": semantics["production_unresolved"],
             "structure_findings": findings,
         },
         reason="Governed staging of an approved population source; no denominator was created.",
+    )
+    return StagingOutcome(batch=batch, reused=False)
+
+
+def review_staged_batch(
+    session: Session,
+    reviewer: User,
+    batch: PopulationImportBatch,
+    *,
+    decision: str,
+    reason: str,
+) -> PopulationImportBatch:
+    """Record a second person's review of a staged batch. Never creates or approves populations.
+
+    ``rejected`` is always available. ``reviewed`` additionally requires an authoritative
+    reference hierarchy and every staged row to be an exact or approved-alias match, so a batch
+    matched against synthetic fixtures or an unapproved hierarchy can never be marked reviewed.
+    """
+    require_action(session, reviewer, ActionPermission.APPROVE_POPULATION)
+    if decision not in {REVIEW_REVIEWED, REVIEW_REJECTED}:
+        raise PopulationWorkbookError("invalid_review_decision", "Review decision must be reviewed or rejected.")
+    if batch.review_status != REVIEW_PENDING:
+        raise PopulationWorkbookError("batch_already_reviewed", "This staged batch already has a review decision.")
+    if batch.imported_by_user_id is not None and batch.imported_by_user_id == reviewer.id:
+        raise PopulationWorkbookError("second_reviewer_required", "The importer cannot review their own batch.")
+    if not (reason or "").strip():
+        raise PopulationWorkbookError("reason_required", "A review decision needs a recorded reason.")
+    rows = session.scalars(select(PopulationImportRow).where(PopulationImportRow.batch_id == batch.id)).all()
+    if decision == REVIEW_REVIEWED:
+        if batch.reference_scope != REFERENCE_AUTHORITATIVE:
+            raise PopulationWorkbookError(
+                "authoritative_hierarchy_required",
+                "A batch matched against synthetic fixtures or an unapproved hierarchy cannot be marked reviewed.",
+            )
+        if any(row.match_state not in MATCHED_STATUSES for row in rows):
+            raise PopulationWorkbookError(
+                "unresolved_units", "Every staged unit needs an exact or approved-alias match before review."
+            )
+    before = {"review_status": batch.review_status}
+    moment = datetime.now(UTC)
+    batch.review_status = decision
+    batch.reviewed_by_user_id = reviewer.id
+    batch.reviewed_at = moment
+    for row in rows:
+        row.review_state = decision
+    session.flush()
+    write_audit(
+        session,
+        actor_user_id=reviewer.id,
+        action="population_import_batch_reviewed",
+        resource_type="population_import_batch",
+        resource_id=str(batch.id),
+        before=before,
+        after={"review_status": decision, "reference_scope": batch.reference_scope, "rows": len(rows)},
+        reason=reason.strip(),
     )
     return batch
 
@@ -780,6 +925,7 @@ def staging_summary(session: Session, batch: PopulationImportBatch) -> dict:
         "importer_version": batch.importer_version,
         "imported_at": batch.imported_at.isoformat() if batch.imported_at else None,
         "reference_scope": batch.reference_scope,
+        "reference_fingerprint": batch.reference_fingerprint,
         "status": batch.status,
         "review_status": batch.review_status,
         "units": batch.unit_count,
