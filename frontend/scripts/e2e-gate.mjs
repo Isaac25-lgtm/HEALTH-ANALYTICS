@@ -162,16 +162,17 @@ let hung = false;
 while (outcome === null) {
   outcome = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 1000))]);
   const now = Date.now();
+  let reason = null;
   if (outcome === null && summaryAt !== null && now - summaryAt > EXIT_BOUND_SECONDS * 1000) {
-    hung = true;
+    reason = `Playwright did not exit within ${EXIT_BOUND_SECONDS}s of its summary`;
+  } else if (outcome === null && now - started > OVERALL_TIMEOUT_SECONDS * 1000) {
+    reason = `Playwright exceeded the overall timeout of ${OVERALL_TIMEOUT_SECONDS}s`;
   }
-  if (outcome === null && now - started > OVERALL_TIMEOUT_SECONDS * 1000) {
+  if (reason !== null) {
     hung = true;
-  }
-  if (hung && outcome === null) {
     const survivors = descendants(await processTable(), child.pid);
     summary.hang_survivors = survivors.map((row) => `${row.name}#${row.pid}`);
-    failures.push(`Playwright did not exit within ${EXIT_BOUND_SECONDS}s of its summary`);
+    failures.push(reason);
     killKnownTree(child.pid);
     outcome = await exited;
   }
