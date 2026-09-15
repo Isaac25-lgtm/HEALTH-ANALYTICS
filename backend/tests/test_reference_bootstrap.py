@@ -7,6 +7,7 @@ existing configuration differs. The same release flow runs on PostgreSQL in
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,7 @@ from app.services.reference_bootstrap import (
 )
 from scripts import bootstrap_reference_data as bootstrap_cli
 from scripts import create_initial_admin as admin_cli
+from tests import reference_mutations
 
 ADMIN_PASSWORD = "uat-operator-chosen-passphrase-7"
 
@@ -235,67 +237,61 @@ def test_the_development_seed_is_compatible_with_the_production_reference(sessio
     assert reference_counts(session) == before
 
 
-@pytest.mark.parametrize(
-    ("mutate", "expected"),
-    [
-        (
-            lambda s: setattr(s.scalar(select(Programme).where(Programme.code == "EPI")), "name", "Renamed"),
-            "programme EPI: name differs",
-        ),
-        (
-            lambda s: s.add(
-                RolePermission(
-                    role_id=s.scalar(select(Role.id).where(Role.code == "view_only")), action="manage_users"
-                )
-            ),
-            "role view_only: permissions differ",
-        ),
-        (
-            lambda s: setattr(
-                s.scalar(
-                    select(IndicatorVersion)
-                    .join(Indicator, Indicator.id == IndicatorVersion.indicator_id)
-                    .where(Indicator.code == "ANC1_COVERAGE")
-                ),
-                "target",
-                "99",
-            ),
-            "indicator ANC1_COVERAGE: target differs",
-        ),
-        (
-            lambda s: setattr(
-                s.scalar(
-                    select(PeriodPopulationRule).where(
-                        PeriodPopulationRule.financial_year_key == "FY2025/26",
-                        PeriodPopulationRule.programme_id.is_(None),
-                    )
-                ),
-                "population_year",
-                2026,
-            ),
-            "period rule FY2025/26 (all programmes): population_year differs",
-        ),
-        (
-            lambda s: setattr(s.scalar(select(OrgUnit).where(OrgUnit.code == "UG")), "level_type", "region"),
-            "org unit UG: level_type differs",
-        ),
-    ],
-)
-def test_each_kind_of_conflict_is_detected_and_nothing_is_written(session, mutate, expected):
-    mutate(session)
+@pytest.mark.parametrize("mutation_id", reference_mutations.ALL_IDS)
+def test_every_bootstrap_owned_field_drift_is_refused_without_partial_writes(
+    fresh_sqlite, monkeypatch, capsys, mutation_id
+):
+    point_at(monkeypatch, fresh_sqlite)
+    command.upgrade(_alembic_cfg(), "head")
+    assert bootstrap_cli.main([]) == 0
+    engine = create_engine(fresh_sqlite, future=True)
+    try:
+        missing = reference_mutations.remove_one_missing_row(engine)
+        undo = reference_mutations.apply(engine, mutation_id)
+        capsys.readouterr()
+        assert bootstrap_cli.main([]) == 3
+        output = capsys.readouterr().out
+        assert reference_mutations.expected_fragment(mutation_id) in output, output
+        assert reference_mutations.SENTINEL not in output
+        assert missing() == 0, "a refused bootstrap must not insert missing rows"
+        undo()
+        assert bootstrap_cli.main([]) == 0
+        assert missing() == 1
+    finally:
+        engine.dispose()
+
+
+def test_owner_managed_fields_and_unrelated_rows_do_not_conflict(session):
+    version = session.scalar(
+        select(IndicatorVersion)
+        .join(Indicator, Indicator.id == IndicatorVersion.indicator_id)
+        .where(Indicator.code == "ANC1_COVERAGE")
+    )
+    # Owner-approved effective dates and a later governed version that supersedes v1.
+    version.valid_from = date(2024, 7, 1)
+    version.is_current = False
+    session.flush()
+    session.add(
+        IndicatorVersion(
+            indicator_id=version.indicator_id,
+            formula_version="v2",
+            numerator_definition=version.numerator_definition,
+            denominator_type=version.denominator_type,
+            unit=version.unit,
+            direction=version.direction,
+            is_current=True,
+            valid_from=date(2025, 7, 1),
+        )
+    )
+    session.scalar(select(Role).where(Role.code == "view_only")).description = "Owner-written description"
+    session.scalar(select(OrgUnit).where(OrgUnit.code == "UG")).valid_from = date(2020, 1, 1)
+    future = Programme(code="FUTURE", name="Future programme", first_release=False)
+    session.add_all([future, Role(code="custom_role", name="Custom role")])
+    session.add(QualityRule(code="CUSTOM_RULE", category="custom", severity="info", explanation="x", rule_version="v1"))
+    session.add(QualityRule(code="UNEXPECTED_ZERO", category="x", severity="info", explanation="x", rule_version="v2"))
     session.commit()
-    removed = session.scalars(
-        select(PeriodPopulationRule).where(PeriodPopulationRule.financial_year_key == "2030")
-    ).all()
-    for row in removed:
-        session.delete(row)
-    session.commit()
-    with pytest.raises(ReferenceBootstrapConflict) as raised:
-        bootstrap_reference_data(session)
-    session.rollback()
-    assert any(expected in item for item in raised.value.conflicts), raised.value.conflicts
-    assert raised.value.code == "reference_configuration_conflict"
-    assert session.scalar(select(func.count()).where(PeriodPopulationRule.financial_year_key == "2030")) == 0
+    report = bootstrap_reference_data(session)
+    assert not report.changed
 
 
 def test_conflict_messages_contain_no_values_only_field_names(session):

@@ -15,10 +15,33 @@ The bootstrap is idempotent. Rows that already match the approved reference are 
 missing rows are created; a row that exists but differs is reported as a conflict and nothing
 is written, so hand-edited configuration is never silently overwritten. On PostgreSQL a
 transaction-scoped advisory lock serialises concurrent release attempts.
+
+OWNERSHIP. The bootstrap owns only these keyed rows and fields; everything else is owner-managed
+configuration and is neither compared nor changed. Rows with other keys (a future programme,
+role, indicator, quality rule or period rule) are ignored.
+
+- programmes (key ``code`` in PROGRAMME_CATALOG): name, active, sensitive, first_release,
+  description. Owner-managed: none.
+- roles (key ``code`` in ROLE_CATALOG): name, is_active, exact permission set. Owner-managed:
+  description.
+- org_units (key ``UG``): name, level_type, parent_id (none), path, active. Owner-managed:
+  valid_from, valid_to, ownership, facility_level.
+- indicators (key ``code`` in INDICATOR_CATALOG): programme, name, active. Owner-managed:
+  description.
+- indicator_versions (key indicator + ``v1``): every INDICATOR_VERSION_FIELDS entry, and
+  INDICATOR_VERSION_UNSET_FIELDS must stay unset; the indicator must have exactly one current
+  version (v1 may be superseded by a later governed version). Owner-managed: valid_from and
+  valid_to, the approved effective dates.
+- quality_rules (key ``code`` + ``v1``): category, severity, explanation, enabled, normalised
+  config.
+- period_population_rules (key financial_year_key + programme scope): population_year,
+  scope_kind, applies_to_period_kinds, approval_status, notes; a bootstrap-authored rule may not
+  move to another programme scope.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from sqlalchemy import select, text
@@ -113,6 +136,8 @@ INDICATOR_VERSION_FIELDS = (
     "formula_spec",
     "classification_spec",
 )
+# Fields the bootstrap leaves unset on the base version; a value there changes behaviour.
+INDICATOR_VERSION_UNSET_FIELDS = ("denominator_reference_indicator_id", "quality_rules")
 
 
 def quality_rule_config(code: str) -> dict | None:
@@ -191,13 +216,29 @@ def _lock(session: Session) -> None:
         session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ADVISORY_LOCK_KEY})
 
 
+def _normalise(value: object) -> object:
+    """Canonical form for comparison: JSON-like values compare by content, not key order."""
+    if isinstance(value, dict | list):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return value
+
+
 def _differs(label: str, name: str, existing: object, expected: object, conflicts: list[str]) -> None:
-    if existing != expected:
+    if _normalise(existing) != _normalise(expected):
+        # Field names only. Stored values are never echoed: they may be operator-entered text.
         conflicts.append(f"{label}: {name} differs from the approved reference")
 
 
+def role_name(code: str) -> str:
+    return code.replace("_", " ").title()
+
+
 def _inspect(session: Session) -> list[str]:
-    """Compare every existing reference row with the approved reference. Read-only."""
+    """Compare every bootstrap-owned row and field with the approved reference. Read-only.
+
+    Only keyed catalogue rows are inspected (see OWNERSHIP in the module docstring); rows with
+    other keys are left alone, and owner-managed fields are never compared.
+    """
     conflicts: list[str] = []
 
     programmes = {row.code: row for row in session.scalars(select(Programme)).all()}
@@ -205,38 +246,39 @@ def _inspect(session: Session) -> list[str]:
         row = programmes.get(code)
         if row is None:
             continue
-        _differs(f"programme {code}", "sensitive", row.sensitive, sensitive, conflicts)
-        _differs(f"programme {code}", "name", row.name, name, conflicts)
-        if not row.active:
-            conflicts.append(f"programme {code}: exists but is inactive")
+        label = f"programme {code}"
+        for field_name, expected in (
+            ("name", name),
+            ("active", True),
+            ("sensitive", sensitive),
+            ("first_release", True),
+            ("description", PROGRAMME_DESCRIPTION),
+        ):
+            _differs(label, field_name, getattr(row, field_name), expected, conflicts)
 
     roles = {row.code: row for row in session.scalars(select(Role)).all()}
     for code, actions in ROLE_CATALOG.items():
         role = roles.get(code)
         if role is None:
             continue
-        granted = set(session.scalars(select(RolePermission.action).where(RolePermission.role_id == role.id)).all())
-        if granted != set(actions):
-            missing = sorted(set(actions) - granted)
-            extra = sorted(granted - set(actions))
-            conflicts.append(f"role {code}: permissions differ (missing={missing}, extra={extra})")
+        label = f"role {code}"
+        _differs(label, "name", role.name, role_name(code), conflicts)
+        _differs(label, "is_active", role.is_active, True, conflicts)
+        granted = session.scalars(select(RolePermission.action).where(RolePermission.role_id == role.id)).all()
+        if sorted(granted) != sorted(actions):
+            conflicts.append(f"{label}: permissions differ from the approved reference")
 
     root = session.scalar(select(OrgUnit).where(OrgUnit.code == ROOT_ORG_UNIT_CODE))
     if root is not None:
-        if root.parent_id is not None:
-            conflicts.append(f"org unit {ROOT_ORG_UNIT_CODE}: exists but is not a root unit")
-        _differs(f"org unit {ROOT_ORG_UNIT_CODE}", "level_type", root.level_type, OrgUnitLevel.COUNTRY.value, conflicts)
-        if not root.active:
-            conflicts.append(f"org unit {ROOT_ORG_UNIT_CODE}: exists but is inactive")
-    other_countries = session.scalars(
-        select(OrgUnit.code).where(
-            OrgUnit.parent_id.is_(None),
-            OrgUnit.level_type == OrgUnitLevel.COUNTRY.value,
-            OrgUnit.code != ROOT_ORG_UNIT_CODE,
-        )
-    ).all()
-    if other_countries:
-        conflicts.append(f"org units: another country root exists ({sorted(other_countries)})")
+        label = f"org unit {ROOT_ORG_UNIT_CODE}"
+        for field_name, expected in (
+            ("name", ROOT_ORG_UNIT_NAME),
+            ("level_type", OrgUnitLevel.COUNTRY.value),
+            ("parent_id", None),
+            ("path", build_path(None, ROOT_ORG_UNIT_CODE)),
+            ("active", True),
+        ):
+            _differs(label, field_name, getattr(root, field_name), expected, conflicts)
 
     indicators = {row.code: row for row in session.scalars(select(Indicator)).all()}
     for spec in INDICATOR_CATALOG:
@@ -245,32 +287,47 @@ def _inspect(session: Session) -> list[str]:
             continue
         label = f"indicator {spec['code']}"
         programme = programmes.get(spec["programme"])
-        if programme is None or indicator.programme_id != programme.id:
-            conflicts.append(f"{label}: belongs to a different programme")
-        version = session.scalar(
-            select(IndicatorVersion).where(
-                IndicatorVersion.indicator_id == indicator.id,
-                IndicatorVersion.formula_version == INDICATOR_BASE_VERSION,
-            )
-        )
-        if version is None:
-            conflicts.append(f"{label}: exists without catalogue version {INDICATOR_BASE_VERSION}")
+        _differs(label, "programme", indicator.programme_id, programme.id if programme else None, conflicts)
+        _differs(label, "name", indicator.name, spec["name"], conflicts)
+        _differs(label, "active", indicator.active, True, conflicts)
+        versions = session.scalars(select(IndicatorVersion).where(IndicatorVersion.indicator_id == indicator.id)).all()
+        base = next((row for row in versions if row.formula_version == INDICATOR_BASE_VERSION), None)
+        if base is None:
+            conflicts.append(f"{label}: catalogue version {INDICATOR_BASE_VERSION} is missing")
             continue
+        version_label = f"{label} version {INDICATOR_BASE_VERSION}"
         for column in INDICATOR_VERSION_FIELDS:
-            _differs(label, column, getattr(version, column), spec[column], conflicts)
+            _differs(version_label, column, getattr(base, column), spec[column], conflicts)
+        for column in INDICATOR_VERSION_UNSET_FIELDS:
+            _differs(version_label, column, getattr(base, column), None, conflicts)
+        # The base version may be superseded by a later governed version, but the indicator must
+        # always have exactly one current version.
+        current = [row for row in versions if row.is_current]
+        if len(current) != 1:
+            conflicts.append(f"{label}: is_current differs from the approved reference (one current version required)")
 
     rules = {(row.code, row.rule_version): row for row in session.scalars(select(QualityRule)).all()}
     for item in QUALITY_RULE_CATALOG:
         rule = rules.get((item["code"], QUALITY_RULE_VERSION))
         if rule is None:
             continue
-        label = f"quality rule {item['code']}"
-        _differs(label, "category", rule.category, item["category"], conflicts)
-        _differs(label, "severity", rule.severity, item["severity"], conflicts)
+        label = f"quality rule {item['code']} {QUALITY_RULE_VERSION}"
+        for field_name, expected in (
+            ("category", item["category"]),
+            ("severity", item["severity"]),
+            ("explanation", item["explanation"]),
+            ("enabled", True),
+            ("config", quality_rule_config(item["code"])),
+        ):
+            _differs(label, field_name, getattr(rule, field_name), expected, conflicts)
 
     programme_ids = {code: row.id for code, row in programmes.items()}
+    governed_scopes = {programme_ids.get(code) if code else None for code in PERIOD_RULE_PROGRAMMES}
+    governed_notes = {FY_RULE_NOTE, CY_RULE_NOTE}
+    specs = period_rule_specs()
+    governed_keys = {spec["financial_year_key"] for spec in specs}
     existing_rules = session.scalars(select(PeriodPopulationRule)).all()
-    for spec in period_rule_specs():
+    for spec in specs:
         programme_id = programme_ids.get(spec["programme"]) if spec["programme"] else None
         if spec["programme"] and programme_id is None:
             continue
@@ -286,16 +343,28 @@ def _inspect(session: Session) -> list[str]:
         if not matches:
             continue
         row = matches[0]
-        _differs(label, "population_year", row.population_year, spec["population_year"], conflicts)
-        _differs(label, "scope_kind", row.scope_kind, spec["scope_kind"], conflicts)
-        _differs(
-            label,
-            "applies_to_period_kinds",
-            sorted(row.applies_to_period_kinds or []),
-            sorted(spec["applies_to_period_kinds"]),
-            conflicts,
-        )
-        _differs(label, "approval_status", row.approval_status, ApprovalStatus.APPROVED.value, conflicts)
+        for field_name, existing, expected in (
+            ("population_year", row.population_year, spec["population_year"]),
+            ("scope_kind", row.scope_kind, spec["scope_kind"]),
+            (
+                "applies_to_period_kinds",
+                sorted(row.applies_to_period_kinds or []),
+                sorted(spec["applies_to_period_kinds"]),
+            ),
+            ("approval_status", row.approval_status, ApprovalStatus.APPROVED.value),
+            ("notes", row.notes, spec["notes"]),
+        ):
+            _differs(label, field_name, existing, expected, conflicts)
+    # A bootstrap-authored rule moved to a programme scope the reference does not use.
+    for row in existing_rules:
+        if (
+            row.financial_year_key in governed_keys
+            and row.notes in governed_notes
+            and row.programme_id not in governed_scopes
+        ):
+            conflicts.append(
+                f"period rule {row.financial_year_key}: programme scope differs from the approved reference"
+            )
     return conflicts
 
 
@@ -307,6 +376,7 @@ def _ensure(session: Session, report: BootstrapReport) -> None:
             row = Programme(
                 code=code,
                 name=name,
+                active=True,
                 first_release=True,
                 sensitive=sensitive,
                 description=PROGRAMME_DESCRIPTION,
@@ -320,7 +390,7 @@ def _ensure(session: Session, report: BootstrapReport) -> None:
     for code, actions in ROLE_CATALOG.items():
         created = code not in roles
         if created:
-            role = Role(code=code, name=code.replace("_", " ").title())
+            role = Role(code=code, name=role_name(code), is_active=True)
             session.add(role)
             session.flush()
             for action in actions:
@@ -349,7 +419,9 @@ def _ensure(session: Session, report: BootstrapReport) -> None:
         if created:
             validate_formula_spec(spec["formula_spec"])
             validate_classification_spec(spec["classification_spec"])
-            indicator = Indicator(code=spec["code"], programme_id=programmes[spec["programme"]].id, name=spec["name"])
+            indicator = Indicator(
+                code=spec["code"], programme_id=programmes[spec["programme"]].id, name=spec["name"], active=True
+            )
             session.add(indicator)
             session.flush()
             session.add(

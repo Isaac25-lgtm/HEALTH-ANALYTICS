@@ -81,3 +81,38 @@ def test_postgres_concurrent_release_bootstraps_create_no_duplicates(monkeypatch
         engine.dispose()
     finally:
         _cleanup(admin, monkeypatch)
+
+
+@requires_postgres
+def test_postgres_every_bootstrap_owned_field_drift_is_refused(monkeypatch, capsys):
+    from scripts import bootstrap_reference_data as bootstrap_cli
+    from tests import reference_mutations
+    from tests.test_reference_bootstrap import point_at
+
+    admin, test_url = _prepare_verify_db(_admin_url())
+    try:
+        point_at(monkeypatch, test_url)
+        command.upgrade(_alembic_cfg(), "head")
+        assert bootstrap_cli.main([]) == 0
+        engine = create_engine(test_url, future=True)
+        missing = reference_mutations.remove_one_missing_row(engine)
+        refused: list[str] = []
+        for mutation_id in reference_mutations.ALL_IDS:
+            undo = reference_mutations.apply(engine, mutation_id)
+            capsys.readouterr()
+            code = bootstrap_cli.main([])
+            output = capsys.readouterr().out
+            assert code == 3, (mutation_id, output)
+            assert reference_mutations.expected_fragment(mutation_id) in output, (mutation_id, output)
+            assert reference_mutations.SENTINEL not in output, mutation_id
+            assert missing() == 0, mutation_id
+            undo()
+            refused.append(mutation_id)
+        assert refused == reference_mutations.ALL_IDS
+        assert bootstrap_cli.main([]) == 0
+        assert missing() == 1
+        with sessionmaker(bind=engine, future=True)() as session:
+            assert reference_counts(session) == expected_reference_counts()
+        engine.dispose()
+    finally:
+        _cleanup(admin, monkeypatch)
