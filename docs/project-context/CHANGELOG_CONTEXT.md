@@ -1,12 +1,115 @@
 # Context Changelog
 
+## 2026-09-15 — Independent audit corrections (third pass)
+
+An independent rerun reproduced defects that the second-pass handoff had reported as closed. This
+pass corrects those defects without deploying, contacting DHIS2/Neon/Render, importing population,
+or activating boundaries.
+
+- **Search scope:** geography path prefixes now escape SQL `LIKE` metacharacters. A grant whose
+  path contains `_` or `%` cannot match a sibling path. The regression constructs `/UG/A_B` and
+  `/UG/AXB` and proves that only the first subtree is returned.
+- **National root:** reference bootstrap refuses a second active country root. System-administrator
+  landing independently selects the active root code `UG` with no parent instead of an arbitrary
+  country row.
+- **Playwright lifecycle:** the acceptance gate now builds first, then owns the disposable API,
+  production Next server and Playwright runner as direct child processes. This avoids Playwright's
+  shell-based Windows `taskkill` path, which returned Access Denied under the audit account. The
+  gate has separate post-summary, pre-summary inactivity and overall timeouts.
+- **Process proof:** failure of `Get-CimInstance` no longer becomes an empty successful process
+  table. Windows falls back to a before/after PID-and-start-time inventory of Node, Python and
+  browser processes; failure of both mechanisms fails the gate. Linux/macOS retain parent-tree
+  enumeration. The gate also compares Git state before and after the run, so ordinary runs cannot
+  write screenshots or other files unnoticed. A pre-existing dirty tree is permitted; the status
+  lines and (since the review below) a content fingerprint must be identical afterwards.
+
+Verification on the changed surfaces: Ruff clean; focused backend suite **77 passed**; isolated
+PostgreSQL 18 bootstrap suite **4 passed**; TypeScript and ESLint clean; full `npm run e2e:gate`
+**24 passed, 0 skipped, 0 flaky**, Playwright exited 0.1 seconds after its summary, both owned
+services stopped, 100 created processes were observed through the restricted-account fallback,
+none survived, and ports 3000/8010 were free. A deliberate one-second overall timeout exited 1,
+stopped both services, left no observed process and freed both ports. The final full backend run was
+**770 passed, 32 skipped**; the skips were the 30 PostgreSQL-only and two Redis tests, with the
+changed PostgreSQL bootstrap surface separately proven as above.
+
+**Review of the third pass (same day, second agent).** The four corrections were kept. Review of the
+gate found and corrected three further gate defects:
+
+- The descendant walk did not guard against cycles in the Windows parent-PID graph (PID reuse). A
+  deliberate 30-second timeout reproduced it: the sampler threw `RangeError: Invalid array length`
+  from a timer callback and crashed the gate before cleanup and summary (exit 1; no process was
+  left). The walk now visits each PID once and rejects a child created before its supposed parent,
+  and a sampling error is recorded as a gate failure instead of crashing the gate.
+- The before/after Git comparison used status lines only, so a run that rewrote an already-modified
+  file would pass. It now also compares a SHA-256 fingerprint of the binary diff against `HEAD` and
+  untracked file bytes (the screenshot directory is excluded only for an explicit evidence refresh).
+- The production build had no bound and was not sampled. It is now an owned child bounded by
+  `E2E_BUILD_TIMEOUT_SECONDS` (900). In parent-tree mode, survivors proven to descend from the
+  gate's own children are terminated after the failure is recorded; the baseline-delta fallback
+  never terminates anything.
+
+Independent verification of the final working tree (not committed):
+
+| Gate | Result |
+|---|---|
+| Ruff (`app tests scripts alembic`) | clean |
+| Focused backend (`test_search.py`, `test_reference_bootstrap.py`, `test_phase12_corrections.py`) | **77 passed** |
+| Full backend, SQLite | **770 passed, 32 skipped** (30 PostgreSQL-only, 2 Redis), 0 failed |
+| Full backend, PostgreSQL 18 disposable cluster on 55432 | **800 passed, 2 skipped** (Redis), 0 failed |
+| TypeScript / ESLint / Vitest | clean / clean / **87 passed** |
+| `npm run e2e` (final code) | **24 passed, 0 skipped, 0 flaky**; exit 0 by itself, 0 s from summary to exit; parent-tree mode, 114 processes observed, 0 alive; owned services stopped; ports 3000/8010 free; tree unchanged by the run |
+| Failure path, `E2E_OVERALL_TIMEOUT_SECONDS=30` (browsers running, 17 tests completed) | exit 1; Playwright stopped by SIGTERM; services stopped; 95 processes observed, 0 alive; ports free. The survivor-termination branch was not exercised because no process survived. |
+
+Before the first run, `CodexSandboxOffline` had again written `frontend/.next` (subfolders),
+`frontend/test-results` and `backend/e2e_hpip.sqlite`; the build guard failed the gate (exit 1).
+They were moved, not deleted, to `.build-quarantine/20260915-third-pass/`.
+
+## 2026-09-16 — Acceptance-gate corrections (fourth pass)
+
+Bounded corrections to `npm run e2e` only. No application behaviour, deployment, push, or external
+service was touched. Lifecycle logic moved from `scripts/e2e-gate.mjs` into `scripts/e2e-gate-lib.mjs`
+so it can be tested deterministically; `scripts/e2e-gate-lib.test.mjs` runs under `npm test`.
+
+- **Root PID-reuse safety:** every owned process (build, API, Next server, Playwright) is identified
+  by PID **and** creation time, captured immediately after spawning and accepted only when the row
+  was created no earlier than the spawn and the process is still running after the query. Descendants
+  are attributed only through a live root whose current row matches that identity, so an exited or
+  reused root PID discovers nothing. Survivors are matched again by PID and creation time in a fresh
+  query before termination, so ancestry inferred from a reused PID can never be terminated.
+- **Spawn failures:** the `error` handler is attached at spawn; a missing executable, access-denied
+  or other spawn error becomes an ordinary gate failure carried in the owned process outcome. The
+  gate still performs bounded cleanup, prints the JSON summary and exits non-zero.
+- **Bounded enumeration:** every process-table query (baseline, sampling, final verification and
+  survivor revalidation) is bounded by `E2E_PROCESS_QUERY_TIMEOUT_MS` (20 s). On timeout only the
+  gate's own lister child is stopped, enumeration is recorded unavailable and the gate fails closed
+  without falling back to another mode. An in-flight sample is awaited before the summary.
+- **Also found in review:** Playwright's output listener was attached after the identity query, so a
+  summary printed in that window was missed; it is now attached at spawn.
+- **Documentation:** the obsolete "requires a clean tree" claim is corrected. The gate permits a
+  pre-existing dirty tree and requires identical status lines and content fingerprints after the run.
+
+Verification (Windows workstation, parent-tree mode; working tree uncommitted by owner instruction):
+
+| Gate | Result |
+|---|---|
+| `node --check` on both gate scripts | clean |
+| TypeScript / ESLint | clean / clean |
+| `npm test` (Vitest, including 16 new gate tests) | **103 passed** |
+| `npm run e2e` | **24 passed, 0 skipped, 0 flaky**; exit 0 by itself, 0 s from summary to exit; all four owned identities verified; 106 processes observed, 0 alive; ports 3000/8010 free; tree unchanged |
+| `E2E_OVERALL_TIMEOUT_SECONDS=30` (browsers active, 18 tests completed before the bound) | exit 1; Playwright stopped by SIGTERM; both services stopped; 0 survivors; ports free |
+| `HPIP_PYTHON` set to a nonexistent executable | exit 1; `e2e-api could not be started (spawn failed: ENOENT…)`; build stopped; 0 survivors; ports free |
+| `E2E_PROCESS_QUERY_TIMEOUT_MS=50` (every real query exceeds the bound) | exit 1; `process_check_mode: unavailable`; failure `process enumeration was unavailable before the run: process enumeration timed out after 50ms`; no lister left running; ports free |
+| Synthetic root-PID-reuse, child-PID-reuse, cycle and creation-ordering cases | no unrelated process classified or terminated |
+| Survivor termination with a real detached child | observed through the verified root, reported alive, terminated after revalidation, confirmed dead |
+| `git diff --check` | clean |
+
 ## 2026-09-15 — Corrective pre-UAT implementation (second pass)
 
 Follows the audit of `fbf8a3a`. **Nothing was deployed or pushed, no remote was created, live DHIS2, Neon, Render and external AI providers were not contacted, no population was imported, no boundary was activated, no user or credential was created, and nothing is owner-accepted.** Details are in `DEFECT_MATRIX.md` ("second pass").
 
 - **Bootstrap drift:** every bootstrap-owned field is compared before any write; any conflict writes nothing and exits 3 (29 mutations on SQLite and PostgreSQL).
 - **Boundary governance:** district/city `source_features = 146`, `reconciliation_matched = 3`, `reconciliation_unmatched = 143`, `non_production_candidates = 3` (Kitgum, Pader, Soroti), `production_resolved = 0`, `production_unresolved = 146`; sub-county `source_features = 2,190`, `production_unresolved = 2,190`. Activation now needs recorded hierarchy, mapping-decision and effective-date approval references; `--effective-date-verified` alone is not approval.
-- **Playwright shutdown:** the earlier entry below says the runner "exited"; the audit could not reproduce a clean return, and that statement is withdrawn. The cause was the `next start` child inheriting Playwright's stdio. `npm run e2e:gate` now proves exit 0 within a bound, free ports, no surviving descendants and a clean tree.
+- **Playwright shutdown:** the earlier entry below says the runner "exited"; the audit could not reproduce a clean return, and that statement is withdrawn. The cause was the `next start` child inheriting Playwright's stdio. `npm run e2e:gate` now proves exit 0 within a bound, free ports, no surviving descendants and a clean tree. (Superseded on 2026-09-16: the gate permits a pre-existing dirty tree and requires the status lines and content fingerprint to be identical after the run; see `LOCAL_DEVELOPMENT.md`.)
 - **Visual contract:** icons, grouped navigation, alerts/profile area, authorised search, KPI and panel anatomy, with DOM-contract assertions.
 
 ## 2026-09-15 — Corrective pre-UAT implementation and final audit

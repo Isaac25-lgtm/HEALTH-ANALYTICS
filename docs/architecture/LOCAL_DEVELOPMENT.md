@@ -81,7 +81,7 @@ npx tsc --noEmit
 npm run lint
 npm test
 npm run build
-npx playwright test
+npm run e2e
 ```
 
 ESLint 9 and `eslint-config-next@15.5.25` are installed with the lockfile. The build uses the standard `frontend/.next` directory.
@@ -92,7 +92,45 @@ Next.js 15.5.25 clears `.next` at the start of `next build` and retries `EPERM` 
 
 ### Playwright
 
-Playwright starts the disposable API (`backend/scripts/run_e2e_api.py`, port 8010) and, through `scripts/e2e-web.mjs`, a production Next build served with the backend given only at runtime (`host:port`). The wrapper owns its `next start` child: it never shares Playwright's stdio, and on stop it signals only that child, waits, then force-terminates only that child. Use `npm run e2e:gate` for acceptance: it fails unless Playwright exits 0 by itself within 60 s of its summary, nothing is skipped, ports 3000/8010 are closed, no descendant of the run survives, and `git status` is clean. Ordinary runs write screenshots to ignored `test-results/visual-evidence/` (volatile snapshot IDs and timestamps masked); refresh tracked evidence in `docs/evidence/screenshots/` only with `npm run e2e:evidence` (`UPDATE_VISUAL_EVIDENCE=1`). Playwright writes `playwright-report/results.json` and legacy screenshots to `e2e-screenshots/`; `node scripts/assert-no-skips.mjs playwright-report/results.json` fails on skipped or missing tests. CI uses Playwright-managed Chromium; locally, set `HPIP_PYTHON` and optionally `HPIP_BROWSER_EXECUTABLE` (for example the installed Chrome). Server reuse is opt-in (`HPIP_REUSE_E2E_SERVER=true`) so runs do not strand processes. Authentication is cookie-only; the frontend must not store an access token.
+`npm run e2e` and `npm run e2e:gate` use the bounded acceptance runner (`scripts/e2e-gate.mjs`;
+lifecycle logic in `scripts/e2e-gate-lib.mjs`, tests in `scripts/e2e-gate-lib.test.mjs`, run by
+`npm test`). It first creates a production build without a backend address (an owned, sampled
+child bounded by 900 seconds), then directly owns the disposable API
+(`backend/scripts/run_e2e_api.py`, port 8010), the production Next server (port 3000, runtime
+`host:port` backend), and Playwright. Direct ownership avoids Playwright's shell-based Windows
+teardown, which may be denied on restricted accounts.
+
+The gate fails on a non-zero/flaky/skipped test, a missing or stale JSON report, a post-summary exit
+over 60 seconds, 90 seconds of pre-summary inactivity, a 600-second Playwright runtime, an owned
+process that cannot be started (missing executable, access denied or any other spawn error), an
+owned process that will not stop, an occupied service port, unavailable, failing or timed-out
+process verification (each process-table query is bounded by 20 seconds and only the gate's own
+lister child is stopped on timeout), an owned process whose identity cannot be verified, a
+surviving process, or a working-tree change. Every failure still runs bounded cleanup, prints the
+JSON summary and exits non-zero.
+
+Working tree: a pre-existing dirty tree is permitted. The gate records `git status --short` and a
+SHA-256 fingerprint of the binary diff against `HEAD` plus every untracked file's bytes before the
+run, and requires both to be identical afterwards, so rewriting an already-modified file is also
+detected. `working_tree_clean_before` in the summary only reports whether the run started clean; it
+is not a pass condition. An explicit evidence refresh excludes `docs/evidence/screenshots/` only.
+
+Process attribution: parent-tree enumeration is preferred. Each owned process is identified by PID
+plus creation time, captured immediately after spawning and accepted only if the row was created no
+earlier than the spawn and the process is still running after the query. Descendants are attributed
+only through a live owned root whose current table row matches that exact identity, so an exited or
+reused root PID never attributes anything. The walk visits each PID once and rejects a child created
+before its supposed parent, or with an unknown creation time. Survivors attributed this way are
+matched again by PID and creation time in a fresh query before being terminated, after the failure
+is recorded. Restricted Windows uses a PID/start-time baseline-delta check, which cannot attribute
+processes to the run and therefore never terminates anything. `npm run e2e:raw` retains
+Playwright's built-in web-server lifecycle for diagnostics, but it is not the acceptance command.
+
+Ordinary runs write screenshots to ignored `test-results/visual-evidence/` (volatile snapshot IDs
+and timestamps masked). Refresh tracked evidence in `docs/evidence/screenshots/` only with
+`npm run e2e:evidence` (`UPDATE_VISUAL_EVIDENCE=1`). CI uses Playwright-managed Chromium; locally,
+set `HPIP_PYTHON` and optionally `HPIP_BROWSER_EXECUTABLE` (for example the installed Chrome).
+Authentication is cookie-only; the frontend must not store an access token.
 
 ## Migration history
 

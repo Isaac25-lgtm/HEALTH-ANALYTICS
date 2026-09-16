@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "playwright test",
+    "e2e": "node scripts/e2e-gate.mjs",
+    "e2e:raw": "playwright test",
     "verify:proxy": "node scripts/verify-proxy-build.mjs",
     "e2e:gate": "node scripts/e2e-gate.mjs",
     "e2e:evidence": "node scripts/e2e-evidence.mjs"

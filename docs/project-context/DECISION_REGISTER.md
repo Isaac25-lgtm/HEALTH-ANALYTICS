@@ -76,6 +76,12 @@ Recorded from the owner's written execution instruction of 2026-09-14. Engineeri
 - Purge runs daily at 01:30 UTC through one purge service; the six-hourly DHIS2 refresh command exists but exits without contacting DHIS2.
 - Boundary geometry cannot be activated without an approved, complete hierarchy for the level (recorded approval reference), a recorded mapping decision reference and an effective-date approval reference confirmed by `effective_date_verified`; the flag alone is not approval.
 - Undated legacy formula versions are permitted in development/test only unless `FORMULA_UNDATED_FALLBACK` is set (see OPEN_ITEMS).
+- The canonical national root is the active, parentless organisation unit with code `UG`. Another
+  active country root is a reference conflict, and administrator landing never selects an
+  unordered country row.
+- The Playwright acceptance command owns its API, Next and test-runner processes directly. Process
+  enumeration must fail closed; restricted Windows uses a PID/start-time baseline-delta check when
+  parent-process enumeration is unavailable.
 
 ### Engineering implementation choices, corrective pre-UAT pass (2026-09-15; not owner decisions)
 
