@@ -45,9 +45,20 @@ Verified structure:
 
 | File | SHA-256 | Size | Tracked in Git |
 |---|---|---|---|
-| `index(1).html` | `0ec087bdd9e294fcba7b7a9c86d37ff139086fa00573f0be126cfe2845ec4ad1` | 310,811 B | Yes (visual/interaction reference only) |
+| `index(1).html` | `0ec087bdd9e294fcba7b7a9c86d37ff139086fa00573f0be126cfe2845ec4ad1` | 310,811 B | No (kept on disk; visual/interaction reference only) |
+| `ChatGPT Image Sep 11, 2026, 10_54_55 PM (1).png` | `631963e289c69c3e17d24e9a0e052360a48e3ce6ed7f517c5224b20eeea5024b` | 1,598,367 B | No (kept on disk) |
+| `ChatGPT Image Sep 11, 2026, 10_54_55 PM (2).png` | `6401c6e4c5ff09c50a0917097bffceeebc9d06ad9cec7cc1121be7d3513d4485` | 1,651,957 B | No (kept on disk) |
+| `ChatGPT Image Sep 11, 2026, 10_54_55 PM (3).png` | `bfc20f18154d72e9e0728c000420a112ae70724a08274f4a88eb6a73b390fa20` | 1,656,432 B | No (kept on disk) |
+| `ChatGPT Image Sep 11, 2026, 10_54_55 PM (4).png` | `475cb43bbc40b7354579d9e550a24c2ef927a72c96857b7c2e041dce582f8527` | 1,529,810 B | No (kept on disk) |
+| `ChatGPT Image Sep 11, 2026, 10_55_11 PM.png` | `01650c14fb6df67db7e01b221da9743af0ccf858c4638c104620bb55bd9dc44e` | 1,725,050 B | No (kept on disk) |
 | `ULTIMATE_IDE_HANDOFF_…​.md` | `4a90f8a088946e48b7920e0e9bb4b54d9cc542bedd50c1b9ab4da88efcfb10df` | 450,000 B | Yes |
 | `Uganda_Health_…_Blueprint_v1_2 (3).docx` | `ce035b864ca116cb3740e6814a44ebe0062ad24ace8b4841a29e3dfb0b753b80` | 11,206,602 B | No (10.7 MB binary; kept on disk) |
+
+The five `ChatGPT Image …` PNGs are generated layout mock-ups and the only visual reference for the
+screen compositions. They and `index(1).html` are owner working material, not part of the product:
+they stay on disk and are excluded from Git (they were tracked until 2026-09-16, when they were
+removed from the repository as ~8 MB of unnecessary published weight). Their identity above is what
+a later reviewer needs; the screens they describe are recorded in `docs/evidence/VISUAL_COMPARISON.md`.
 
 `index(1).html` is a visual and interaction reference. Its demonstration values, populations,
 thresholds, formulas and client-side algorithms are not authoritative and must never reach

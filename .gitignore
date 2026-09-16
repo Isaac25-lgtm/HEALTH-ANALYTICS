@@ -106,6 +106,9 @@ UGANDA_DISTRICT.json
 UGANDA_SUBCOUNTIES.json
 UGANDA_DISTRICTS.json
 *.docx
+# Generated layout mock-ups and the HTML prototype: owner working material, visual reference only.
+ChatGPT Image*.png
+index(1).html
 
 # ---------------------------------------------------------------------------
 # OS / editor
