@@ -254,6 +254,14 @@ describe("owned process identity capture", () => {
     expect(current.identity?.name).toBe("current");
   });
 
+  it("declares each process table's timestamp resolution", () => {
+    // Windows CIM reports milliseconds. `ps lstart` is second-truncated and derived from a
+    // second-resolution boot time, so a genuine child can appear up to two seconds early.
+    expect(defaultProcessCommands("win32").tree.creationResolutionMs).toBe(1);
+    expect(defaultProcessCommands("win32").baseline.creationResolutionMs).toBe(1);
+    expect(defaultProcessCommands("linux").tree.creationResolutionMs).toBe(2000);
+  });
+
   it("allows only one timestamp-resolution window for second-granularity ps output", async () => {
     const atBoundary = ownedAt(5000);
     await captureIdentity({

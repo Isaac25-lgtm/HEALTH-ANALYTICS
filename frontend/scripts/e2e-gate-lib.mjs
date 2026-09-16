@@ -91,7 +91,10 @@ export function defaultProcessCommands(platform = process.platform) {
         command: "ps",
         args: ["-eo", "pid=,ppid=,lstart=,comm="],
         parser: parseUnixRows,
-        creationResolutionMs: 1000,
+        // `lstart` is truncated to the second AND derived from boot time plus jiffies, and the
+        // recorded boot time is itself second-resolution. A reported start can therefore precede
+        // the real spawn by nearly two seconds; a 1 s allowance rejects genuine children on Linux.
+        creationResolutionMs: 2000,
       },
       baseline: null,
     };
