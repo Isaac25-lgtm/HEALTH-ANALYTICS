@@ -109,6 +109,12 @@ lister child is stopped on timeout), an owned process whose identity cannot be v
 surviving process, or a working-tree change. Every failure still runs bounded cleanup, prints the
 JSON summary and exits non-zero.
 
+The initial process inventory is a prerequisite, not merely a reported check. If it is unavailable,
+the gate records `execution_started: false` and exits without running build preparation or starting
+the build, API, Next server or Playwright. After an executed run, survivor detection repeatedly
+rechecks for up to five seconds rather than deciding from one timing-sensitive snapshot. Persistent
+survivors still fail the run and, in parent-tree mode only, are revalidated before termination.
+
 Working tree: a pre-existing dirty tree is permitted. The gate records `git status --short` and a
 SHA-256 fingerprint of the binary diff against `HEAD` plus every untracked file's bytes before the
 run, and requires both to be identical afterwards, so rewriting an already-modified file is also
@@ -116,8 +122,9 @@ detected. `working_tree_clean_before` in the summary only reports whether the ru
 is not a pass condition. An explicit evidence refresh excludes `docs/evidence/screenshots/` only.
 
 Process attribution: parent-tree enumeration is preferred. Each owned process is identified by PID
-plus creation time, captured immediately after spawning and accepted only if the row was created no
-earlier than the spawn and the process is still running after the query. Descendants are attributed
+plus creation time, captured immediately after spawning and accepted only if the row is within the
+declared timestamp resolution of the spawn and the process is still running after the query. Windows
+tables use millisecond resolution; Unix `ps lstart` uses its one-second resolution. Descendants are attributed
 only through a live owned root whose current table row matches that exact identity, so an exited or
 reused root PID never attributes anything. The walk visits each PID once and rejects a child created
 before its supposed parent, or with an unknown creation time. Survivors attributed this way are
@@ -125,6 +132,11 @@ matched again by PID and creation time in a fresh query before being terminated,
 is recorded. Restricted Windows uses a PID/start-time baseline-delta check, which cannot attribute
 processes to the run and therefore never terminates anything. `npm run e2e:raw` retains
 Playwright's built-in web-server lifecycle for diagnostics, but it is not the acceptance command.
+
+Vitest runs test files serially because the real-process gate tests intentionally inventory Node and
+browser processes. Parallel Vitest workers created after a restricted-Windows baseline would be
+indistinguishable from gate-created processes in baseline-delta mode and correctly produce a
+fail-safe false positive.
 
 Ordinary runs write screenshots to ignored `test-results/visual-evidence/` (volatile snapshot IDs
 and timestamps masked). Refresh tracked evidence in `docs/evidence/screenshots/` only with

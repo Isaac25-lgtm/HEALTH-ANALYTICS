@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  captureIdentity,
   createProcessTable,
   defaultProcessCommands,
   delay,
@@ -217,6 +218,70 @@ describe("owned process spawn failure", () => {
   });
 });
 
+describe("owned process identity capture", () => {
+  const ownedAt = (spawnedAt) => ({
+    pid: 77,
+    spawnedAt,
+    running: true,
+    identity: null,
+    identityError: null,
+  });
+
+  it("uses millisecond precision for Windows-style process timestamps", async () => {
+    const tooOld = ownedAt(5000);
+    await captureIdentity({
+      owned: tooOld,
+      mode: "parent-tree",
+      processTable: async () => ({
+        available: true,
+        rows: [row(77, 1, 4998, "stale")],
+        creationResolutionMs: 1,
+      }),
+    });
+    expect(tooOld.identity).toBeNull();
+    expect(tooOld.identityError).toMatch(/creation time/);
+
+    const current = ownedAt(5000);
+    await captureIdentity({
+      owned: current,
+      mode: "parent-tree",
+      processTable: async () => ({
+        available: true,
+        rows: [row(77, 1, 5001, "current")],
+        creationResolutionMs: 1,
+      }),
+    });
+    expect(current.identity?.name).toBe("current");
+  });
+
+  it("allows only one timestamp-resolution window for second-granularity ps output", async () => {
+    const atBoundary = ownedAt(5000);
+    await captureIdentity({
+      owned: atBoundary,
+      mode: "parent-tree",
+      processTable: async () => ({
+        available: true,
+        rows: [row(77, 1, 4000, "rounded-to-second")],
+        creationResolutionMs: 1000,
+      }),
+    });
+    expect(atBoundary.identity?.name).toBe("rounded-to-second");
+
+    const outsideBoundary = ownedAt(5000);
+    await captureIdentity({
+      owned: outsideBoundary,
+      mode: "parent-tree",
+      processTable: async () => ({
+        available: true,
+        rows: [row(77, 1, 3999, "too-old")],
+        creationResolutionMs: 1000,
+      }),
+    });
+    expect(outsideBoundary.identity).toBeNull();
+    expect(outsideBoundary.identityError).toMatch(/creation time/);
+  });
+});
+
 // ------------------------------------------------------------------------------ full gate runs
 
 async function freePort() {
@@ -271,8 +336,9 @@ async function gateConfig({ runner = PASSING_RUNNER, web, bounds = {}, processTa
         serviceStopTimeoutMs: 3000,
         buildTimeoutSeconds: 30,
         processQueryTimeoutMs: 30_000,
+        processSettleTimeoutMs: 3000,
+        processSettlePollMs: 100,
         sampleIntervalMs: 500,
-        settleDelayMs: 300,
         ...bounds,
       },
       processTable: processTable ?? createProcessTable({ timeoutMs: 30_000, commands: defaultProcessCommands() }),
@@ -291,7 +357,7 @@ describe("runGate with real child processes", () => {
   it("passes a clean run and verifies the identity of every owned process that was still running", async () => {
     const { config } = await gateConfig();
     const { summary, exitCode } = await runGate(config);
-    expect(summary.failures).toEqual([]);
+    expect(summary.failures, JSON.stringify(summary.process_survivor_details ?? [], null, 2)).toEqual([]);
     expect(exitCode).toBe(0);
     expect(summary.exited_by_itself).toBe(true);
     expect(summary.seconds_from_summary_to_exit).not.toBeNull();
@@ -363,8 +429,25 @@ describe("runGate with real child processes", () => {
       },
     });
     const { config } = await gateConfig({ processTable });
+    let prepareCalls = 0;
+    let spawnCalls = 0;
+    config.prepareBuild = () => {
+      prepareCalls += 1;
+      return { status: 0 };
+    };
+    const forbidSpawn = () => {
+      spawnCalls += 1;
+      throw new Error("execution must not start without a baseline");
+    };
+    for (const key of ["build", "backend", "web", "playwright"]) config[key].spawnImpl = forbidSpawn;
     const { summary, exitCode } = await runGate(config);
     expect(exitCode).toBe(1);
+    expect(summary.execution_started).toBe(false);
+    expect(summary.owned_processes).toEqual({});
+    expect(summary.report_check).toMatch(/execution was prevented/);
+    expect(summary.failures.join("\n")).not.toMatch(/Playwright JSON report/);
+    expect(prepareCalls).toBe(0);
+    expect(spawnCalls).toBe(0);
     expect(summary.process_check_mode).toBe("unavailable");
     expect(summary.process_enumeration_available).toBe(false);
     expect(summary.failures.join("\n")).toMatch(/process enumeration was unavailable before the run: process enumeration timed out after 700ms/);

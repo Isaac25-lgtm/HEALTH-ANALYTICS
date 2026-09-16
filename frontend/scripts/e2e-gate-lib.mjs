@@ -37,8 +37,12 @@ export function boundsFromEnv(env) {
       Number(env.E2E_PROCESS_QUERY_TIMEOUT_MS ?? 20_000),
       "E2E_PROCESS_QUERY_TIMEOUT_MS",
     ),
+    processSettleTimeoutMs: positiveNumber(
+      Number(env.E2E_PROCESS_SETTLE_TIMEOUT_MS ?? 5_000),
+      "E2E_PROCESS_SETTLE_TIMEOUT_MS",
+    ),
     sampleIntervalMs: 3000,
-    settleDelayMs: 1500,
+    processSettlePollMs: 250,
   };
 }
 
@@ -83,14 +87,29 @@ export function parseUnixRows(stdout) {
 export function defaultProcessCommands(platform = process.platform) {
   if (platform !== "win32") {
     return {
-      tree: { command: "ps", args: ["-eo", "pid=,ppid=,lstart=,comm="], parser: parseUnixRows },
+      tree: {
+        command: "ps",
+        args: ["-eo", "pid=,ppid=,lstart=,comm="],
+        parser: parseUnixRows,
+        creationResolutionMs: 1000,
+      },
       baseline: null,
     };
   }
   const powershell = (query) => ["-NoProfile", "-NonInteractive", "-Command", query];
   return {
-    tree: { command: "powershell.exe", args: powershell(WINDOWS_TREE_QUERY), parser: parseWindowsRows },
-    baseline: { command: "powershell.exe", args: powershell(WINDOWS_BASELINE_QUERY), parser: parseWindowsRows },
+    tree: {
+      command: "powershell.exe",
+      args: powershell(WINDOWS_TREE_QUERY),
+      parser: parseWindowsRows,
+      creationResolutionMs: 1,
+    },
+    baseline: {
+      command: "powershell.exe",
+      args: powershell(WINDOWS_BASELINE_QUERY),
+      parser: parseWindowsRows,
+      creationResolutionMs: 1,
+    },
   };
 }
 
@@ -98,7 +117,15 @@ export function defaultProcessCommands(platform = process.platform) {
  * Runs one process-listing command with a hard bound. On timeout only this call's lister child is
  * terminated, and the result is reported as unavailable (never as an empty successful table).
  */
-export function listProcesses({ command, args, parser, mode, timeoutMs, spawnImpl = spawn }) {
+export function listProcesses({
+  command,
+  args,
+  parser,
+  mode,
+  timeoutMs,
+  creationResolutionMs = 1,
+  spawnImpl = spawn,
+}) {
   return new Promise((resolve) => {
     let child = null;
     let settled = false;
@@ -107,7 +134,15 @@ export function listProcesses({ command, args, parser, mode, timeoutMs, spawnImp
       if (settled) return;
       settled = true;
       if (timer !== null) clearTimeout(timer);
-      resolve({ mode, rows: [], error: null, timedOut: false, listerPid: child?.pid ?? null, ...result });
+      resolve({
+        mode,
+        rows: [],
+        error: null,
+        timedOut: false,
+        listerPid: child?.pid ?? null,
+        creationResolutionMs,
+        ...result,
+      });
     };
     try {
       child = spawnImpl(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -367,7 +402,8 @@ export function startOwnedProcess({
 
 /**
  * Verifies an owned child's identity immediately after spawning: the table row for its PID must
- * have been created no earlier than the spawn (allowing for `ps lstart` second granularity) and the
+ * have been created no earlier than the spawn (allowing only for the process table's declared
+ * timestamp resolution) and the
  * child must still be running after the query, so the PID cannot have been reused in between.
  */
 export async function captureIdentity({ owned, processTable, mode }) {
@@ -390,7 +426,8 @@ export async function captureIdentity({ owned, processTable, mode }) {
     return;
   }
   const created = createdMs(row);
-  if (!Number.isFinite(created) || created < owned.spawnedAt - 2000) {
+  const resolutionMs = Math.max(1, Number(table.creationResolutionMs) || 1);
+  if (!Number.isFinite(created) || created < owned.spawnedAt - resolutionMs) {
     owned.identityError = "process-table creation time does not match the spawn";
     return;
   }
@@ -538,6 +575,8 @@ export async function runGate(config) {
     overall_timeout_seconds: bounds.overallTimeoutSeconds,
     build_timeout_seconds: bounds.buildTimeoutSeconds,
     process_query_timeout_ms: bounds.processQueryTimeoutMs,
+    process_settle_timeout_ms: bounds.processSettleTimeoutMs,
+    execution_started: false,
   };
   const gateStarted = Date.now();
   const seen = new Map();
@@ -610,74 +649,77 @@ export async function runGate(config) {
   if (!baseline.available) fail(`process enumeration was unavailable before the run: ${baseline.error}`);
 
   try {
-    for (const port of config.ports) {
-      if (await portOpen(port)) throw new Error(`port ${port} is already accepting connections before the run`);
-    }
-    sampler = setInterval(() => void sampleProcesses(), bounds.sampleIntervalMs);
-
-    if (config.prepareBuild) {
-      const prepared = config.prepareBuild();
-      if (prepared.status !== 0) {
-        throw new Error(`build-directory preparation exited ${prepared.status ?? "without a code"}`);
+    if (baseline.available) {
+      summary.execution_started = true;
+      for (const port of config.ports) {
+        if (await portOpen(port)) throw new Error(`port ${port} is already accepting connections before the run`);
       }
-    }
-    const build = await start("build", config.build);
-    await sampleProcesses();
-    const buildOutcome = await Promise.race([build.exited, delay(bounds.buildTimeoutSeconds * 1000).then(() => null)]);
-    if (buildOutcome === null) {
-      await sampleProcesses();
-      const stopped = await stopOwnedProcess(build, { timeoutMs: bounds.serviceStopTimeoutMs, write });
-      if (!stopped.stopped) fail("the owned build process could not be stopped within the bound");
-      throw new Error(`production build exceeded ${bounds.buildTimeoutSeconds}s`);
-    }
-    if (buildOutcome.error) throw new Error(`production build could not be started ${describeOutcome(buildOutcome)}`);
-    if (buildOutcome.code !== 0) throw new Error(`production build exited ${describeOutcome(buildOutcome)}`);
+      sampler = setInterval(() => void sampleProcesses(), bounds.sampleIntervalMs);
 
-    const backend = await start("backend", config.backend);
-    await waitForUrl(config.backend.readyUrl, backend, config.backend.readyTimeoutMs ?? 120_000);
-    const web = await start("web", config.web);
-    await waitForUrl(config.web.readyUrl, web, config.web.readyTimeoutMs ?? 60_000);
-
-    let recentOutput = "";
-    lastOutputAt = Date.now();
-    const noteOutput = (chunk) => {
-      lastOutputAt = Date.now();
-      recentOutput = (recentOutput + chunk.toString()).slice(-16_000);
-      if (summaryAt === null && /^\s+\d+ (passed|failed|flaky)/m.test(recentOutput)) summaryAt = Date.now();
-    };
-    const playwright = await start("playwright", config.playwright, noteOutput);
-    playwrightStarted = playwright.spawnedAt;
-    await sampleProcesses();
-
-    while (playwrightOutcome === null) {
-      const outcome = await Promise.race([playwright.exited, delay(500).then(() => null)]);
-      if (outcome !== null) {
-        playwrightOutcome = outcome;
-        playwrightFinishedAt = Date.now();
-        if (outcome.error) {
-          fail(`Playwright could not be started ${describeOutcome(outcome)}`);
-        } else {
-          playwrightExitedNaturally = true;
+      if (config.prepareBuild) {
+        const prepared = config.prepareBuild();
+        if (prepared.status !== 0) {
+          throw new Error(`build-directory preparation exited ${prepared.status ?? "without a code"}`);
         }
-        break;
       }
-      const now = Date.now();
-      let reason = null;
-      if (summaryAt !== null && now - summaryAt > bounds.exitBoundSeconds * 1000) {
-        reason = `Playwright did not exit within ${bounds.exitBoundSeconds}s of its summary`;
-      } else if (summaryAt === null && now - lastOutputAt > bounds.inactivityTimeoutSeconds * 1000) {
-        reason = `Playwright produced no output for ${bounds.inactivityTimeoutSeconds}s before its summary`;
-      } else if (now - playwrightStarted > bounds.overallTimeoutSeconds * 1000) {
-        reason = `Playwright exceeded the overall timeout of ${bounds.overallTimeoutSeconds}s`;
-      }
-      if (reason !== null) {
-        hung = true;
-        fail(reason);
+      const build = await start("build", config.build);
+      await sampleProcesses();
+      const buildOutcome = await Promise.race([build.exited, delay(bounds.buildTimeoutSeconds * 1000).then(() => null)]);
+      if (buildOutcome === null) {
         await sampleProcesses();
-        const stopped = await stopOwnedProcess(playwright, { timeoutMs: bounds.serviceStopTimeoutMs, write });
-        playwrightOutcome = stopped.outcome ?? { code: null, signal: null, error: "not stopped" };
-        playwrightFinishedAt = Date.now();
-        if (!stopped.stopped) fail("the owned Playwright process could not be stopped within the bound");
+        const stopped = await stopOwnedProcess(build, { timeoutMs: bounds.serviceStopTimeoutMs, write });
+        if (!stopped.stopped) fail("the owned build process could not be stopped within the bound");
+        throw new Error(`production build exceeded ${bounds.buildTimeoutSeconds}s`);
+      }
+      if (buildOutcome.error) throw new Error(`production build could not be started ${describeOutcome(buildOutcome)}`);
+      if (buildOutcome.code !== 0) throw new Error(`production build exited ${describeOutcome(buildOutcome)}`);
+
+      const backend = await start("backend", config.backend);
+      await waitForUrl(config.backend.readyUrl, backend, config.backend.readyTimeoutMs ?? 120_000);
+      const web = await start("web", config.web);
+      await waitForUrl(config.web.readyUrl, web, config.web.readyTimeoutMs ?? 60_000);
+
+      let recentOutput = "";
+      lastOutputAt = Date.now();
+      const noteOutput = (chunk) => {
+        lastOutputAt = Date.now();
+        recentOutput = (recentOutput + chunk.toString()).slice(-16_000);
+        if (summaryAt === null && /^\s+\d+ (passed|failed|flaky)/m.test(recentOutput)) summaryAt = Date.now();
+      };
+      const playwright = await start("playwright", config.playwright, noteOutput);
+      playwrightStarted = playwright.spawnedAt;
+      await sampleProcesses();
+
+      while (playwrightOutcome === null) {
+        const outcome = await Promise.race([playwright.exited, delay(500).then(() => null)]);
+        if (outcome !== null) {
+          playwrightOutcome = outcome;
+          playwrightFinishedAt = Date.now();
+          if (outcome.error) {
+            fail(`Playwright could not be started ${describeOutcome(outcome)}`);
+          } else {
+            playwrightExitedNaturally = true;
+          }
+          break;
+        }
+        const now = Date.now();
+        let reason = null;
+        if (summaryAt !== null && now - summaryAt > bounds.exitBoundSeconds * 1000) {
+          reason = `Playwright did not exit within ${bounds.exitBoundSeconds}s of its summary`;
+        } else if (summaryAt === null && now - lastOutputAt > bounds.inactivityTimeoutSeconds * 1000) {
+          reason = `Playwright produced no output for ${bounds.inactivityTimeoutSeconds}s before its summary`;
+        } else if (now - playwrightStarted > bounds.overallTimeoutSeconds * 1000) {
+          reason = `Playwright exceeded the overall timeout of ${bounds.overallTimeoutSeconds}s`;
+        }
+        if (reason !== null) {
+          hung = true;
+          fail(reason);
+          await sampleProcesses();
+          const stopped = await stopOwnedProcess(playwright, { timeoutMs: bounds.serviceStopTimeoutMs, write });
+          playwrightOutcome = stopped.outcome ?? { code: null, signal: null, error: "not stopped" };
+          playwrightFinishedAt = Date.now();
+          if (!stopped.stopped) fail("the owned Playwright process could not be stopped within the bound");
+        }
       }
     }
   } catch (error) {
@@ -736,18 +778,38 @@ export async function runGate(config) {
   }
   if (playwright !== null && summaryAt === null) fail("Playwright never printed a result summary");
 
-  await delay(bounds.settleDelayMs);
   let alive = [];
   if (baseline.available) {
-    const finalTable = await safeTable(baseline.mode);
-    summary.process_enumeration_available = finalTable.available;
-    if (!finalTable.available) {
-      fail(`process enumeration was unavailable after the run: ${finalTable.error}`);
-    } else {
-      alive = findSurvivors({ finalTable, mode: baseline.mode, baselineKeys, seen });
-      if (baseline.mode === "baseline-delta") {
-        for (const row of alive) seen.set(processKey(row), { row, via: "baseline-delta" });
+    const deadline = Date.now() + bounds.processSettleTimeoutMs;
+    let checks = 0;
+    while (true) {
+      checks += 1;
+      const finalTable = await safeTable(baseline.mode);
+      summary.process_enumeration_available = finalTable.available;
+      if (!finalTable.available) {
+        fail(`process enumeration was unavailable after the run: ${finalTable.error}`);
+        break;
       }
+      alive = findSurvivors({ finalTable, mode: baseline.mode, baselineKeys, seen });
+      if (!alive.length || Date.now() >= deadline) break;
+      await delay(Math.min(bounds.processSettlePollMs, Math.max(1, deadline - Date.now())));
+    }
+    summary.process_settle_checks = checks;
+    if (baseline.mode === "baseline-delta") {
+      for (const row of alive) seen.set(processKey(row), { row, via: "baseline-delta" });
+    }
+    if (alive.length) {
+      const roots = Object.values(owned).filter(Boolean);
+      summary.process_survivor_details = alive.map((row) => {
+        const direct = roots.find((item) => item.identity && sameProcess(row, item.identity));
+        return {
+          pid: row.pid,
+          name: row.name,
+          created: row.created,
+          via: seen.get(processKey(row))?.via ?? null,
+          kind: direct ? `owned-root:${direct.label}` : "descendant-or-baseline-delta",
+        };
+      });
     }
   } else {
     summary.process_enumeration_available = false;
@@ -762,7 +824,9 @@ export async function runGate(config) {
     if (open) fail(`port ${port} is still accepting connections`);
   }
 
-  if (!existsSync(reportPath) || statSync(reportPath).mtimeMs <= reportMtimeBefore) {
+  if (!summary.execution_started) {
+    summary.report_check = "not run: execution was prevented before process launch";
+  } else if (!existsSync(reportPath) || statSync(reportPath).mtimeMs <= reportMtimeBefore) {
     fail("Playwright JSON report was not written by this run");
   } else {
     try {

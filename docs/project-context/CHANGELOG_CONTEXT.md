@@ -103,6 +103,35 @@ Verification (Windows workstation, parent-tree mode; working tree uncommitted by
 | Survivor termination with a real detached child | observed through the verified root, reported alive, terminated after revalidation, confirmed dead |
 | `git diff --check` | clean |
 
+### Follow-up correction to the fourth-pass gate
+
+Independent reproduction rejected the one-run `103 passed` claim above: the complete suite produced
+**102 passed, 1 failed** while the nominal clean gate reported five surviving processes. The isolated
+gate file passed, identifying a concurrency-dependent false positive rather than a stable closure.
+Restricted-Windows baseline-delta mode cannot distinguish gate-created processes from unrelated
+Vitest workers created after its baseline.
+
+The correction makes the initial process inventory a hard prerequisite: if it is unavailable, the
+gate sets `execution_started: false` and launches no build, API, web server or browser. Survivor
+verification now performs bounded repeated queries for up to `E2E_PROCESS_SETTLE_TIMEOUT_MS`
+(default 5 s) and records diagnostic PID, creation time, attribution root and process kind for any
+persistent survivor. Gate integration tests run without parallel test-file workers, while preserving
+the real detached-child detection and termination case. Identity capture now uses the process
+table's declared timestamp resolution (Windows 1 ms; Unix `ps lstart` 1 s), replacing the previous
+two-second allowance.
+
+Verification after correction: Node syntax, TypeScript and ESLint are clean; the gate file is
+**18 passed**; the complete frontend suite is **105 passed** in three consecutive runs. A real
+entrypoint run with `E2E_PROCESS_QUERY_TIMEOUT_MS=1` exited 1 with `execution_started: false`, no
+owned processes, no report-freshness error and ports 3000/8010 free. No backend file was changed by
+this follow-up.
+
+Full Playwright was then run under the checkout-owning account on 2026-09-16: `npm run e2e`
+**24 passed, 0 skipped, 0 flaky**, `execution_started: true`, parent-tree mode, Playwright exited 0
+by itself 0.1 s after its summary, all four owned identities verified, 102 processes observed with
+none alive after one settle check, both owned services stopped, ports 3000/8010 free, and the
+working tree's status and content fingerprint unchanged by the run.
+
 ## 2026-09-15 — Corrective pre-UAT implementation (second pass)
 
 Follows the audit of `fbf8a3a`. **Nothing was deployed or pushed, no remote was created, live DHIS2, Neon, Render and external AI providers were not contacted, no population was imported, no boundary was activated, no user or credential was created, and nothing is owner-accepted.** Details are in `DEFECT_MATRIX.md` ("second pass").
