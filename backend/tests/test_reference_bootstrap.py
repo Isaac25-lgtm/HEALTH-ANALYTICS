@@ -294,6 +294,27 @@ def test_owner_managed_fields_and_unrelated_rows_do_not_conflict(session):
     assert not report.changed
 
 
+def test_another_active_country_root_is_not_treated_as_unrelated(session):
+    session.add(
+        OrgUnit(
+            code="OTHER_COUNTRY",
+            name="Another active country",
+            level_type="country",
+            parent_id=None,
+            path="/OTHER_COUNTRY",
+            active=True,
+        )
+    )
+    session.commit()
+
+    with pytest.raises(ReferenceBootstrapConflict) as raised:
+        bootstrap_reference_data(session)
+
+    assert raised.value.conflicts == [
+        "org units: another active country root conflicts with the approved reference"
+    ]
+
+
 def test_conflict_messages_contain_no_values_only_field_names(session):
     session.scalar(select(Programme).where(Programme.code == "EPI")).name = "Operator 0772 123456"
     session.commit()

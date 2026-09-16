@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from threading import Barrier, Thread
 
+import pytest
 from alembic import command
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
-from app.models import PeriodPopulationRule
-from app.services.reference_bootstrap import bootstrap_reference_data
+from app.models import OrgUnit, PeriodPopulationRule
+from app.services.reference_bootstrap import ReferenceBootstrapConflict, bootstrap_reference_data
 from tests.test_postgres_migrations import (
     _admin_url,
     _alembic_cfg,
@@ -113,6 +114,35 @@ def test_postgres_every_bootstrap_owned_field_drift_is_refused(monkeypatch, caps
         assert missing() == 1
         with sessionmaker(bind=engine, future=True)() as session:
             assert reference_counts(session) == expected_reference_counts()
+        engine.dispose()
+    finally:
+        _cleanup(admin, monkeypatch)
+
+
+@requires_postgres
+def test_postgres_bootstrap_rejects_another_active_country_root(monkeypatch):
+    admin, test_url = _prepare_verify_db(_admin_url())
+    _point_alembic(monkeypatch, test_url)
+    try:
+        command.upgrade(_alembic_cfg(), "head")
+        engine = create_engine(test_url, future=True)
+        with sessionmaker(bind=engine, future=True)() as session:
+            bootstrap_reference_data(session)
+            session.commit()
+            session.add(
+                OrgUnit(
+                    code="OTHER_COUNTRY",
+                    name="Another active country",
+                    level_type="country",
+                    parent_id=None,
+                    path="/OTHER_COUNTRY",
+                    active=True,
+                )
+            )
+            session.commit()
+            with pytest.raises(ReferenceBootstrapConflict):
+                bootstrap_reference_data(session)
+            session.rollback()
         engine.dispose()
     finally:
         _cleanup(admin, monkeypatch)

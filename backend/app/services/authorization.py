@@ -157,7 +157,14 @@ def authorised_programme_ids(session: Session, user: User) -> set[UUID]:
 
 def resolve_landing_org_units(session: Session, user: User) -> list[OrgUnit]:
     if user.is_system_admin:
-        country = session.scalar(select(OrgUnit).where(OrgUnit.level_type == OrgUnitLevel.COUNTRY.value))
+        country = session.scalar(
+            select(OrgUnit).where(
+                OrgUnit.code == "UG",
+                OrgUnit.level_type == OrgUnitLevel.COUNTRY.value,
+                OrgUnit.active.is_(True),
+                OrgUnit.parent_id.is_(None),
+            )
+        )
         if country is not None:
             return [country]
     scopes = [unit for unit in geography_scope_units(session, user) if unit.active]

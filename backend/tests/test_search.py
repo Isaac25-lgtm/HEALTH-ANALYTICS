@@ -6,7 +6,9 @@ from datetime import date
 
 from sqlalchemy import select
 
-from app.models import User
+from app.domain.enums import OrgUnitLevel
+from app.models import OrgUnit, User, UserGeographyScope
+from app.services.geography import create_org_unit
 from app.services.search import scoped_search
 from tests.conftest import auth_header, login
 from tests.helpers import put_event
@@ -30,6 +32,46 @@ def test_geography_scope_hides_siblings_and_ancestors(session):
     assert _names(national) == ["Kitgum"]
     facility = scoped_search(session, _user(session, "paderhc3.user"), "pader")
     assert _names(facility) == ["Pader HC III"]
+
+
+def test_geography_scope_path_wildcards_are_literal(session):
+    uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
+    allowed_scope = create_org_unit(
+        session,
+        code="A_B",
+        name="Allowed wildcard scope",
+        level_type=OrgUnitLevel.DISTRICT,
+        parent=uganda,
+    )
+    sibling_scope = create_org_unit(
+        session,
+        code="AXB",
+        name="Sibling wildcard scope",
+        level_type=OrgUnitLevel.DISTRICT,
+        parent=uganda,
+    )
+    create_org_unit(
+        session,
+        code="ALLOWED_NEEDLE",
+        name="Needle inside scope",
+        level_type=OrgUnitLevel.FACILITY,
+        parent=allowed_scope,
+    )
+    create_org_unit(
+        session,
+        code="FORBIDDEN_NEEDLE",
+        name="Needle outside scope",
+        level_type=OrgUnitLevel.FACILITY,
+        parent=sibling_scope,
+    )
+    user = _user(session, "pader.focal")
+    grant = session.scalar(select(UserGeographyScope).where(UserGeographyScope.user_id == user.id))
+    grant.org_unit_id = allowed_scope.id
+    session.flush()
+
+    result = scoped_search(session, user, "needle")
+
+    assert _names(result) == ["Needle inside scope"]
 
 
 def test_programme_scope_limits_indicators(session):

@@ -279,6 +279,19 @@ def _inspect(session: Session) -> list[str]:
             ("active", True),
         ):
             _differs(label, field_name, getattr(root, field_name), expected, conflicts)
+    # An additional active country root is not unrelated reference data: it makes the platform's
+    # national context ambiguous. Historical/inactive roots may coexist, but production bootstrap
+    # must fail closed when more than one active root claims the country level.
+    other_active_country_root = session.scalar(
+        select(OrgUnit.id).where(
+            OrgUnit.code != ROOT_ORG_UNIT_CODE,
+            OrgUnit.level_type == OrgUnitLevel.COUNTRY.value,
+            OrgUnit.parent_id.is_(None),
+            OrgUnit.active.is_(True),
+        )
+    )
+    if other_active_country_root is not None:
+        conflicts.append("org units: another active country root conflicts with the approved reference")
 
     indicators = {row.code: row for row in session.scalars(select(Indicator)).all()}
     for spec in INDICATOR_CATALOG:

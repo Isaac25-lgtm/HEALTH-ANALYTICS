@@ -688,7 +688,25 @@ def test_csrf_and_logout_revoke_session(client):
     assert again.status_code == 401
 
 
-def test_system_admin_lands_at_country(client):
+def test_system_admin_lands_at_approved_uganda_root_when_another_country_exists(client, session):
+    # Put the other country in the pre-existing row so an unordered country query deterministically
+    # returns the wrong unit. The approved UG root is then inserted second.
+    other_country = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
+    other_country.code = "AA_OTHER_COUNTRY"
+    other_country.name = "Another country"
+    other_country.path = "/AA_OTHER_COUNTRY"
+    session.flush()
+    session.add(
+        OrgUnit(
+            code="UG",
+            name="Uganda",
+            level_type="country",
+            parent_id=None,
+            path="/UG",
+            active=True,
+        )
+    )
+    session.commit()
     token = login(client, "admin.user")
     response = client.get("/me/context", headers=auth_header(token))
     assert response.json()["landing_org_unit"]["code"] == "UG"

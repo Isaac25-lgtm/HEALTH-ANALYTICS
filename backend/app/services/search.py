@@ -26,6 +26,7 @@ from app.services.authorization import (
     geography_scope_units,
     require_action,
 )
+from app.services.geography import escape_like
 
 MIN_QUERY_LENGTH = 2
 MAX_QUERY_LENGTH = 60
@@ -67,7 +68,10 @@ def scoped_search(session: Session, user: User, raw_query: str | None, *, limit:
             unit_filter.append(
                 or_(
                     *[
-                        or_(OrgUnit.path == scope.path, OrgUnit.path.like(scope.path.rstrip("/") + "/%"))
+                        or_(
+                            OrgUnit.path == scope.path,
+                            OrgUnit.path.like(escape_like(scope.path.rstrip("/") + "/") + "%", escape="\\"),
+                        )
                         for scope in scopes
                     ]
                 )
