@@ -12,6 +12,15 @@ const EVIDENCE =
 
 /** Deterministic screenshots: volatile identifiers and timestamps are masked, motion is disabled. */
 async function evidence(page: Page, name: string) {
+  // A map lazy-loads and paints on its own canvas after the snapshot renders. Wait for it to
+  // report itself drawn so the evidence shows the cohort, not an empty or half-loaded canvas.
+  if (await page.getByRole("heading", { name: "Geographic intelligence" }).count()) {
+    await page
+      .locator("[data-map-ready='true']")
+      .first()
+      .waitFor({ state: "attached", timeout: 30_000 })
+      .catch(() => {});
+  }
   await page.screenshot({
     path: `${EVIDENCE}/${name}`,
     animations: "disabled",
@@ -294,7 +303,7 @@ test.describe("reference layout contract at 1680x945", () => {
     await signIn(page, "national.analyst", /dashboard\/national/);
     const search = page.getByRole("combobox", { name: "Search authorised places and indicators" });
     await search.fill("kitg");
-    const option = page.getByRole("option", { name: /Kitgum/ });
+    const option = page.getByRole("option", { name: "Kitgum district" });
     await expect(option).toBeVisible({ timeout: 15_000 });
     await search.press("Enter");
     await page.waitForURL(/dashboard\/district.*orgUnitId=/, { timeout: 30_000 });

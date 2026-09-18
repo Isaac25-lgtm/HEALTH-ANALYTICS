@@ -16,6 +16,9 @@ const externalServers = process.env.HPIP_E2E_EXTERNAL_SERVERS === "true";
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
+  // One disposable SQLite API serves every worker, and each screen commits a real calculation
+  // snapshot. Two workers keep that queue honest; more of them measure contention, not the product.
+  workers: 2,
   retries: 0,
   timeout: 60_000,
   use: {

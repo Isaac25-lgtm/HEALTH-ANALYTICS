@@ -1,5 +1,5 @@
-export const DEFAULT_PERIOD = "FY2024/25";
-export const DEFAULT_COMPARISON = "FY2023/24";
+export const DEFAULT_PERIOD = "FY2026/27";
+export const DEFAULT_COMPARISON = "FY2025/26";
 
 const SCREEN_BY_LEVEL: Record<string, string> = {
   country: "national",
@@ -11,7 +11,7 @@ const SCREEN_BY_LEVEL: Record<string, string> = {
   facility: "facility",
 };
 
-export const PERIOD_OPTIONS = ["FY2023/24", "FY2024/25", "FY2025/26"] as const;
+export const PERIOD_OPTIONS = ["FY2024/25", "FY2025/26", "FY2026/27"] as const;
 
 export const WORKSPACES = [
   { href: "/dashboard/national", label: "Overview", screen: "national" },

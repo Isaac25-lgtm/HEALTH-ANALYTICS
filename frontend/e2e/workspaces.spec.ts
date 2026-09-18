@@ -42,6 +42,8 @@ test("specialised workspaces render their own surfaces", async ({ page }) => {
   await page.getByRole("link", { name: "Maps" }).click();
   await page.waitForURL(/workspace\/maps/, { timeout: 30_000 });
   await expect(page.getByRole("heading", { name: "Geographic intelligence" })).toBeVisible({ timeout: 30_000 });
+  // Sub-regions carry synthetic demonstration geometry, so the national map draws its cohort.
+  await expect(page.getByText(/units mapped/)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("heading", { name: "Exports" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Maps" })).toHaveAttribute("aria-current", "page");
 

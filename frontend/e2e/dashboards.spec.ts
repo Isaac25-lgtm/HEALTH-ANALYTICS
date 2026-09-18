@@ -22,8 +22,11 @@ test("cookie session does not store tokens and four screens are reachable", asyn
   }));
   expect(JSON.stringify(storage)).not.toContain("access_token");
   expect(JSON.stringify(storage)).not.toContain("hpip_session");
-  await expect(page.getByText("Boundaries unavailable for this level")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("heading", { name: "Geographic intelligence" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Geographic intelligence" })).toBeVisible({ timeout: 30_000 });
+  // Sub-regions carry (synthetic demonstration) geometry, so the national map renders rather than
+  // reporting unavailable boundaries. First paint includes the analysis run, so allow for it.
+  await expect(page.getByLabel(/Authorised MapLibre map coloured by/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/units mapped/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ask the Data" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Excel workbook (.xlsx)" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Narrative report (Markdown .md)" })).toBeEnabled();
@@ -36,6 +39,9 @@ test("cookie session does not store tokens and four screens are reachable", asyn
   await page.getByRole("link", { name: "Pader" }).first().click();
   await page.waitForURL(/dashboard\/district/, { timeout: 30_000 });
   await expect(page.getByRole("heading", { name: /scorecard/i })).toBeVisible({ timeout: 30_000 });
+  // District screens list facilities instead of a map, so no map panel is expected here. The
+  // unavailable-boundary state is asserted in the maps workspace, where facilities have no geometry.
+  await expect(page.getByRole("heading", { name: "Geographic intelligence" })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Pader HC III" }).first().click();
   await page.waitForURL(/dashboard\/facility/, { timeout: 30_000 });

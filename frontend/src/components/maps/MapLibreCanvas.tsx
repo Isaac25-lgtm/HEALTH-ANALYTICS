@@ -178,8 +178,12 @@ export function MapLibreCanvas({
           (next, point) => next.extend(point as [number, number]),
           new maplibregl.LngLatBounds(points[0] as [number, number], points[0] as [number, number]),
         );
-        map.fitBounds(bounds, { padding: 24, duration: 400 });
+        // Instant: a data map should present its cohort, not animate a camera into place.
+        map.fitBounds(bounds, { padding: 24, duration: 0 });
       }
+      // Mark the container once the cohort has actually been drawn, so acceptance screenshots and
+      // tests can wait for a painted map instead of guessing at a delay.
+      map.once("idle", () => containerRef.current?.setAttribute("data-map-ready", "true"));
     };
     if (map.loaded()) {
       apply();

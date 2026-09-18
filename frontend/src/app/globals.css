@@ -851,6 +851,8 @@ button:disabled {
   box-shadow: 0 1px 2px rgba(6, 26, 49, 0.05);
   padding: 9px 12px 8px;
   display: grid;
+  /* One track that may shrink: long labels, deltas and status text must never widen the card. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   align-content: start;
   min-width: 0;
@@ -872,6 +874,7 @@ button:disabled {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .kpi-value {
@@ -884,6 +887,8 @@ button:disabled {
 .kpi-delta {
   font-size: 12px;
   color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .kpi-versus {
@@ -901,6 +906,13 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   gap: 6px;
+  /* The status text keeps its full wording; the sparkline drops below it when space is tight. */
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.kpi-foot > * {
+  min-width: 0;
 }
 
 .sparkline {
