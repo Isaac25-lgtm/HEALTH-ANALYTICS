@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.db.session import get_engine, reset_engine  # noqa: E402
+from app.services.demo_data import seed_demo_analytics  # noqa: E402
 from app.services.seed import seed_reference_data  # noqa: E402
 
 get_settings.cache_clear()
@@ -39,6 +40,10 @@ settings = get_settings()
 session = Session(get_engine())
 try:
     seed_reference_data(session, settings.seed_password)
+    # Synthetic demonstration analytics so the dashboards render populated, coloured screens.
+    # Development/test only; the facility catchment, sub-county geometry and pre-FY2024/25 periods
+    # are deliberately left empty so the honest-missing states stay visible.
+    seed_demo_analytics(session, settings=settings)
     session.commit()
 finally:
     session.close()
