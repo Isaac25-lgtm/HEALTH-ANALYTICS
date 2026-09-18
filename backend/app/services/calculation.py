@@ -1135,9 +1135,37 @@ def evaluate_formula(
 
 
 def _mapping_for_source_row(
-    session: Session, row: RawAggregateValue, programme_id: UUID
+    session: Session,
+    row: RawAggregateValue,
+    programme_id: UUID,
+    cache: dict | None = None,
 ) -> SourceMapping | None:
+    """Resolve the mapping that produced a source row.
+
+    Many rows share one mapping (the same key across facilities and periods). ``cache`` memoises the
+    lookup for the duration of one calculation run, during which the mapping table cannot change;
+    without it, lineage issues one query per row.
+    """
     mapping_id = (row.provenance or {}).get("mapping_id")
+    key = (
+        programme_id,
+        row.internal_source_key,
+        row.mapping_version,
+        row.dhis2_item_uid,
+        row.category_option_combo_uid or "",
+        str(mapping_id) if mapping_id else None,
+    )
+    if cache is not None and key in cache:
+        return cache[key]
+    resolved = _resolve_mapping_for_source_row(session, row, programme_id, mapping_id)
+    if cache is not None:
+        cache[key] = resolved
+    return resolved
+
+
+def _resolve_mapping_for_source_row(
+    session: Session, row: RawAggregateValue, programme_id: UUID, mapping_id
+) -> SourceMapping | None:
     if mapping_id:
         try:
             referenced = session.get(SourceMapping, UUID(str(mapping_id)))
@@ -1174,6 +1202,7 @@ def _source_lineage(
     session: Session,
     source_row_ids: list[str],
     programme_id: UUID,
+    mapping_cache: dict | None = None,
 ) -> tuple[list[RawAggregateValue], list[str], str | None, datetime | None]:
     parsed_ids: list[UUID] = []
     for value in source_row_ids:
@@ -1190,7 +1219,7 @@ def _source_lineage(
     versions = {row.mapping_version for row in rows if row.mapping_version}
     freshness = [_utc(row.source_freshness_at) for row in rows if row.source_freshness_at]
     for row in rows:
-        mapping = _mapping_for_source_row(session, row, programme_id)
+        mapping = _mapping_for_source_row(session, row, programme_id, mapping_cache)
         if mapping is not None:
             mapping_ids.add(str(mapping.id))
     mapping_version = next(iter(versions)) if len(versions) == 1 else ("mixed" if versions else None)
@@ -1207,6 +1236,7 @@ def run_calculation(
     indicator_codes: list[str] | None = None,
 ) -> CalculationRun:
     started = datetime.now(UTC)
+    mapping_cache: dict = {}
     programme_id = None
     if programme_codes:
         programme = session.scalar(select(Programme).where(Programme.code == programme_codes[0]))
@@ -1285,14 +1315,14 @@ def run_calculation(
             raw_ids.extend(measure.source_row_ids)
             event_snapshot_ids.update(measure.event_snapshot_ids)
             source_rows, actual_mapping_ids, mapping_version, source_freshness = _source_lineage(
-                session, measure.source_row_ids, indicator.programme_id
+                session, measure.source_row_ids, indicator.programme_id, mapping_cache
             )
             mapping_ids.extend(actual_mapping_ids)
             if source_freshness is not None:
                 source_freshness_values.append(source_freshness)
             extracted_values.extend(_utc(row.extracted_at) for row in source_rows if row.extracted_at)
             for row in source_rows:
-                source_mapping = _mapping_for_source_row(session, row, indicator.programme_id)
+                source_mapping = _mapping_for_source_row(session, row, indicator.programme_id, mapping_cache)
                 source_lineage[str(row.id)] = {
                     "id": str(row.id),
                     "programme_id": str(row.programme_id) if row.programme_id else None,
