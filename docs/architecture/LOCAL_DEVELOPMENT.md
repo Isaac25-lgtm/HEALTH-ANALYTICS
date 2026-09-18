@@ -92,6 +92,10 @@ Next.js 15.5.25 clears `.next` at the start of `next build` and retries `EPERM` 
 
 ### Playwright
 
+The disposable end-to-end API seeds the demonstration dataset described in
+`SYNTHETIC_FIXTURES.md`, so local screens render populated, coloured dashboards rather than empty
+states. It is development/test only and refuses to run anywhere else.
+
 `npm run e2e` and `npm run e2e:gate` use the bounded acceptance runner (`scripts/e2e-gate.mjs`;
 lifecycle logic in `scripts/e2e-gate-lib.mjs`, tests in `scripts/e2e-gate-lib.test.mjs`, run by
 `npm test`). It first creates a production build without a backend address (an owned, sampled

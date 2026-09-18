@@ -64,6 +64,40 @@ Before the first run, `CodexSandboxOffline` had again written `frontend/.next` (
 `frontend/test-results` and `backend/e2e_hpip.sqlite`; the build guard failed the gate (exit 1).
 They were moved, not deleted, to `.build-quarantine/20260915-third-pass/`.
 
+## 2026-09-18 — Demonstration dataset, calculation performance and layout fixes
+
+The dashboards could only be seen empty: the development seed created geography and users but no
+populations or source values, so every indicator was correctly unavailable and every panel read
+"No data". This adds an invented demonstration dataset for development and test, and fixes what it
+exposed. **No production data, population, boundary or DHIS2 connection is involved; nothing was
+deployed.**
+
+- **Demonstration dataset** (`app/services/demo_data.py`, refuses to run outside development/test):
+  fictional sub-counties and nine facilities, an approved-status fictional population version,
+  facility-level counts for every catalogue source key across FY2024/25–FY2026/27, `demo` source
+  mappings, and stylised invented outlines for the sub-regions and districts. Deterministic, with
+  deliberate gaps (no facility catchment population, no sub-county or facility geometry, nothing
+  before FY2024/25) so honest-missing behaviour stays visible. See `SYNTHETIC_FIXTURES.md`.
+- **Calculation performance (product defect):** lineage resolved the source mapping with one query
+  per source row. A national immunisation dashboard issued **4,627** SQL statements; a run-scoped
+  memo of the mapping lookup cuts it to **1,569** and the request from **3.3 s to 1.4 s** (ANC) and
+  **6.7 s to 2.7 s** (immunisation). This mattered only once real values existed, and matters far
+  more at national scale than in these fixtures.
+- **KPI card overflow (layout defect):** a long status label plus the fixed-width sparkline could not
+  shrink, so the card's grid track grew and the immunisation workspace scrolled horizontally (17 px
+  at 1680, 69 px at 390). The card now constrains its track and the footer wraps.
+- **Map evidence:** the map fits its cohort instantly instead of animating, and marks itself
+  `data-map-ready` when painted, so acceptance screenshots capture a drawn map rather than an empty
+  canvas.
+- **Default period** is FY2026/27 with FY2025/26 comparison — the current financial year, and the
+  three periods the approved population rules cover, so trends have three points.
+- **Playwright parallelism** is two workers: one disposable SQLite API serves every worker and each
+  screen commits a real calculation snapshot, so more workers measure contention, not the product.
+
+Verification (Windows workstation): full SQLite backend suite; `npm run e2e` **24 passed, 0 skipped,
+0 flaky**, natural exit, ports free, no survivors, tree unchanged; `npm run e2e:evidence` refreshed
+the tracked screenshots, which now show populated, coloured dashboards.
+
 ## 2026-09-16 — Acceptance-gate corrections (fourth pass)
 
 Bounded corrections to `npm run e2e` only. No application behaviour, deployment, push, or external
