@@ -41,6 +41,10 @@ POPULATION_VERSION_CODE = "DEMO_SYNTHETIC"
 PERIODS = ("FY2024/25", "FY2025/26", "FY2026/27")
 YEARS = (2024, 2025, 2026, 2027)
 GEOMETRY_VALID_FROM = date(2024, 7, 1)
+# Demonstration rows record when the fixture was seeded, to the second, and re-seeding never
+# rewrites it: one timestamp per database, identical across every row and every re-seed. A fixed
+# calendar constant would be deterministic but would age past DHIS2_STALE_HOURS, flagging all 180
+# rows as stale reporting and burying the real data-quality console in fixture noise.
 
 # District demonstration profile: population, and how each district performs relative to target.
 # Different profiles give the scorecard and map visibly different colours.
@@ -101,7 +105,6 @@ KEY_RATE = {
     "MACERATED_SB": 0.35,
     "NEWBORN_DEATHS": 0.45,
     "MATERNAL_DEATHS": 0.045,
-    "MATERNAL_REPORTED_DEATHS": 0.045,
     "BCG": 41.7,
     "HEPB_BIRTH": 32.7,
     "OPV0": 38.7,
@@ -110,6 +113,7 @@ KEY_RATE = {
     "OPV3": 36.6,
     "IPV1": 35.3,
     "IPV2": 29.2,
+    "MR": 36.0,
     "PCV1": 40.4,
     "PCV2": 38.7,
     "PCV3": 36.6,
@@ -128,25 +132,42 @@ KEY_RATE = {
     "DEWORM_1_14": 28.8,
     "HPV": 24.5,
     "UNDER5": 44.0,
+    "YF": 35.0,
 }
-DEFAULT_RATE = 20.0
 # Keys that are a supplied percentage rather than a count.
 PERCENT_KEYS = {"KMC_PERCENT"}
 
 
-def _catalogue_source_keys() -> list[str]:
-    """Every source key the approved catalogue reads, taken from the catalogue itself."""
+def _formula_source_keys(formula: dict) -> set[str]:
     keys: set[str] = set()
+    for value in formula.values():
+        if isinstance(value, str) and value.isupper():
+            keys.add(value)
+        elif isinstance(value, list):
+            keys.update(item for item in value if isinstance(item, str))
+        elif isinstance(value, dict):
+            keys.update(item for item in value.get("source_keys", []) if isinstance(item, str))
+    return keys
+
+
+def _catalogue_sources() -> list[tuple[str, str]]:
+    """Every programme/source-key pair read by the approved catalogue.
+
+    The programme is part of raw-data identity. Several death keys intentionally occur in both
+    MNCH outcome indicators and MPDSR process indicators, so reducing this to one programme per key
+    silently leaves part of the catalogue unavailable.
+    """
+    sources: set[tuple[str, str]] = set()
     for spec in INDICATOR_CATALOG:
+        programme = str(spec["programme"])
         formula = spec.get("formula_spec") or {}
-        for value in formula.values():
-            if isinstance(value, str) and value.isupper():
-                keys.add(value)
-            elif isinstance(value, list):
-                keys.update(item for item in value if isinstance(item, str))
-            elif isinstance(value, dict):
-                keys.update(item for item in value.get("source_keys", []) if isinstance(item, str))
-    return sorted(keys)
+        sources.update((key, programme) for key in _formula_source_keys(formula))
+    return sorted(sources)
+
+
+def _catalogue_source_keys() -> list[str]:
+    """Every distinct source key the approved catalogue reads."""
+    return sorted({key for key, _programme in _catalogue_sources()})
 
 
 def _period_index(period: str) -> int:
@@ -165,7 +186,7 @@ def seed_demo_analytics(session: Session, *, settings: Settings | None = None) -
     geography = _extra_geography(session)
     version = _populations(session, geography)
     mappings = _source_mappings(session)
-    values = _raw_values(session, geography)
+    values = _raw_values(session, geography, extracted_at=datetime.now(UTC).replace(microsecond=0))
     polygons = _geometry(session, geography)
     session.flush()
     return {
@@ -186,8 +207,10 @@ def _source_mappings(session: Session) -> int:
     """
     programmes = _programme_ids(session)
     written = 0
-    for key in (item for item in _catalogue_source_keys() if item in KEY_RATE):
-        programme_id = _programme_for_key(key, programmes)
+    for key, programme_code in _catalogue_sources():
+        programme_id = programmes.get(programme_code)
+        if programme_id is None:
+            raise RuntimeError(f"Demonstration source requires missing programme {programme_code}.")
         existing = session.scalar(
             select(SourceMapping).where(
                 SourceMapping.internal_source_key == key,
@@ -196,6 +219,10 @@ def _source_mappings(session: Session) -> int:
             )
         )
         if existing is not None:
+            existing.dhis2_item_uid = f"DEMO_{key}"
+            existing.item_kind = "data_element"
+            existing.enabled = True
+            existing.notes = "Synthetic demonstration mapping. Not a DHIS2 identifier."
             continue
         session.add(
             SourceMapping(
@@ -334,36 +361,10 @@ def _programme_ids(session: Session) -> dict[str, object]:
     return {row.code: row.id for row in session.scalars(select(Programme)).all()}
 
 
-def _programme_for_key(key: str, programmes: dict) -> object:
-    """Keys follow the catalogue's programme: EPI doses, MPDSR deaths, everything else MNCH."""
-    epi_prefixes = (
-        "BCG",
-        "HEPB",
-        "OPV",
-        "IPV",
-        "PCV",
-        "PENTA",
-        "ROTAV",
-        "MV",
-        "MR_",
-        "TD_",
-        "VITA",
-        "DEWORM",
-        "HPV",
-        "UNDER5",
-        "YF",
-    )
-    if key.startswith(epi_prefixes):
-        return programmes.get("EPI", programmes.get("MNCH"))
-    if "MATERNAL_REPORTED" in key:
-        return programmes.get("MPDSR", programmes.get("MNCH"))
-    return programmes.get("MNCH")
-
-
-def _raw_values(session: Session, geography: dict) -> int:
-    """Facility-level source counts for every catalogue key, period by period."""
+def _raw_values(session: Session, geography: dict, *, extracted_at: datetime) -> int:
+    """Facility-level source counts for every catalogue programme/key, period by period."""
     programmes = _programme_ids(session)
-    keys = [key for key in _catalogue_source_keys() if key in KEY_RATE]
+    sources = _catalogue_sources()
     written = 0
     for facility, district_code, share, facility_performance in geography["facilities"]:
         profile = DISTRICT_PROFILE[district_code]
@@ -372,11 +373,14 @@ def _raw_values(session: Session, geography: dict) -> int:
             district_population = profile["population"] * (1.03**index)
             facility_population = district_population * share
             performance = profile["performance"] * facility_performance + profile["trend"] * index
-            for key in keys:
+            for key, programme_code in sources:
                 value = _value_for(key, facility_population, performance, index)
                 if value is None:
-                    continue
-                _put_raw(session, facility, period, key, value, _programme_for_key(key, programmes))
+                    raise RuntimeError(f"Demonstration rate is missing for catalogue source {key}.")
+                programme_id = programmes.get(programme_code)
+                if programme_id is None:
+                    raise RuntimeError(f"Demonstration source requires missing programme {programme_code}.")
+                _put_raw(session, facility, period, key, value, programme_id, extracted_at)
                 written += 1
     return written
 
@@ -390,23 +394,45 @@ def _value_for(key: str, population: float, performance: float, index: int) -> f
         return round(min(98.0, max(35.0, rate * performance)), 1)
     expected = population * rate / 1000.0
     value = expected * performance
-    if key in {"MATERNAL_DEATHS", "MATERNAL_REPORTED_DEATHS", "FRESH_SB", "MACERATED_SB", "NEWBORN_DEATHS"}:
+    if key in {"MATERNAL_DEATHS", "FRESH_SB", "MACERATED_SB", "NEWBORN_DEATHS"}:
         # Rarer events improve as performance rises, and stay small whole numbers.
         value = expected * (2.0 - min(performance, 1.4))
     return float(max(0, round(value)))
 
 
-def _put_raw(session: Session, unit: OrgUnit, period: str, key: str, value: float, programme_id) -> None:
-    existing = session.scalar(
-        select(RawAggregateValue).where(
-            RawAggregateValue.org_unit_id == unit.id,
-            RawAggregateValue.period == period,
-            RawAggregateValue.internal_source_key == key,
-            RawAggregateValue.is_current.is_(True),
-        )
+def _put_raw(
+    session: Session,
+    unit: OrgUnit,
+    period: str,
+    key: str,
+    value: float,
+    programme_id,
+    extracted_at: datetime,
+) -> None:
+    existing_rows = list(
+        session.scalars(
+            select(RawAggregateValue).where(
+                RawAggregateValue.source_system == SOURCE_SYSTEM,
+                RawAggregateValue.programme_id == programme_id,
+                RawAggregateValue.org_unit_id == unit.id,
+                RawAggregateValue.period == period,
+                RawAggregateValue.internal_source_key == key,
+                RawAggregateValue.category_option_combo_uid.is_(None),
+                RawAggregateValue.is_current.is_(True),
+            )
+        ).all()
     )
+    if len(existing_rows) > 1:
+        raise RuntimeError(f"Duplicate current demonstration rows for {unit.code}/{period}/{key}/{programme_id}.")
+    existing = existing_rows[0] if existing_rows else None
     if existing is not None:
         existing.value = value
+        existing.source_metric_id = f"DEMO_{key}"
+        existing.dhis2_item_uid = f"DEMO_{key}"
+        existing.mapping_version = "demo"
+        existing.checksum = "synthetic-demo"
+        # extracted_at is deliberately preserved: the fixture keeps the provenance of its first
+        # seeding, so re-seeding is idempotent and the rows do not silently refresh themselves.
         return
     session.add(
         RawAggregateValue(
@@ -416,9 +442,9 @@ def _put_raw(session: Session, unit: OrgUnit, period: str, key: str, value: floa
             period=period,
             source_metric_id=f"DEMO_{key}",
             internal_source_key=key,
-            dhis2_item_uid=None,
+            dhis2_item_uid=f"DEMO_{key}",
             value=value,
-            extracted_at=datetime.now(UTC),
+            extracted_at=extracted_at,
             mapping_version="demo",
             is_current=True,
             checksum="synthetic-demo",

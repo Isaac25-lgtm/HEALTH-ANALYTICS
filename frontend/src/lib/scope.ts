@@ -1,5 +1,8 @@
-export const DEFAULT_PERIOD = "FY2026/27";
-export const DEFAULT_COMPARISON = "FY2025/26";
+export const PERIOD_OPTIONS = ["FY2024/25", "FY2025/26", "FY2026/27"] as const;
+// Defaults follow the configured period list. Adding an owner-approved period advances the default
+// without a second hard-coded year that can silently drift out of sync.
+export const DEFAULT_PERIOD = PERIOD_OPTIONS[PERIOD_OPTIONS.length - 1];
+export const DEFAULT_COMPARISON = PERIOD_OPTIONS[PERIOD_OPTIONS.length - 2];
 
 const SCREEN_BY_LEVEL: Record<string, string> = {
   country: "national",
@@ -10,8 +13,6 @@ const SCREEN_BY_LEVEL: Record<string, string> = {
   sub_county: "sub_county",
   facility: "facility",
 };
-
-export const PERIOD_OPTIONS = ["FY2024/25", "FY2025/26", "FY2026/27"] as const;
 
 export const WORKSPACES = [
   { href: "/dashboard/national", label: "Overview", screen: "national" },

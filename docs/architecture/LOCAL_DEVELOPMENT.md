@@ -127,8 +127,10 @@ is not a pass condition. An explicit evidence refresh excludes `docs/evidence/sc
 
 Process attribution: parent-tree enumeration is preferred. Each owned process is identified by PID
 plus creation time, captured immediately after spawning and accepted only if the row is within the
-declared timestamp resolution of the spawn and the process is still running after the query. Windows
-tables use millisecond resolution; Unix `ps lstart` uses its one-second resolution. Descendants are attributed
+declared timestamp allowance of the spawn and the process is still running after the query. Windows
+tables use millisecond resolution. Unix `ps lstart` prints whole seconds and, on Linux, derives the
+value from a second-resolution boot time plus jiffies; the effective pre-spawn allowance is therefore
+two seconds. Descendants are attributed
 only through a live owned root whose current table row matches that exact identity, so an exited or
 reused root PID never attributes anything. The walk visits each PID once and rejects a child created
 before its supposed parent, or with an unknown creation time. Survivors attributed this way are

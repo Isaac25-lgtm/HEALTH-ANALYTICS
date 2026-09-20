@@ -18,8 +18,7 @@ async function evidence(page: Page, name: string) {
     await page
       .locator("[data-map-ready='true']")
       .first()
-      .waitFor({ state: "attached", timeout: 30_000 })
-      .catch(() => {});
+      .waitFor({ state: "attached", timeout: 30_000 });
   }
   await page.screenshot({
     path: `${EVIDENCE}/${name}`,

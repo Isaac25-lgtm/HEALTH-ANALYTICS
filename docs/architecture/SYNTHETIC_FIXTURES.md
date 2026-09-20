@@ -37,13 +37,20 @@ identifier or an approved boundary.**
 |---|---|
 | Geography | Fictional sub-counties (Atanga, Kitgum Central, Lagoro, Soroti East, Kamuda) and nine facilities under the existing synthetic districts |
 | Population | One approved-status version, `DEMO_SYNTHETIC` / `SYNTHETIC_DEMONSTRATION_FIXTURE`, for non-facility units, 2024–2027 |
-| Source values | Facility-level counts for every source key the approved catalogue reads, for FY2024/25, FY2025/26 and FY2026/27, written with source system `synthetic_demo_fixture` |
-| Source mappings | `DEMO_<key>` labels at mapping version `demo`, so calculations are not flagged as unmapped |
+| Source values | Facility-level counts for every programme/source-key pair the approved catalogue reads, for FY2024/25, FY2025/26 and FY2026/27, written with source system `synthetic_demo_fixture` |
+| Source mappings | Matching `DEMO_<key>` labels at mapping version `demo`, so calculations are not flagged as unmapped |
 | Geometry | Stylised invented outlines for the two sub-regions and three districts, source `synthetic_demo_fixture` |
 
-Values are deterministic — no randomness and no clock — so screenshots and tests are stable. They are
+Values are deterministic — no randomness and no clock — so screenshots and tests are stable. The
+extraction timestamp records when the fixture was seeded, to the second, shared by every row; a
+re-seed never rewrites it, so provenance is stable across re-seeds. A fixed calendar constant was
+tried and rejected: it ages past `DHIS2_STALE_HOURS` and flags all 180 rows as stale reporting,
+burying the real data-quality console in fixture noise. Values are
 shaped only to exercise the approved catalogue: every band, direction and formula still comes from
 `indicator_catalog`, and the demonstration layer defines no threshold and no formula.
+
+Re-seeding updates only rows owned by `synthetic_demo_fixture`, using the full source/programme/unit/
+period/key/category identity. A current row from another source or programme is never overwritten.
 
 Deliberate gaps keep the honest-missing behaviour visible: facilities have **no** approved catchment
 population (facility screens still show the unavailable state), sub-counties and facilities have

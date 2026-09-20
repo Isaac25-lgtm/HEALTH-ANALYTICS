@@ -1,5 +1,44 @@
 # Context Changelog
 
+## 2026-09-20 — Demonstration and map-evidence audit correction
+
+An independent audit rejected the word "perfect" for the 2026-09-18 pass and reproduced four
+code-controlled gaps. The correction remains local/development-facing: nothing was deployed, no
+external service was contacted, and no production population, mapping or boundary was introduced.
+
+- Map drill-down handlers now read the current period, comparison, module and indicator rather than
+  the values captured when MapLibre first created its layers.
+- Demo raw upserts use the complete fixture identity and cannot mutate a current row from another
+  source or programme. Ambiguous duplicate fixture rows fail closed.
+- The fixture covers every catalogue programme/source pair, including MR, Yellow Fever and the
+  source keys shared by MNCH and MPDSR. Raw rows and mappings carry matching `DEMO_<key>` labels.
+- The fixture records one extraction timestamp per database — the moment it was seeded, shared by
+  every row — and a re-seed never rewrites it. A fixed calendar constant was tried first and
+  reverted: it ages past `DHIS2_STALE_HOURS`, so every demonstration row was flagged stale (180
+  `STALE_REPORTING` flags, insights rising from 3 to 20). Direct regressions cover environment
+  refusal, completeness, provenance stability across re-seeds, idempotence and source isolation.
+- Map readiness resets on every paint and only the latest idle event can mark the canvas ready.
+  Acceptance screenshots no longer suppress the 30-second readiness timeout.
+- Period defaults now derive from the configured period list, avoiding a second duplicated constant.
+- Gate documentation now describes Linux's effective two-second `ps lstart` allowance consistently
+  with the tested implementation; Windows remains one millisecond.
+
+Verification on 2026-09-20, completed under the checkout-owning account:
+
+| Gate | Result |
+|---|---|
+| Ruff (`app tests scripts alembic`) | clean |
+| Backend, SQLite | **773 passed, 32 skipped** (30 PostgreSQL-only, 2 Redis) |
+| Backend, PostgreSQL 18 disposable cluster on port 55432 | **803 passed, 2 skipped** (Redis only) in 700 s; cluster stopped, port free |
+| TypeScript / ESLint | clean / clean |
+| Vitest | **107 passed** |
+| Production build (no backend address) | exit 0 |
+| `npm run e2e` | **24 passed, 0 skipped, 0 flaky**; Playwright exited by itself; both owned services stopped; no surviving process; ports 3000/8010 free; working-tree status and fingerprint unchanged by the run |
+
+Redis remains unavailable on this workstation; the two Redis tests stay skipped locally and run in
+GitHub Actions. Owner acceptance and production/UAT status are unchanged: nothing is deployed, live
+DHIS2 is not connected, and no production population, boundary, user or credential exists.
+
 ## 2026-09-15 — Independent audit corrections (third pass)
 
 An independent rerun reproduced defects that the second-pass handoff had reported as closed. This
@@ -151,8 +190,9 @@ verification now performs bounded repeated queries for up to `E2E_PROCESS_SETTLE
 (default 5 s) and records diagnostic PID, creation time, attribution root and process kind for any
 persistent survivor. Gate integration tests run without parallel test-file workers, while preserving
 the real detached-child detection and termination case. Identity capture now uses the process
-table's declared timestamp resolution (Windows 1 ms; Unix `ps lstart` 1 s), replacing the previous
-two-second allowance.
+table's declared effective timestamp allowance (Windows 1 ms; Linux/Unix `ps lstart` 2 s because a
+whole-second start is derived from a second-resolution boot time plus jiffies), replacing the prior
+universal two-second allowance.
 
 Verification after correction: Node syntax, TypeScript and ESLint are clean; the gate file is
 **18 passed**; the complete frontend suite is **105 passed** in three consecutive runs. A real

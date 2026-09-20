@@ -43,6 +43,9 @@ export function MapLibreCanvas({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const paintSequenceRef = useRef(0);
+  const navigationRef = useRef({ module, period, comparison, selectedCode });
+  navigationRef.current = { module, period, comparison, selectedCode };
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -71,6 +74,10 @@ export function MapLibreCanvas({
     if (!map) {
       return;
     }
+    const paintSequence = ++paintSequenceRef.current;
+    containerRef.current?.setAttribute("data-map-ready", "false");
+    let cancelled = false;
+    let idleHandler: (() => void) | null = null;
     // Values and statuses are copied from the committed snapshot by the server.
     const features = collectionInput.features.map((feature) => ({
       ...feature,
@@ -82,6 +89,17 @@ export function MapLibreCanvas({
     }));
     const collection = { type: "FeatureCollection" as const, features };
     const apply = () => {
+      if (cancelled) {
+        return;
+      }
+      idleHandler = () => {
+        if (!cancelled && paintSequenceRef.current === paintSequence) {
+          containerRef.current?.setAttribute("data-map-ready", "true");
+        }
+      };
+      // Subscribe before changing the source or camera. A fast paint must not race ahead of the
+      // readiness listener used by acceptance screenshots.
+      map.once("idle", idleHandler);
       if (map.getSource("units")) {
         (map.getSource("units") as maplibregl.GeoJSONSource).setData(collection as never);
       } else {
@@ -140,34 +158,23 @@ export function MapLibreCanvas({
             "circle-stroke-width": 1,
           },
         });
-        map.on("click", "units-fill", (event) => {
+        const navigateToFeature = (event: maplibregl.MapLayerMouseEvent) => {
           const props = event.features?.[0]?.properties;
           if (!props?.org_unit_id) {
             return;
           }
+          const navigation = navigationRef.current;
           window.location.href = dashboardHref({
             screen: screenForLevel(String(props.level_type)),
             orgUnitId: String(props.org_unit_id),
-            period,
-            comparison,
-            module,
-            indicator: selectedCode,
+            period: navigation.period,
+            comparison: navigation.comparison,
+            module: navigation.module,
+            indicator: navigation.selectedCode,
           });
-        });
-        map.on("click", "units-points", (event) => {
-          const props = event.features?.[0]?.properties;
-          if (!props?.org_unit_id) {
-            return;
-          }
-          window.location.href = dashboardHref({
-            screen: screenForLevel(String(props.level_type)),
-            orgUnitId: String(props.org_unit_id),
-            period,
-            comparison,
-            module,
-            indicator: selectedCode,
-          });
-        });
+        };
+        map.on("click", "units-fill", navigateToFeature);
+        map.on("click", "units-points", navigateToFeature);
       }
       const points: number[][] = [];
       for (const feature of features) {
@@ -181,15 +188,19 @@ export function MapLibreCanvas({
         // Instant: a data map should present its cohort, not animate a camera into place.
         map.fitBounds(bounds, { padding: 24, duration: 0 });
       }
-      // Mark the container once the cohort has actually been drawn, so acceptance screenshots and
-      // tests can wait for a painted map instead of guessing at a delay.
-      map.once("idle", () => containerRef.current?.setAttribute("data-map-ready", "true"));
     };
     if (map.loaded()) {
       apply();
     } else {
       map.once("load", apply);
     }
+    return () => {
+      cancelled = true;
+      map.off("load", apply);
+      if (idleHandler) {
+        map.off("idle", idleHandler);
+      }
+    };
   }, [collectionInput, comparison, module, period, selectedCode]);
 
   return (
