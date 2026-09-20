@@ -6,6 +6,11 @@ os.environ.setdefault(
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("SEED_DEV_DATA", "false")
+# A developer's gitignored live-DHIS2 .env must never make the automated suite contact the
+# network or change default-gate assertions. Individual connector tests opt in with mocks.
+os.environ.setdefault("DHIS2_ENABLED", "false")
+os.environ.setdefault("SYNC_ENABLED", "false")
+os.environ.setdefault("DHIS2_LOGIN_ENABLED", "false")
 # Explicit test-only gates. Production defaults are queue execution and Redis rate limiting.
 os.environ.setdefault("EXPORT_EAGER", "true")
 os.environ.setdefault("RATE_LIMIT_BACKEND", "memory")

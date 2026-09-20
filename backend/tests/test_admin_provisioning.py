@@ -110,3 +110,29 @@ def test_missing_password_without_a_prompt_is_refused(session, monkeypatch):
     session.commit()
     with pytest.raises(SystemExit, match="No password supplied"):
         _run(monkeypatch, session, ["--username", "no.password.admin", "--no-prompt"], password=None)
+
+
+def test_creates_dhis2_administrator_without_storing_the_dhis2_password(session, monkeypatch):
+    for existing in session.scalars(select(User).where(User.is_system_admin.is_(True))).all():
+        existing.is_system_admin = False
+    session.commit()
+    monkeypatch.setattr(get_settings(), "dhis2_enabled", True)
+    monkeypatch.setattr(get_settings(), "dhis2_login_enabled", True)
+    monkeypatch.setattr(get_settings(), "dhis2_base_url", "https://hmis.health.go.ug")
+    monkeypatch.setattr(get_settings(), "dhis2_username", "service.user")
+    monkeypatch.setattr(get_settings(), "dhis2_password", "service-secret")
+    supplied = "this-value-must-never-be-stored"
+
+    code = _run(
+        monkeypatch,
+        session,
+        ["--username", "real.dhis2.user", "--identity-provider", "dhis2", "--no-prompt"],
+        password=supplied,
+    )
+
+    assert code == 0
+    user = session.scalar(select(User).where(User.username == "real.dhis2.user"))
+    assert user is not None
+    assert user.identity_provider == "dhis2"
+    assert user.external_subject is None
+    assert not verify_password(supplied, user.password_hash)

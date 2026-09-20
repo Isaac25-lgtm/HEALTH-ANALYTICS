@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -343,6 +345,27 @@ def test_enabling_dhis2_without_complete_configuration_fails_closed(overrides, e
     assert any(expected in error for error in errors), errors
 
 
+def test_base64_dhis2_password_transport_decodes_and_invalid_input_fails_closed():
+    password = "arbitrary ${ROTATED} # secret"
+    encoded = base64.b64encode(password.encode("utf-8")).decode("ascii")
+    configured = _production(
+        dhis2_enabled=True,
+        dhis2_base_url="https://hmis.health.go.ug",
+        dhis2_username="authorised.user",
+        dhis2_password_b64=encoded,
+    )
+    assert configured.effective_dhis2_password == password
+    assert not [error for error in validate_runtime_settings(configured) if "DHIS2" in error]
+
+    invalid = _production(
+        dhis2_enabled=True,
+        dhis2_base_url="https://hmis.health.go.ug",
+        dhis2_username="authorised.user",
+        dhis2_password_b64="not-valid-base64!",
+    )
+    assert "DHIS2_PASSWORD_B64 is invalid." in validate_runtime_settings(invalid)
+
+
 def test_prepared_dhis2_commands_contact_nothing_while_disabled(monkeypatch, capsys):
     import json as json_module
 
@@ -364,3 +387,45 @@ def test_prepared_dhis2_commands_contact_nothing_while_disabled(monkeypatch, cap
     assert discovery["http_methods"] == ["GET"]
     assert discovery["credentials_in_output"] is False
     assert discovery["page_size"] <= get_settings().dhis2_page_size
+
+
+def test_enabled_refresh_enqueues_only_mapped_recent_periods(session, monkeypatch, capsys):
+    import json as json_module
+
+    from app.models import OrgUnitMapping, Programme, SourceMapping, SyncJob
+    from scripts import dhis2_refresh
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "dhis2_enabled", True)
+    monkeypatch.setattr(settings, "sync_enabled", True)
+    monkeypatch.setattr(settings, "dhis2_base_url", "https://hmis.health.go.ug")
+    monkeypatch.setattr(settings, "dhis2_username", "configured-user")
+    monkeypatch.setattr(settings, "dhis2_password", "configured-secret")
+    programme = session.scalar(select(Programme).where(Programme.code == "MNCH"))
+    root = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
+    session.add(
+        SourceMapping(
+            internal_source_key="ANC1",
+            programme_id=programme.id,
+            dhis2_item_uid="APPROVED_UID",
+            mapping_version="approved-v1",
+            enabled=True,
+        )
+    )
+    session.add(OrgUnitMapping(org_unit_id=root.id, source_system="dhis2", external_uid="APPROVED_UG_UID"))
+    session.commit()
+    dispatched = []
+    monkeypatch.setattr(dhis2_refresh, "get_session_factory", lambda: lambda: session)
+    monkeypatch.setattr(dhis2_refresh, "should_run_eager", lambda: False)
+    monkeypatch.setattr(dhis2_refresh, "dispatch_sync_job", lambda job_id: dispatched.append(job_id))
+
+    assert dhis2_refresh.main(["--scheduled", "--json"]) == 0
+
+    report = json_module.loads(capsys.readouterr().out)
+    jobs = list(session.scalars(select(SyncJob)).all())
+    assert report["mode"] == "executed"
+    assert report["closed_periods_refreshed"] is False
+    assert report["job_count"] == len(dhis2_refresh._recent_periods(datetime.now(UTC).date()))
+    assert len(dispatched) == len(jobs) == report["job_count"]
+    assert {job.programme_id for job in jobs} == {programme.id}
+    assert {job.mapping_version for job in jobs} == {"approved-v1"}

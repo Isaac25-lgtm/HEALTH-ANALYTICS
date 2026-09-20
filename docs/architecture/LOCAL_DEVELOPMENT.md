@@ -1,5 +1,37 @@
 # Local development and tests
 
+## Persistent live-DHIS2 local UAT
+
+Do not use `scripts/run_e2e_api.py` for live work; it deliberately recreates SQLite and seeds
+synthetic users and observations. Configure the persistent PostgreSQL-backed local environment
+interactively instead:
+
+```powershell
+cd backend
+python scripts/configure_live_local.py --dhis2-username <provisioned-dhis2-user>
+python -m alembic upgrade head
+python scripts/bootstrap_reference_data.py
+python scripts/create_initial_admin.py --username <same-user> --identity-provider dhis2 --no-prompt
+python scripts/dhis2_discovery.py --resource me --resource system-info --confirm-network-access --out .local/dhis2/capability.json
+```
+
+The setup command reads both passwords without echo and writes them only to the root `.env`, which
+Git ignores. It creates no synthetic geography, mappings, population or performance values. Rotate
+any credential disclosed in a transcript before hosted use. Discovery proves connectivity only;
+source and organisation-unit mappings still require review before the first bounded sync.
+
+Additional real staff must be pre-provisioned with explicit HPIP authorisation before they can
+sign in with their DHIS2 credentials. Their password is not supplied to this command:
+
+```powershell
+cd backend
+python scripts/provision_dhis2_user.py --username district.user --display-name "District User" --role district_mch_focal --org-unit-code PADER --programme MNCH
+```
+
+The organisation unit must already be in the approved HPIP hierarchy. Repeat `--role`,
+`--org-unit-code`, or `--programme` when needed. MPDSR requires the additional
+`--allow-sensitive-mpdsr` acknowledgement; this command cannot grant system administration.
+
 ## Prerequisites
 
 - Python 3.12
@@ -41,7 +73,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. The login form is blank; sign in with a synthetic user above. The browser calls the same-origin `/api/*` path and Next.js proxies it to `BACKEND_INTERNAL_URL` (default `http://127.0.0.1:8000`), so cookies always belong to the page's own origin.
+Open `http://localhost:3000`. The login form is blank. A synthetic development run uses the explicitly seeded test users; persistent live-DHIS2 UAT uses an explicitly pre-provisioned DHIS2 identity. Unknown DHIS2 accounts are never auto-created. The browser calls the same-origin `/api/*` path and Next.js proxies it to `BACKEND_INTERNAL_URL` (default `http://127.0.0.1:8000`), so cookies always belong to the page's own origin.
 
 Local development without Redis must opt in explicitly in `.env`: `RATE_LIMIT_BACKEND=memory`, `EXPORT_EAGER=true`, `SYNC_EXECUTION=eager`. With a local Redis, set the broker URLs, keep `EXPORT_EAGER=false` and start a worker:
 
@@ -49,7 +81,7 @@ Local development without Redis must opt in explicitly in `.env`: `RATE_LIMIT_BA
 celery --app=app.workers.celery_app:celery_app worker --queues=exports,sync,maintenance --pool=solo
 ```
 
-DHIS2 is switched off (`DHIS2_ENABLED=false`). Sync jobs fail with `dhis2_not_configured`; that is expected and no live call is made.
+For isolated tests, DHIS2 stays off and sync jobs fail with `dhis2_not_configured`. The interactive live-UAT setup at the top of this document enables DHIS2 and never seeds fabricated observations.
 
 ## Tests
 

@@ -31,6 +31,7 @@ class Dhis2HttpClient:
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        basic_auth: tuple[str, str] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._sleep = sleep or time.sleep
@@ -39,10 +40,12 @@ class Dhis2HttpClient:
         self._owns_client = True
         auth: httpx.Auth | None = None
         headers = {"Accept": "application/json"}
-        if self.settings.dhis2_auth_method == "pat" and self.settings.dhis2_pat:
+        if basic_auth is not None:
+            auth = httpx.BasicAuth(*basic_auth)
+        elif self.settings.dhis2_auth_method == "pat" and self.settings.dhis2_pat:
             headers["Authorization"] = f"ApiToken {self.settings.dhis2_pat}"
         elif self.settings.dhis2_username:
-            auth = httpx.BasicAuth(self.settings.dhis2_username, self.settings.dhis2_password)
+            auth = httpx.BasicAuth(self.settings.dhis2_username, self.settings.effective_dhis2_password)
         self._client = httpx.Client(
             base_url=self.settings.dhis2_base_url.rstrip("/"),
             auth=auth,
@@ -51,6 +54,7 @@ class Dhis2HttpClient:
             transport=transport,
             follow_redirects=True,
         )
+        self._has_basic_auth_override = basic_auth is not None
 
     def __enter__(self) -> Dhis2HttpClient:
         return self
@@ -71,6 +75,7 @@ class Dhis2HttpClient:
             self.settings.dhis2_base_url
             and (
                 (self.settings.dhis2_auth_method == "pat" and self.settings.dhis2_pat)
+                or self._has_basic_auth_override
                 or self.settings.dhis2_username
             )
         )

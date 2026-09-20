@@ -12,8 +12,9 @@
 #   hpip-redis   Key Value instance: broker, results and distributed rate limiting.
 #   hpip-purge   daily retention job, the same purge service as the Celery maintenance task.
 #
-# Not included in the initial UAT topology: a scheduled DHIS2 refresh. DHIS2 is not authorised
-# and the command could do nothing; docs/DEPLOYMENT.md shows how to add it later.
+# Not included in the initial UAT topology: a scheduled DHIS2 refresh. Live use is authorised,
+# but the rotated hosted secret and approved mappings are not present yet; docs/DEPLOYMENT.md
+# shows how to add the six-hour cron after those gates pass.
 #
 # PostgreSQL is Neon (external). No Render PostgreSQL is provisioned.
 #

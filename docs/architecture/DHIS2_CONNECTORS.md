@@ -46,7 +46,7 @@ If `DHIS2_BASE_URL` and credentials are absent, connectors raise `Dhis2NotConfig
 
 Error messages do not include credentials or sensitive query parameters.
 
-`GET /ready` reports `dhis2: not_configured` or `configured_unverified`. DHIS2 unavailability does not mark the process unhealthy when the database is available.
+`GET /ready` reports `dhis2: disabled`, `enabled_not_configured`, or `configured_unverified`. DHIS2 unavailability does not mark the process unhealthy when the database is available.
 
 ## Adapter contract
 
@@ -62,6 +62,8 @@ Current raw-aggregate uniqueness includes source system, org unit, period, sourc
 
 ## Live verification
 
-The DHIS2 base host is `https://hmis.health.go.ug` (D-049), configured through `DHIS2_BASE_URL`. The host is known; the authentication method, credentials, metadata mappings and authenticated capability remain unverified, and `DHIS2_ENABLED` defaults to false. Prepared, inert tooling: `scripts/dhis2_discovery.py` (read-only metadata proposals, GET only, bounded, refuses while disabled and without `--confirm-network-access`) and `scripts/dhis2_refresh.py` (six-hourly recent-period refresh entry point; exits without network access while disabled).
+The DHIS2 base host is `https://hmis.health.go.ug` (D-049/D-050), configured through `DHIS2_BASE_URL`. `scripts/dhis2_discovery.py` performs bounded, GET-only metadata discovery only with `--confirm-network-access`; it writes an unapplied proposal and fails non-zero if the page cap truncates a resource. `scripts/dhis2_refresh.py` stays inert while disabled, fails closed without approved source and organisation-unit mappings, and otherwise enqueues only recent/open aggregate periods. Closed historical periods are not swept continuously.
 
-**Status:** Connector implementation complete; live DHIS2 verification pending authorised endpoint configuration and credentials.
+Pre-provisioned users with `identity_provider=dhis2` may authenticate through `/api/me` when `DHIS2_LOGIN_ENABLED=true`. The submitted password exists only for the outbound authentication request and is never written to PostgreSQL or audit logs. Successful identity verification does not grant access: HPIP's local geography, programme and action scopes remain authoritative.
+
+**Status:** Live use and local configuration are authorised. Authenticated capability, metadata mappings and the first bounded synchronisation remain unverified because this agent sandbox was denied outbound socket access before HTTP.

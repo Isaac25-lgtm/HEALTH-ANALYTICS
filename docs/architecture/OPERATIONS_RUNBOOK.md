@@ -28,7 +28,7 @@ Requires `manage_sync`. Geography and programme are re-checked. System administr
 
 POST creates a `queued` job and returns **202**. A registered worker task (`app.workers.tasks.execute_sync_job`) performs retrieval and persistence.
 
-- Production: `SYNC_EXECUTION=queue`. Celery must be installed and a worker must consume the `sync` queue. Live sync also requires `DHIS2_ENABLED=true` and `SYNC_ENABLED=true`, both currently false.
+- Production: `SYNC_EXECUTION=queue`. Celery must be installed and a worker must consume the `sync` queue. Live sync also requires `DHIS2_ENABLED=true`, `SYNC_ENABLED=true`, verified credentials and approved source/org-unit mappings.
 - Tests: eager execution when `APP_ENV=test` or `SYNC_EXECUTION=eager`.
 - States: `queued`, `running`, `succeeded`, `partially_succeeded`, `failed`, `cancelled`.
 - Cancellation is checked between pages/batches.
@@ -36,7 +36,7 @@ POST creates a `queued` job and returns **202**. A registered worker task (`app.
 - Duplicate submissions reuse `idempotency_key` for the same user when supplied.
 - Hitting the page cap cannot be presented as complete success.
 
-When DHIS2 is not configured, jobs fail with `dhis2_not_configured` and the pending-verification message. That is expected in this workspace.
+When DHIS2 is not configured, jobs fail with `dhis2_not_configured`. An enabled deployment without approved mappings fails closed with `mapping_missing`; it must never substitute synthetic values.
 
 Inspect:
 
@@ -59,6 +59,19 @@ Quality scan runs after a successful calculation.
 `operational_events` records connector duration, retry count, sync start/end, records received/stored/rejected, and calculation duration. Payloads are redacted.
 
 Do not log passwords, tokens, session secrets, patient names, narratives, or unrestricted MPDSR payloads.
+
+## DHIS2 user provisioning
+
+DHIS2 authentication never implies HPIP authorisation. Provision each ordinary user before first
+login with explicit existing scopes:
+
+```bash
+python scripts/provision_dhis2_user.py --username <exact-dhis2-username> --display-name "<name>" --role <role-code> --org-unit-code <code> --programme MNCH
+```
+
+The command is audited, never accepts a DHIS2 password, refuses duplicate usernames, requires an
+extra acknowledgement for MPDSR, and cannot grant `system_administrator`. On first successful
+login the account binds to the immutable subject returned by DHIS2 `/api/me`.
 
 ## Health
 

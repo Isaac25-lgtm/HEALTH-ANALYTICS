@@ -83,6 +83,12 @@ Recorded from the owner's written execution instruction of 2026-09-14. Engineeri
   enumeration must fail closed; restricted Windows uses a PID/start-time baseline-delta check when
   parent-process enumeration is unavailable.
 
+## Live DHIS2 direction — owner decision, 2026-09-20
+
+| ID | Binding decision | Source / status |
+|---|---|---|
+| D-050 | The operational target is a live connection to `https://hmis.health.go.ug` for real, pre-provisioned users; synthetic data is confined to automated tests and explicitly labelled demonstrations. A user provisioned with `identity_provider=dhis2` authenticates against DHIS2 `/api/me`; HPIP never stores that password and continues to enforce its own geography, programme and action grants. Local UAT uses persistent PostgreSQL, not the disposable E2E SQLite harness. | Owner decision, 2026-09-20 |
+
 ### Engineering implementation choices, corrective pre-UAT pass (2026-09-15; not owner decisions)
 
 - A production reference bootstrap (`scripts/bootstrap_reference_data.py`) creates the approved non-secret configuration after migrations; the neutral country root uses code `UG` with no DHIS2 UID. Conflicting existing rows fail closed.

@@ -1,5 +1,17 @@
 # Context Changelog
 
+## 2026-09-20 — live DHIS2 correction after synthetic-demo mismatch
+
+- Stopped the disposable SQLite demonstration and created a persistent local PostgreSQL control/provenance database with reference configuration only: no synthetic users, geography, mappings, population or performance rows.
+- Added DHIS2-backed sign-in for explicitly provisioned users. Passwords are checked through `/api/me`, never stored, and do not bypass HPIP geography/programme/action grants. Provisioned one owner administrator; MPDSR remains ungranted.
+- Replaced the inert discovery stub with bounded GET-only metadata retrieval and an unapplied proposal document. Page-cap truncation is a non-zero partial result.
+- Replaced the inert scheduled-refresh stub with mapping-gated recent/open-period aggregate jobs. It refuses absent source or organisation-unit mappings and never sweeps closed historical periods.
+- Added `scripts/configure_live_local.py` for interactive secret-safe local PostgreSQL/DHIS2 setup and isolated tests from any developer `.env`.
+- Added operator-controlled provisioning for additional DHIS2-authenticated staff. Every account requires explicit existing role, geography and programme scopes; passwords are never supplied or stored, MPDSR requires a separate acknowledgement, and the command cannot create another system administrator.
+- Stopped the disposable end-to-end API from inheriting a developer's live DHIS2 `.env`. It now forces the DHIS2, login and sync gates false and clears the base URL and credentials before `app.config` is imported, so the synthetic harness cannot hold real credentials or reach the live instance through a sync job.
+- Live capability check, authorised as read-only: `scripts/dhis2_discovery.py --resource me --confirm-network-access` authenticated against `https://hmis.health.go.ug` and returned the expected account with 138 authorities and no `ALL`. The output stayed an unapplied proposal (`applied: false`, `approval_required: true`). Nothing was written to DHIS2, no historical sync ran, no line lists were retrieved and no mapping was applied. An earlier attempt returned `dhis2_transient` and succeeded on retry; metadata correctness, mappings and synchronisation remain unverified.
+- Verification on this pass: backend SQLite **786 passed, 32 environment-gated skips**; backend PostgreSQL 18 on the disposable port-55432 cluster **816 passed, 2 Redis skips** (11m31s), cluster stopped and the port confirmed free; Ruff clean; frontend typecheck and ESLint clean; Vitest **109 passed** across 9 files; `npm run build` succeeded; `npm run e2e` **24 expected, 0 unexpected, 0 skipped, 0 flaky**, every gate process exited by itself and ports 3000/8010 were released. The first gate attempt failed only because Playwright's managed Chromium 1243 is not cached on this workstation; it passes through `HPIP_BROWSER_EXECUTABLE` with installed Chrome, which remains an open item.
+
 ## 2026-09-20 — Demonstration and map-evidence audit correction
 
 An independent audit rejected the word "perfect" for the 2026-09-18 pass and reproduced four

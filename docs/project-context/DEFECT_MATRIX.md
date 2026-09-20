@@ -1,5 +1,16 @@
 # Corrective defect matrix — 2026-09-12
 
+## Live-DHIS2 correction — 2026-09-20
+
+| Area | Defect | Correction | Verification |
+|---|---|---|---|
+| Live runtime | Localhost was launched with `run_e2e_api.py`, disposable SQLite and fabricated observations even though the owner required live DHIS2 | Synthetic fixture is test-only; persistent PostgreSQL live-UAT setup added and demo processes stopped | Database inspection: one neutral country root, one DHIS2-backed admin, zero raw values/mappings/populations |
+| Authentication | Real DHIS2 users could not sign in because login supported local password hashes only | Pre-provisioned `identity_provider=dhis2` users authenticate through bounded `/api/me`; subject binds once; local grants remain authoritative | DHIS2 login regression tests: success, subject mismatch and outage paths |
+| User provisioning | Only the first administrator could be created; additional real DHIS2 staff had no controlled provisioning path | Added an audited CLI requiring explicit active role, geography and programme scopes; no password input/storage; MPDSR acknowledgement required; system administration refused | `test_dhis2_user_provisioning.py`: four provisioning, duplicate and privilege-boundary regressions |
+| Discovery | `--confirm-network-access` still returned `not_executed` | Implemented bounded paginated metadata GET and unapplied proposal output | Complete and page-cap partial tests |
+| Scheduled sync | Enabled refresh command was an intentional no-op | Enqueues recent/open aggregate jobs only after both source and org-unit mappings exist | Disabled-inert and enabled-mapped scheduler tests |
+| E2E isolation | The disposable synthetic API inherited the developer's live `.env`, so a seeded harness ran with `DHIS2_ENABLED`, `DHIS2_LOGIN_ENABLED` and `SYNC_ENABLED` true and held real credentials | `run_e2e_api.py` forces those gates false and clears the base URL and credentials before `app.config` is imported | `test_live_local_config.py` asserts the gates and cleared credentials appear in the pre-import preamble and are not overridable |
+
 Status is evidence-based. Passing prior tests did not close these defects.
 
 | Requirement | Previous failure | Root cause | Files changed | Regression | Final result |

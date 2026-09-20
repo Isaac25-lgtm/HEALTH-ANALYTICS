@@ -1,3 +1,5 @@
+import base64
+import binascii
 from functools import lru_cache
 
 from pydantic import Field, field_validator
@@ -70,9 +72,17 @@ class Settings(BaseSettings):
     # synchronisation are still missing. Both switches must be set explicitly to enable them.
     dhis2_enabled: bool = False
     sync_enabled: bool = False
+    # When enabled, users provisioned with identity_provider="dhis2" authenticate against
+    # DHIS2 /me. Their password is used for that single request and is never stored by HPIP.
+    # Local HPIP geography/programme/action grants remain authoritative for authorisation.
+    dhis2_login_enabled: bool = False
     dhis2_base_url: str = ""
     dhis2_username: str = ""
     dhis2_password: str = ""
+    # Optional base64 transport for local dotenv files. This is not encryption; it prevents
+    # python-dotenv from expanding `${...}` inside an arbitrary password. Secret-store deployments
+    # should continue to provide DHIS2_PASSWORD directly.
+    dhis2_password_b64: str = ""
     dhis2_pat: str = ""
     dhis2_auth_method: str = "basic"
     dhis2_api_path_prefix: str = "/api"
@@ -212,6 +222,17 @@ class Settings(BaseSettings):
     def undated_formula_fallback_permitted(self) -> bool:
         return self.undated_formula_policy in {"explicitly_enabled", "development_default"}
 
+    @property
+    def effective_dhis2_password(self) -> str:
+        if self.dhis2_password:
+            return self.dhis2_password
+        if not self.dhis2_password_b64:
+            return ""
+        try:
+            return base64.b64decode(self.dhis2_password_b64, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return ""
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -234,8 +255,10 @@ def validate_runtime_settings(settings: Settings) -> list[str]:
         errors.append("DATABASE_URL must be PostgreSQL in staging/production.")
     if settings.is_production and settings.ai_enabled and not settings.ai_api_key:
         errors.append("AI_API_KEY is required when AI_ENABLED is true.")
-    if settings.dhis2_password and "dhis2_password" in settings.dhis2_password.lower():
+    if settings.effective_dhis2_password and "dhis2_password" in settings.effective_dhis2_password.lower():
         errors.append("DHIS2_PASSWORD appears to be a placeholder.")
+    if settings.dhis2_password_b64 and not settings.effective_dhis2_password:
+        errors.append("DHIS2_PASSWORD_B64 is invalid.")
     if settings.is_production and settings.sync_execution != "queue":
         errors.append("SYNC_EXECUTION must be queue in staging/production.")
     if settings.is_production and not settings.auth_cookie_secure:
@@ -271,13 +294,15 @@ def dhis2_configuration_errors(settings: Settings) -> list[str]:
     if not settings.dhis2_enabled:
         if settings.sync_enabled:
             errors.append("SYNC_ENABLED requires DHIS2_ENABLED.")
+        if settings.dhis2_login_enabled:
+            errors.append("DHIS2_LOGIN_ENABLED requires DHIS2_ENABLED.")
         return errors
     if not settings.dhis2_base_url.strip():
         errors.append("DHIS2_BASE_URL is required when DHIS2_ENABLED is true.")
     elif not settings.dhis2_base_url.startswith("https://"):
         errors.append("DHIS2_BASE_URL must be HTTPS when DHIS2_ENABLED is true.")
     method = settings.dhis2_auth_method.strip().lower()
-    if method == "basic" and not (settings.dhis2_username and settings.dhis2_password):
+    if method == "basic" and not (settings.dhis2_username and settings.effective_dhis2_password):
         errors.append("DHIS2 basic authentication requires DHIS2_USERNAME and DHIS2_PASSWORD.")
     if method in {"pat", "token"} and not settings.dhis2_pat:
         errors.append("DHIS2 token authentication requires DHIS2_PAT.")

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -76,6 +77,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--display-name", help="Full name shown in the interface.")
     parser.add_argument("--email")
     parser.add_argument(
+        "--identity-provider",
+        choices=("local", "dhis2"),
+        default="local",
+        help="Use a local HPIP password or authenticate this pre-provisioned account through DHIS2.",
+    )
+    parser.add_argument(
         "--org-unit-code",
         default=ROOT_ORG_UNIT_CODE,
         help=f"Geography scope (defaults to the country root {ROOT_ORG_UNIT_CODE}).",
@@ -103,8 +110,16 @@ def main(argv: list[str] | None = None) -> int:
         if session.scalar(select(User).where(User.username == args.username)) is not None:
             print("That username is already taken; nothing was created.")
             return 2
-        password = _password(prompt=not args.no_prompt)
-        _check_password(password)
+        if args.identity_provider == "local":
+            password = _password(prompt=not args.no_prompt)
+            _check_password(password)
+        else:
+            if not settings.dhis2_login_enabled:
+                print("Refusing: DHIS2_LOGIN_ENABLED must be true before provisioning a DHIS2 administrator.")
+                return 2
+            # The non-null legacy column receives an unguessable hash that can never be used for
+            # login. The user's real DHIS2 password is verified remotely and is never stored.
+            password = secrets.token_urlsafe(48)
         role = session.scalar(select(Role).where(Role.code == "system_administrator"))
         if role is None:
             print(
@@ -126,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             password_hash=hash_password(password),
             is_active=True,
             is_system_admin=True,
-            identity_provider="local",
+            identity_provider=args.identity_provider,
         )
         session.add(user)
         session.flush()

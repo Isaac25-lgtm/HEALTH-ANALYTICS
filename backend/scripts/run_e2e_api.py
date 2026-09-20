@@ -22,6 +22,19 @@ os.environ["WEB_ORIGIN"] = "http://localhost:3000"
 # Explicit development gates for the disposable end-to-end API (no Redis or worker process).
 os.environ["EXPORT_EAGER"] = "true"
 os.environ["RATE_LIMIT_BACKEND"] = "memory"
+# This harness seeds synthetic users and observations, so it must never inherit a developer's
+# gitignored live-DHIS2 configuration from the repository-root .env: the seeded run would then
+# hold real credentials and could reach the live instance through a sync job. Set, not
+# setdefault, so the disposable API is offline whatever the surrounding environment says.
+os.environ["DHIS2_ENABLED"] = "false"
+os.environ["DHIS2_LOGIN_ENABLED"] = "false"
+os.environ["SYNC_ENABLED"] = "false"
+# Clear the connection details too, so the synthetic process cannot reach the live instance even
+# if a future code path forgets to check the gates above.
+os.environ["DHIS2_BASE_URL"] = ""
+os.environ["DHIS2_USERNAME"] = ""
+os.environ["DHIS2_PASSWORD"] = ""
+os.environ["DHIS2_PASSWORD_B64"] = ""
 os.environ.setdefault("EXPORT_DIR", str(ROOT / "e2e_export_artifacts"))
 
 from alembic import command  # noqa: E402

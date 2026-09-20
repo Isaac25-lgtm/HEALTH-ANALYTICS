@@ -1,6 +1,6 @@
 # Deployment — Render + Neon UAT
 
-This runbook prepares a small, secure UAT deployment for about 100 light users (decisions D-042 to D-049). **Nothing described here has been deployed**, no Neon database has been connected, `render.yaml` has **not** been validated by Render's Blueprint validator or CLI, and live DHIS2 is not authorised. Passing tests is not owner acceptance.
+This runbook prepares a small, secure UAT deployment for about 100 light users (decisions D-042 to D-050). **Nothing described here has been deployed**, no Neon database has been connected, and `render.yaml` has **not** been validated by Render's Blueprint validator or CLI. Live DHIS2 use is authorised, but authenticated capability and metadata mappings are not yet verified. Passing tests is not owner acceptance.
 
 ## Topology
 
@@ -13,7 +13,7 @@ This runbook prepares a small, secure UAT deployment for about 100 light users (
 | `hpip-purge` | Cron job | Daily 01:30 UTC: `python scripts/purge_expired.py --source scheduler --max-attempts 3 --retry-delay-seconds 120`. |
 | PostgreSQL | **Neon** (external) | No Render PostgreSQL is provisioned. |
 
-A scheduled DHIS2 refresh is **not** in the initial Blueprint: DHIS2 is not authorised and the command could do nothing, so it would only add cost. When DHIS2 is authorised, add a cron such as:
+A scheduled DHIS2 refresh is **not** in the initial Blueprint until authenticated access and approved source/org-unit mappings are verified. The command now fails closed without those mappings. After that approval, add a cron such as:
 
 ```yaml
   - type: cron
@@ -65,7 +65,7 @@ Never paste a connection string into the repository, an issue or a log. Configur
 
 1. Create a Blueprint from `render.yaml`. Render prompts once for each `sync: false` value on `hpip-api`; enter the values from the table above.
 2. After the first deploy, open `hpip-api` → Connect and confirm its private hostname; set `ALLOWED_HOSTS` to it if the prompt was filled with a guess, then redeploy. Proxied requests are rejected with 400 until the host matches.
-3. Leave `DHIS2_ENABLED`, `SYNC_ENABLED` and `AI_ENABLED` false.
+3. Leave `AI_ENABLED` false. Keep `DHIS2_ENABLED` and `SYNC_ENABLED` false only until rotated secrets, the capability check and approved metadata mappings are present; then enable them together and add the refresh cron.
 
 Check Render's current Blueprint specification for plan names, `pserv` pre-deploy support, Key Value naming and cron behaviour before relying on them.
 
@@ -87,6 +87,8 @@ python scripts/create_initial_admin.py --username <name> --display-name "<full n
 ```
 
 No default username or password. The password is read from a prompt (or `HPIP_ADMIN_PASSWORD`), never printed, and the command is audited and idempotent. The administrator is scoped to `UG`; MPDSR programme access is not granted automatically.
+
+For a pre-provisioned DHIS2 identity, use `--identity-provider dhis2 --no-prompt`. Its DHIS2 password is checked only during sign-in and is never stored by HPIP.
 
 ### Checks after release
 

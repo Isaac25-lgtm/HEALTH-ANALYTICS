@@ -10,7 +10,7 @@ Same-origin browser authentication uses an **HTTP-only session cookie**. The raw
 
 ```
 POST /auth/login
-{ "username": "national.analyst", "password": "<SEED_PASSWORD>" }
+{ "username": "<provisioned-user>", "password": "<password>" }
 → { "ok": true, "csrf_token": "..." }
 Set-Cookie: hpip_session=<JWT>; HttpOnly; SameSite=Lax; Secure in production
 Set-Cookie: hpip_csrf=<csrf>; SameSite=Lax; readable by the frontend
@@ -22,10 +22,16 @@ Set-Cookie: hpip_csrf=<csrf>; SameSite=Lax; readable by the frontend
 - Login is length-checked and throttled (`login_attempts` / `LOGIN_MAX_ATTEMPTS`).
 - Default access lifetime is `AUTH_TOKEN_TTL_MINUTES` (120). Renewal is a fresh login in this phase; a refresh-token flow is not implemented.
 - Passwords and tokens are not written to logs.
+- Users with `identity_provider=dhis2` are pre-provisioned in HPIP, then their submitted password is
+  checked against DHIS2 `/api/me` for that request only. HPIP stores the returned immutable subject,
+  not the password. Local HPIP grants remain authoritative after authentication.
+- Ordinary staff are provisioned with `scripts/provision_dhis2_user.py`, which requires explicit
+  existing role, geography and programme scopes. It refuses implicit MPDSR access and cannot create
+  a system administrator. Unknown DHIS2 users are never auto-created during login.
 
 Bearer tokens in browser storage are not used. Tests send the CSRF header; the TestClient carries the HTTP-only cookie.
 
-These users must be replaced by the approved identity provider. They are synthetic and isolated from production configuration.
+Synthetic seeded users exist only in the explicit development/test fixture. They are not created by the production reference bootstrap or the persistent live-UAT setup.
 
 ## Current context
 

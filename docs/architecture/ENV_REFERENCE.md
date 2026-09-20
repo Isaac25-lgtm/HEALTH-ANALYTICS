@@ -24,8 +24,10 @@ All values below are placeholders. Do not commit real secrets. Copy `.env.exampl
 | `SEED_PASSWORD` | Password for synthetic development users |
 | `WEB_ORIGIN` | Allowed CORS origin for the frontend |
 | `DHIS2_ENABLED` / `SYNC_ENABLED` | Both default false. While false, discovery and refresh commands contact nothing and readiness reports DHIS2 as `disabled`. Enabling without complete configuration is a blocking error. |
-| `DHIS2_BASE_URL` | Known host `https://hmis.health.go.ug` (D-049). Credentials, mappings and live access are not verified. |
+| `DHIS2_LOGIN_ENABLED` | Allows only users pre-provisioned with `identity_provider=dhis2` to authenticate through `/api/me`; HPIP scopes still govern access and the password is not stored. Requires `DHIS2_ENABLED=true`. |
+| `DHIS2_BASE_URL` | Known host `https://hmis.health.go.ug` (D-049/D-050). Live use is authorised; authenticated capability and mappings remain to be verified from a network-permitted host. |
 | `DHIS2_USERNAME` / `DHIS2_PASSWORD` | Basic-auth credentials when `DHIS2_AUTH_METHOD=basic` |
+| `DHIS2_PASSWORD_B64` | Optional local-dotenv transport that avoids `${...}` interpolation. It is encoding, not encryption; keep it secret. Direct `DHIS2_PASSWORD` takes precedence. |
 | `DHIS2_PAT` | Personal access token when `DHIS2_AUTH_METHOD=pat` |
 | `DHIS2_AUTH_METHOD` | `basic` or `pat` |
 | `DHIS2_API_PATH_PREFIX` | Version-compatible API prefix, default `/api` |

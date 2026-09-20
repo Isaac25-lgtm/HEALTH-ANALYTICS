@@ -12,6 +12,7 @@ _SECRET_KEYS = {
     "api_key",
     "secret",
     "dhis2_password",
+    "dhis2_password_b64",
     "pat",
 }
 _SENSITIVE_FIELD_RE = re.compile(
