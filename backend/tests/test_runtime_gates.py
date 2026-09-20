@@ -403,15 +403,20 @@ def test_enabled_refresh_enqueues_only_mapped_recent_periods(session, monkeypatc
     monkeypatch.setattr(settings, "dhis2_password", "configured-secret")
     programme = session.scalar(select(Programme).where(Programme.code == "MNCH"))
     root = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
-    session.add(
-        SourceMapping(
-            internal_source_key="ANC1",
-            programme_id=programme.id,
-            dhis2_item_uid="APPROVED_UID",
-            mapping_version="approved-v1",
-            enabled=True,
+    # The scheduler now requires the mapping set to cover every source key the programme's
+    # formulas depend on, so mapping ANC1 alone would (correctly) block the refresh.
+    from app.services.mapping_coverage import required_source_keys
+
+    for index, source_key in enumerate(sorted(required_source_keys("MNCH"))):
+        session.add(
+            SourceMapping(
+                internal_source_key=source_key,
+                programme_id=programme.id,
+                dhis2_item_uid=f"APPROVED_UID_{index}",
+                mapping_version="approved-v1",
+                enabled=True,
+            )
         )
-    )
     session.add(OrgUnitMapping(org_unit_id=root.id, source_system="dhis2", external_uid="APPROVED_UG_UID"))
     session.commit()
     dispatched = []

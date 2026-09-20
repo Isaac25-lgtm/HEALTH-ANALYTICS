@@ -34,7 +34,19 @@ from app.integrations.dhis2.http import Dhis2HttpClient  # noqa: E402
 
 # Read-only metadata endpoints, with the fields discovery needs and nothing more.
 RESOURCES: dict[str, dict] = {
-    "me": {"path": "/me", "fields": "id,username,displayName,authorities", "singleton": True},
+    # A successful sign-in proves identity only. The organisation-unit scopes below decide whether
+    # this account can read national aggregate data, so discovery must report them explicitly
+    # rather than letting a district-limited account look like national capability.
+    "me": {
+        "path": "/me",
+        "fields": (
+            "id,username,displayName,authorities,"
+            "organisationUnits[id,code,name,level,path],"
+            "dataViewOrganisationUnits[id,code,name,level,path],"
+            "teiSearchOrganisationUnits[id,code,name,level,path]"
+        ),
+        "singleton": True,
+    },
     "system-info": {"path": "/system/info", "fields": None},
     "org-unit-levels": {
         "path": "/organisationUnitLevels",
@@ -101,23 +113,40 @@ def _fetch_resource(
     name: str,
     page_size: int,
     max_pages: int,
+    extra_params: dict[str, object] | None = None,
 ) -> dict:
+    """Retrieve one metadata resource completely, or report honestly that it did not.
+
+    A resource that stops at ``max_pages`` while the server reports more pages is ``truncated``:
+    the caller must treat the whole proposal as incomplete rather than mapping from a partial
+    list. ``total`` is the server's own count, so truncation can be quantified.
+    """
     spec = RESOURCES[name]
     path = f"{api_prefix.rstrip('/')}{spec['path']}"
     fields = spec.get("fields")
     if spec.get("singleton") or "collection" not in spec:
-        params = {"fields": fields} if fields else None
-        return {"items": [client.get_json(path, params=params)], "pages": 1, "truncated": False}
+        params = dict(extra_params or {})
+        if fields:
+            params["fields"] = fields
+        return {
+            "items": [client.get_json(path, params=params or None)],
+            "pages": 1,
+            "truncated": False,
+            "total": 1,
+        }
 
     collection = str(spec["collection"])
     items: list[dict] = []
     page = 1
     fetched_pages = 0
     truncated = False
+    page_count = 1
+    total: int | None = None
     while page <= max_pages:
         params: dict[str, object] = {"page": page, "pageSize": page_size, "paging": "true"}
         if fields:
             params["fields"] = fields
+        params.update(extra_params or {})
         payload = client.get_json(path, params=params)
         rows = payload.get(collection)
         if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
@@ -126,14 +155,30 @@ def _fetch_resource(
         fetched_pages += 1
         pager = payload.get("pager") if isinstance(payload.get("pager"), dict) else {}
         page_count = int(pager.get("pageCount") or page)
+        if pager.get("total") is not None:
+            total = int(pager["total"])
         if page >= page_count:
             break
         page += 1
-    else:
+    if fetched_pages < page_count:
         truncated = True
-    if page >= max_pages and page < int((pager or {}).get("pageCount") or page):
+    # Paging through every page is not proof of completeness. A resource can report more rows in
+    # its pager than it actually yields (a shifting result set, or rows filtered out per page), so
+    # the retrieved count is compared against the server's own total as well.
+    if total is not None and len(items) < total:
         truncated = True
-    return {"items": items, "pages": fetched_pages, "truncated": truncated}
+    return {
+        "items": items,
+        "pages": fetched_pages,
+        "page_count": page_count,
+        "truncated": truncated,
+        "incomplete_reason": (
+            f"retrieved {len(items)} of {total} rows reported by the server"
+            if total is not None and len(items) < total
+            else None
+        ),
+        "total": total if total is not None else len(items),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,6 +186,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resource", choices=sorted(RESOURCES), action="append")
     parser.add_argument("--page-size", type=int, default=100)
     parser.add_argument("--max-pages", type=int, default=5)
+    parser.add_argument(
+        "--level",
+        type=int,
+        action="append",
+        help="Restrict organisation-unit discovery to these DHIS2 hierarchy levels.",
+    )
+    parser.add_argument(
+        "--all-pages",
+        action="store_true",
+        help=(
+            "Page until the server reports no more pages, up to --max-pages. Required for a "
+            "complete proposal: a truncated resource cannot be mapped from."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument(
         "--confirm-network-access",
@@ -159,8 +218,11 @@ def main(argv: list[str] | None = None) -> int:
         "base_url": settings.dhis2_base_url or "(not configured)",
         "auth_method": settings.dhis2_auth_method,
         "http_methods": ["GET"],
+        # The connector's runtime caps protect scheduled extraction. Discovery is metadata-only,
+        # GET-only and still bounded by the response-size limit and timeout, so an operator may
+        # raise the page bound here to retrieve a resource completely rather than partially.
         "page_size": min(args.page_size, settings.dhis2_page_size),
-        "max_pages": min(args.max_pages, settings.dhis2_max_pages),
+        "max_pages": args.max_pages if args.all_pages else min(args.max_pages, settings.dhis2_max_pages),
         "timeout_seconds": settings.dhis2_timeout_seconds,
         "max_response_bytes": settings.dhis2_max_response_bytes,
         "requests": [
@@ -197,12 +259,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with Dhis2HttpClient(settings) as client:
             for name in resources:
+                extra: dict[str, object] = {}
+                if name == "org-units":
+                    # Metadata visibility is not data-view authority: scope the hierarchy to what
+                    # this account may actually read, and to the requested levels only.
+                    # `userDataViewOnly` returns only the scope roots themselves, so it cannot
+                    # enumerate a hierarchy; `withinUserDataViewHierarchy` returns the units
+                    # beneath those roots, which is the account's real analytics reach.
+                    extra["withinUserDataViewHierarchy"] = "true"
+                    if args.level:
+                        extra["filter"] = [f"level:in:[{','.join(str(v) for v in sorted(set(args.level)))}]"]
                 proposal["resources"][name] = _fetch_resource(
                     client,
                     api_prefix=settings.dhis2_api_path_prefix,
                     name=name,
                     page_size=plan["page_size"],
                     max_pages=plan["max_pages"],
+                    extra_params=extra,
                 )
     except Dhis2Error as exc:
         print(json.dumps({**plan, "mode": "failed", "error_code": exc.code, "error": exc.message}, indent=2))
@@ -214,6 +287,12 @@ def main(argv: list[str] | None = None) -> int:
         "output": str(args.out) if args.out else "stdout",
         "resource_counts": {
             name: len(result["items"]) for name, result in proposal["resources"].items()
+        },
+        "server_totals": {
+            name: result.get("total") for name, result in proposal["resources"].items()
+        },
+        "pages_fetched": {
+            name: result.get("pages") for name, result in proposal["resources"].items()
         },
         "truncated_resources": truncated,
         "credentials_in_output": False,

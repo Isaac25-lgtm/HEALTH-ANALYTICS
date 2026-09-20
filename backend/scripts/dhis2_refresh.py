@@ -2,7 +2,9 @@
 
 The owner's refresh decision is a six-hourly pass over recent, still-open periods, never
 continuous polling and never a repeated sweep of closed historical periods. This command is the
-scheduled entry point for that, and it is wired into render.yaml.
+scheduled entry point for that. It is deliberately NOT wired into render.yaml yet: the
+blueprint omits the six-hour cron until approved mappings exist and a supervised sync has
+passed. docs/DEPLOYMENT.md holds the cron definition to add at that point.
 
 It cannot contact DHIS2 until DHIS2_ENABLED and SYNC_ENABLED are both true, configuration is
 complete, and approved source/org-unit mappings exist. Disabled deployments stay inert. Enabled
@@ -28,6 +30,7 @@ from app.db.session import get_session_factory  # noqa: E402
 from app.domain.enums import ConnectorType, JobStatus  # noqa: E402
 from app.domain.periods import uganda_fy_key  # noqa: E402
 from app.models import OrgUnit, OrgUnitMapping, Programme, SourceMapping, SyncJob  # noqa: E402
+from app.services.mapping_coverage import evaluate_coverage  # noqa: E402
 from app.services.sync import (  # noqa: E402
     SyncDispatchError,
     dispatch_sync_job,
@@ -122,6 +125,28 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(plan, indent=2) if args.json else plan["blocked_reasons"][0])
             return 3
 
+        # A mapping set that does not cover its programme's formulas cannot produce a usable
+        # refresh, so it is reported rather than scheduled.
+        covered_sets = []
+        uncovered = []
+        for programme, mapping_version in mapping_sets:
+            report = evaluate_coverage(
+                session, programme_id=programme.id, mapping_version=mapping_version
+            )
+            if report.complete:
+                covered_sets.append((programme, mapping_version))
+            else:
+                uncovered.append(report.as_dict())
+        if not covered_sets:
+            plan["mode"] = "blocked"
+            plan["coverage"] = uncovered
+            plan["blocked_reasons"] = [
+                "No mapping set covers all source keys required by its programme's formulas."
+            ]
+            print(json.dumps(plan, indent=2) if args.json else plan["blocked_reasons"][0])
+            return 3
+        mapping_sets = covered_sets
+
         now = datetime.now(UTC)
         jobs: list[SyncJob] = []
         new_jobs: list[SyncJob] = []
@@ -171,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         plan.update(
             {
                 "mode": "executed" if failed == 0 else "failed",
+                "coverage_incomplete_sets": uncovered,
                 "mapping_sets": [
                     {"programme": programme.code, "mapping_version": version}
                     for programme, version in mapping_sets

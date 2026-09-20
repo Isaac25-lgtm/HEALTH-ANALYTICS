@@ -5,9 +5,11 @@ from sqlalchemy import false, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, parse_uuid, raise_authz
+from app.config import get_settings
 from app.db.session import get_db
 from app.domain.enums import ActionPermission, ConnectorType, JobStatus
 from app.domain.periods import PeriodError, parse_period
+from app.integrations.dhis2.gates import extraction_blocked_reason
 from app.models import FreshnessSnapshot, Programme, SyncJob, User
 from app.schemas.api import SyncJobRequest, SyncJobResponse
 from app.services.authorization import (
@@ -141,6 +143,16 @@ def create_job(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "unknown_programme", "message": "Programme is not configured."},
+        )
+    # The request is well-formed and authorised; the remaining question is whether this
+    # deployment may contact DHIS2 at all. Fail before a job row exists, so a disabled
+    # deployment never accumulates queued work that can never run.
+    blocked = extraction_blocked_reason(get_settings())
+    if blocked is not None:
+        code, message = blocked
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": code, "message": message},
         )
     job = enqueue_sync_job(
         session,

@@ -39,7 +39,9 @@ app = FastAPI(
     description=(
         "Corrective Phases 1–7: cookie sessions, deterministic calculation, MNCH modules, "
         "committed analytical snapshots, evidence-safe AI, and snapshot-bound publishing. "
-        "Official MoH templates and live DHIS2 remain pending owner inputs."
+        "DHIS2-backed sign-in and read-only metadata discovery are live; aggregate "
+        "extraction awaits approved organisation-unit and source mappings. Official MoH "
+        "templates remain pending owner inputs."
     ),
     lifespan=lifespan,
 )

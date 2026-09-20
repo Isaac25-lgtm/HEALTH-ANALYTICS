@@ -11,9 +11,16 @@ from app.domain.enums import AbsenceReason, ConnectorType, JobStatus, MappingSou
 from app.domain.mpdsr_minimisation import minimise_event_values
 from app.domain.periods import PeriodError, parse_period
 from app.integrations.dhis2.aggregate import AggregateAnalyticsAdapter
-from app.integrations.dhis2.errors import Dhis2Error, Dhis2NotConfiguredError
+from app.integrations.dhis2.errors import (
+    Dhis2Error,
+    Dhis2NotConfiguredError,
+    Dhis2ValidationError,
+)
 from app.integrations.dhis2.event_analytics import EventAnalyticsAdapter
+from app.integrations.dhis2.gates import Dhis2Disabled, ensure_extraction_enabled
 from app.integrations.dhis2.http import Dhis2HttpClient
+from app.integrations.dhis2.periods import covering_internal_period
+from app.integrations.dhis2.periods import translate as translate_period
 from app.integrations.dhis2.tracker import TrackerEventsAdapter
 from app.integrations.dhis2.types import AggregateObservation, EventAggregateObservation, EventObservation
 from app.models import (
@@ -30,6 +37,7 @@ from app.models import (
 )
 from app.services.authorization import AuthorizationError
 from app.services.geography import descendants, resolve_org_unit_by_dhis2_uid, unmapped_dhis2_org_units
+from app.services.mapping_coverage import evaluate_coverage
 from app.services.mappings import (
     MappingSelectionError,
     resolve_programme_uid,
@@ -39,8 +47,8 @@ from app.services.mappings import (
 from app.services.observability import record_operational_event
 
 DHIS2_PENDING_MESSAGE = (
-    "Connector implementation complete; live DHIS2 verification pending "
-    "authorised endpoint configuration and credentials."
+    "DHIS2 is not configured for this deployment: a base URL and credentials are required "
+    "before any extraction can run."
 )
 
 
@@ -256,9 +264,24 @@ def _as_date(value):
         return None
 
 
+class OrgScopeError(RuntimeError):
+    """The request scope could not be proven, so no request may be made."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 def _mapped_org_unit_uids(
     session: Session, org_unit: OrgUnit, as_of=None
 ) -> list[str]:
+    """Every DHIS2 organisation-unit UID this job is entitled to request.
+
+    An empty result is never returned. Previously it produced a request-free job that stored no
+    rows and was then marked succeeded, which is indistinguishable from a genuine "this area
+    reported nothing" result. A scope that cannot be proven is a configuration failure.
+    """
     units = descendants(session, org_unit, include_self=True)
     ids = [unit.id for unit in units]
     query = select(OrgUnitMapping).where(
@@ -266,12 +289,19 @@ def _mapped_org_unit_uids(
         OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
     )
     rows = session.scalars(query).all()
-    return [
+    uids = [
         row.external_uid
         for row in rows
         if (as_of is None or not row.valid_from or row.valid_from <= as_of)
         and (as_of is None or not row.valid_to or row.valid_to >= as_of)
     ]
+    if not uids:
+        raise OrgScopeError(
+            "org_mapping_missing",
+            "No approved DHIS2 organisation-unit mapping covers the requested geography, "
+            "so the request scope cannot be proven.",
+        )
+    return uids
 
 
 def _period_bounds(periods: list[str]) -> tuple[str | None, str | None]:
@@ -346,6 +376,19 @@ def execute_sync_job(session: Session, job_id: UUID, client: Dhis2HttpClient | N
     if job is None:
         raise ValueError("Sync job not found.")
     session.refresh(job)
+    # The gates are rechecked here, not only where the job was created: a queued job may be
+    # executed by a worker long after the operator switched DHIS2 or synchronisation off.
+    # An injected client is a test double and carries its own expectations.
+    if client is None:
+        try:
+            ensure_extraction_enabled(get_settings())
+        except Dhis2Disabled as exc:
+            job.status = JobStatus.FAILED.value
+            job.error_code = exc.code
+            job.error_message = exc.message
+            _finish(job)
+            session.flush()
+            return job
     if job.cancelled or job.status == JobStatus.CANCELLED.value:
         job.status = JobStatus.CANCELLED.value
         _finish(job)
@@ -393,6 +436,21 @@ def execute_sync_job(session: Session, job_id: UUID, client: Dhis2HttpClient | N
         return job
 
 
+def _dominant_semantics(mappings) -> str:
+    """The approved aggregation semantics governing how a period may be retrieved.
+
+    If any mapping in the set is not plainly summable, the whole request takes the monthly route
+    so HPIP applies the approved rule itself rather than inheriting the upstream element's.
+    """
+    values = {
+        str(getattr(row, "aggregation_semantics", "") or "SUM").strip().upper()
+        for row in mappings
+    }
+    if values - {"SUM", "COUNT"}:
+        return "AVERAGE"
+    return "SUM"
+
+
 def _run_aggregate(
     session: Session,
     job: SyncJob,
@@ -427,11 +485,48 @@ def _run_aggregate(
     try:
         adapter = AggregateAnalyticsAdapter(http)
         ou_uids = _mapped_org_unit_uids(session, org_unit, as_of)
-        observations = adapter.fetch(
+        # Internal period keys such as FY2026/27 are HPIP labels that DHIS2 does not recognise.
+        # Translate every requested period, and remember which upstream period each came from so
+        # provenance can show it.
+        translations = [
+            translate_period(
+                period,
+                aggregation_semantics=_dominant_semantics(mappings),
+            )
+            for period in periods
+        ]
+        upstream_periods: list[str] = []
+        for translation in translations:
+            for upstream in translation.dhis2_periods:
+                if upstream not in upstream_periods:
+                    upstream_periods.append(upstream)
+        # Category detail is only returned when some approved mapping actually distinguishes it.
+        wants_coc = any(row.category_option_combo_uid for row in mappings)
+        fetched = adapter.fetch(
             dx_uids=[row.dhis2_item_uid for row in mappings if row.dhis2_item_uid],
             org_unit_uids=ou_uids,
-            periods=periods,
+            periods=upstream_periods,
+            include_category_option_combos=wants_coc,
         )
+        if not fetched.complete:
+            raise Dhis2ValidationError(
+                f"Only {fetched.chunks_succeeded} of {fetched.chunks_requested} analytics chunks "
+                "completed, so the retrieval is partial."
+            )
+        observations = fetched.observations
+        # A response must not carry periods outside what was asked for.
+        unexpected = [
+            observation.period
+            for observation in observations
+            if not any(
+                covering_internal_period(observation.period, translation.internal_key)
+                for translation in translations
+            )
+        ]
+        if unexpected:
+            raise Dhis2ValidationError(
+                f"DHIS2 returned {len(unexpected)} rows for periods outside the requested window."
+            )
         by_uid = {
             (row.dhis2_item_uid, row.category_option_combo_uid or ""): row
             for row in mappings
@@ -446,6 +541,10 @@ def _run_aggregate(
         else:
             job.status = JobStatus.SUCCEEDED.value
         job.source_freshness_at = _oldest_freshness(observations)
+    except OrgScopeError as exc:
+        job.status = JobStatus.FAILED.value
+        job.error_code = exc.code
+        job.error_message = exc.message
     except Dhis2NotConfiguredError:
         job.status = JobStatus.FAILED.value
         job.error_code = "dhis2_not_configured"
@@ -524,6 +623,10 @@ def _run_tracker(
             job.status = JobStatus.PARTIALLY_SUCCEEDED.value
         else:
             job.status = JobStatus.SUCCEEDED.value
+    except OrgScopeError as exc:
+        job.status = JobStatus.FAILED.value
+        job.error_code = exc.code
+        job.error_message = exc.message
     except Dhis2NotConfiguredError:
         job.status = JobStatus.FAILED.value
         job.error_code = "dhis2_not_configured"
@@ -582,6 +685,10 @@ def _run_event_analytics(
             job.status = JobStatus.PARTIALLY_SUCCEEDED.value
         else:
             job.status = JobStatus.SUCCEEDED.value
+    except OrgScopeError as exc:
+        job.status = JobStatus.FAILED.value
+        job.error_code = exc.code
+        job.error_message = exc.message
     except Dhis2NotConfiguredError:
         job.status = JobStatus.FAILED.value
         job.error_code = "dhis2_not_configured"
@@ -657,6 +764,10 @@ def _run_event_analytics_aggregate(
         job.retry_count = http.last_retry_count
         job.status = JobStatus.SUCCEEDED.value if job.rejected_count == 0 else JobStatus.PARTIALLY_SUCCEEDED.value
         job.source_freshness_at = _oldest_freshness(observations)
+    except OrgScopeError as exc:
+        job.status = JobStatus.FAILED.value
+        job.error_code = exc.code
+        job.error_message = exc.message
     except Dhis2NotConfiguredError:
         job.status = JobStatus.FAILED.value
         job.error_code = "dhis2_not_configured"
@@ -853,6 +964,18 @@ def _record_freshness(session: Session, connector: str, job: SyncJob) -> Freshne
         "finished_at": _aware(job.finished_at).isoformat(),
         "error_code": job.error_code,
     }
+    # `status` describes the attempt. Whether the *programme* is actually usable is a separate
+    # question: a set that maps one of forty-eight source keys can sync perfectly and still leave
+    # almost every indicator unresolvable. Recording coverage alongside the attempt keeps both
+    # facts, so nothing downstream can infer programme readiness from a successful job alone.
+    if job.programme_id is not None:
+        report = evaluate_coverage(
+            session,
+            programme_id=job.programme_id,
+            mapping_version=job.mapping_version or "v1",
+        )
+        detail["mapping_coverage"] = report.as_dict()
+        detail["programme_ready"] = bool(report.complete)
     row.detail = detail
     row.status = job.status
     if job.status == JobStatus.SUCCEEDED.value:

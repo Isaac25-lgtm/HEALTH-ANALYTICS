@@ -1,5 +1,48 @@
 # Context Changelog
 
+## 2026-09-20 (later) — live data-plane correction: connector fundamentals and governance proposals
+
+Measured against the live national instance, not assumed. Supporting artifacts are regenerable
+under the gitignored `.local/dhis2/`.
+
+- **Account scope established.** `/api/me` now reports `organisationUnits`,
+  `dataViewOrganisationUnits` and `teiSearchOrganisationUnits`. The configured account captures in
+  Pader District only but its **data-view scope is national** (`MOH - Uganda`, `akV6429SUqu`,
+  `UG256`), so national aggregate reads are possible. A dedicated integration account is still
+  recommended (`OWNER_APPROVAL_PACKET.md` D-A).
+- **Complete metadata discovery.** DHIS2 **2.41.8.1**; analytics tables last built 2026-09-20
+  01:45. Retrieved without truncation: 8,456 data elements, 2,725 indicators, 153 category
+  combos, 16 programmes, 33 programme stages, and the hierarchy at levels 1-3 (1/15/146).
+  Hierarchy counts by level are 1 / 15 / 146 / 178 / 2,206 / 8,787 / 96.
+- **Discovery completeness was over-reported and is fixed.** Paging to the last page was treated
+  as completeness, so a resource yielding fewer rows than its own pager total looked complete.
+  Retrieved counts are now compared against the server total: category option combos report
+  **3,135 of 3,188**, a stable, reproducible shortfall consistent with sharing/ACL filtering.
+- **Period bridge (`app/integrations/dhis2/periods.py`).** `FY2026/27` is an HPIP label that DHIS2
+  rejects; the native identifier is `2026July`. Financial-year quarters map to calendar quarters,
+  halves to `S` periods. Non-summable approved semantics retrieve months and aggregate inside
+  HPIP rather than inheriting the upstream element's rule. Every ISO format was verified against
+  the live `/api/periodTypes`.
+- **Runtime gates (`app/integrations/dhis2/gates.py`).** `DHIS2_ENABLED` and `SYNC_ENABLED` are now
+  enforced by the worker, by `POST /sync/jobs` before a job row is created, and by
+  `Dhis2HttpClient.configured()` so connector construction cannot bypass them.
+- **False success closed.** An empty organisation-mapping set raised no error and produced a
+  succeeded job with zero rows, indistinguishable from a genuine empty result; it now fails with
+  `org_mapping_missing`. A mapping set is no longer "coverage" because one mapping exists:
+  `app/services/mapping_coverage.py` evaluates the programme's formulas and fails with
+  `mapping_coverage_incomplete`, and the scheduled refresh refuses uncovered sets.
+- **Request shape.** Analytics requests are chunked (50 data items x 100 organisation units),
+  merged without duplicates, and any incomplete chunk set fails the job. `dimension=co` is now
+  actually sent when an approved mapping distinguishes category detail.
+- **Governance proposals generated, none applied.** Population crosswalk regenerated against the
+  live hierarchy: **143/146 exact, 3 alias decisions, 0 unaccounted**, national totals matching the
+  workbook for all seven years. District boundaries: **144/146 exact, 2 alias decisions**, the same
+  spellings. Sub-county boundaries: **2,190 features against 2,206 live units, a 16-unit gap**.
+  Source mappings: candidates for **46 of 48** keys, none approved; `ROTAV1`/`ROTAV2` have none.
+- Superseded: the earlier reconciliation reporting three synthetic matches described development
+  fixtures, not the live hierarchy. It is replaced by the figures above rather than deleted.
+
+
 ## 2026-09-20 — live DHIS2 correction after synthetic-demo mismatch
 
 - Stopped the disposable SQLite demonstration and created a persistent local PostgreSQL control/provenance database with reference configuration only: no synthetic users, geography, mappings, population or performance rows.

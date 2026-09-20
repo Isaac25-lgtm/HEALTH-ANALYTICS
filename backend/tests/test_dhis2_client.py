@@ -14,6 +14,9 @@ def _settings(**kwargs) -> Settings:
         app_env="test",
         database_url="sqlite+pysqlite:///:memory:",
         auth_secret="test-secret-value-that-is-32-chars-min",
+        # These tests drive the connector against a stubbed transport, which is an enabled
+        # deployment as far as the client is concerned; the runtime gate is asserted separately.
+        dhis2_enabled=True,
         dhis2_base_url="https://example.test",
         dhis2_username="tester",
         dhis2_password="secret-password",

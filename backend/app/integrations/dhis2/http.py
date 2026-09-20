@@ -71,8 +71,15 @@ class Dhis2HttpClient:
         self._client.close()
 
     def configured(self) -> bool:
+        """Whether this client may contact DHIS2 at all.
+
+        The runtime switch is part of being configured, not a separate concern checked by each
+        caller: a deployment with DHIS2_ENABLED=false must not reach the network even if a host
+        and credentials are present in the environment.
+        """
         return bool(
-            self.settings.dhis2_base_url
+            self.settings.dhis2_enabled
+            and self.settings.dhis2_base_url
             and (
                 (self.settings.dhis2_auth_method == "pat" and self.settings.dhis2_pat)
                 or self._has_basic_auth_override

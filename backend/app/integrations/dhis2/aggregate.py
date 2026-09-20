@@ -2,10 +2,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 
 from app.integrations.dhis2.errors import Dhis2ValidationError
 from app.integrations.dhis2.http import Dhis2HttpClient
 from app.integrations.dhis2.types import AggregateObservation, parse_optional_datetime
+
+# A single analytics request carries its dimensions in the URL. A national request naming every
+# mapped data element and every mapped organisation unit would exceed practical URL and server
+# query limits long before it exceeded the response-size cap, so requests are chunked.
+DEFAULT_DX_CHUNK = 50
+DEFAULT_OU_CHUNK = 100
+
+
+@dataclass
+class AggregateFetchResult:
+    """Observations plus the evidence needed to judge whether the retrieval was complete."""
+
+    observations: list[AggregateObservation] = field(default_factory=list)
+    chunks_requested: int = 0
+    chunks_succeeded: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.chunks_requested > 0 and self.chunks_succeeded == self.chunks_requested
+
+
+def _chunk(values: list[str], size: int) -> list[list[str]]:
+    if size < 1:
+        raise ValueError("Chunk size must be positive.")
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 class AggregateAnalyticsAdapter:
@@ -21,26 +47,56 @@ class AggregateAnalyticsAdapter:
         org_unit_uids: list[str],
         periods: list[str],
         include_descendants: bool = True,
+        include_category_option_combos: bool = False,
+        dx_chunk_size: int = DEFAULT_DX_CHUNK,
+        ou_chunk_size: int = DEFAULT_OU_CHUNK,
         extra_params: dict | None = None,
-    ) -> list[AggregateObservation]:
+    ) -> AggregateFetchResult:
+        """Retrieve observations in bounded chunks, merged deterministically.
+
+        Every chunk must succeed. An exception from any one of them propagates, so a job can never
+        be marked fully successful on a partial retrieval.
+        """
+        result = AggregateFetchResult()
         if not dx_uids or not org_unit_uids or not periods:
-            return []
+            return result
         prefix = self.client.settings.dhis2_api_path_prefix.rstrip("/")
-        params: dict = {
-            "dimension": [
-                f"dx:{';'.join(dx_uids)}",
-                f"ou:{';'.join(org_unit_uids)}",
-                f"pe:{';'.join(periods)}",
-            ],
-            "skipMeta": "false",
-            "paging": "false",
-        }
-        if include_descendants:
-            params["ouMode"] = self.client.settings.dhis2_ou_mode or "DESCENDANTS"
-        if extra_params:
-            params.update(extra_params)
-        payload = self.client.get_json(f"{prefix}/analytics", params=params)
-        return parse_analytics_rows(payload)
+        seen: set[tuple[str, str, str, str]] = set()
+        for dx_group in _chunk(list(dict.fromkeys(dx_uids)), dx_chunk_size):
+            for ou_group in _chunk(list(dict.fromkeys(org_unit_uids)), ou_chunk_size):
+                result.chunks_requested += 1
+                dimensions = [
+                    f"dx:{';'.join(dx_group)}",
+                    f"ou:{';'.join(ou_group)}",
+                    f"pe:{';'.join(periods)}",
+                ]
+                if include_category_option_combos:
+                    # The response only carries a `co` column when the dimension is requested.
+                    # Without this, category detail silently collapsed into the element total.
+                    dimensions.append("co")
+                params: dict = {
+                    "dimension": dimensions,
+                    "skipMeta": "false",
+                    "paging": "false",
+                }
+                if include_descendants:
+                    params["ouMode"] = self.client.settings.dhis2_ou_mode or "DESCENDANTS"
+                if extra_params:
+                    params.update(extra_params)
+                payload = self.client.get_json(f"{prefix}/analytics", params=params)
+                for observation in parse_analytics_rows(payload):
+                    identity = (
+                        observation.item_uid,
+                        observation.org_unit_uid,
+                        observation.period,
+                        observation.category_option_combo_uid or "",
+                    )
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    result.observations.append(observation)
+                result.chunks_succeeded += 1
+        return result
 
 
 def parse_analytics_rows(payload: dict) -> list[AggregateObservation]:

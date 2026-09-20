@@ -45,7 +45,14 @@ def test_mapping_failure_and_persist(session):
 
 
 def test_sync_job_without_live_dhis2(session):
+    """With DHIS2 switched off the job must fail on the gate, before any request is attempted.
+
+    The suite runs with DHIS2_ENABLED=false, so the precise outcome is `dhis2_disabled`: the
+    runtime switch is checked ahead of configuration and mapping resolution, which is what stops
+    a disabled deployment from reaching the network at all.
+    """
     uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
     job = run_aggregate_sync(session, org_unit=uganda, periods=["202407"], user=None)
-    assert job.status in {"failed", "succeeded", "partially_succeeded"}
-    assert job.error_code in {None, "dhis2_not_configured", "mapping_missing"}
+    assert job.status == "failed"
+    assert job.error_code == "dhis2_disabled"
+    assert job.received_count in {0, None}
