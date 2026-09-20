@@ -53,12 +53,17 @@ export function FilterStrip({
       onSubmit={(event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
+        const selectedModule = String(data.get("module"));
+        // The indicator list belongs to the module currently on screen. Carrying one of its codes
+        // into a different module asks the server for a pair it must reject, so a module change
+        // falls back to that module's own default indicator.
+        const indicator = selectedModule === dashboard.module ? String(data.get("indicator") || "") : "";
         onApply({
           orgUnitId: String(data.get("orgUnitId")),
           period: String(data.get("period")),
           comparison: String(data.get("comparison")),
-          module: String(data.get("module")),
-          indicator: String(data.get("indicator") || ""),
+          module: selectedModule,
+          indicator,
         });
       }}
     >

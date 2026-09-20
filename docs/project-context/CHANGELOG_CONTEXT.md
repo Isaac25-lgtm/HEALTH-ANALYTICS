@@ -23,6 +23,13 @@ external service was contacted, and no production population, mapping or boundar
 - Gate documentation now describes Linux's effective two-second `ps lstart` allowance consistently
   with the tested implementation; Windows remains one millisecond.
 
+Found while verifying the running demonstration: switching the programme module and pressing Apply
+submitted the previous module's indicator code, which the server correctly rejected with HTTP 422,
+leaving the dashboard with no panels. The indicator list on screen belongs to the module on screen,
+so a module change now falls back to that module's own default indicator. `.gitignore` also gained
+the SQLite journal/WAL side files, which a stopped disposable API leaves behind and which the
+acceptance gate would otherwise see as a working-tree change.
+
 Verification on 2026-09-20, completed under the checkout-owning account:
 
 | Gate | Result |

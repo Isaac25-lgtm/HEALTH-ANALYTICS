@@ -64,6 +64,11 @@ yarn-error.log*
 *.db
 *.sqlite
 *.sqlite3
+# SQLite side files: a stopped disposable API leaves these behind, and the acceptance gate treats
+# any untracked change as a working-tree change.
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 backend/*.db
 backend/e2e_hpip.sqlite
 *.dump
