@@ -1,5 +1,16 @@
 # Corrective defect matrix — 2026-09-12
 
+## Live-data correction — 2026-09-21
+
+| Area | Defect | Correction | Verification |
+|---|---|---|---|
+| Configuration | Every dashboard was empty because HPIP held only the neutral `UG` root: no hierarchy, no DHIS2 mappings, no source mappings, no population | Imported the live hierarchy (161 units, 162 mappings), applied 44 owner-confirmed source mappings and the approved UBOS population | BCG June 2025 reproduces 146 districts / 158,721 / Pader 600; ANC1 92.4% from 2,223,830 over 2,407,604.5 |
+| Caesarean numerator | The approved `020-DP15`+`020-DP16` composite returned nothing: both are Tracker/TRUE_ONLY, zero rows in all 146 districts | Replaced with the aggregate element `108-SP01` after verifying all eight owner conditions | `CAESAREAN_SECTION` = 15.2%; June 2025 reproduced at 142 districts / 18,523 |
+| Coverage gate | Requiring complete coverage meant four unresolvable definitions made all 44 mapped keys unavailable | A mapping version is selected when usable; ambiguity and empty versions are still refused; unresolved keys are recorded on the job | `test_live_mapping_governance.py`: partial, empty, disabled and expired version cases |
+| Population crosswalk | DHIS2 writes "Yumbe District" while the workbook writes "Yumbe" plus a Type column, leaving 136 of 146 unmatched | The reconciler indexes each unit under its stored name and, where the name ends with its own level type, without that suffix | 143 exact + 3 audited aliases = 146, zero unresolved; Manafwa matched directly |
+| Sign-in truthfulness | A spurious upstream 401 was reported as "username or password is incorrect" | Sign-in confirms instance health via unauthenticated `/api/ping` before believing a rejection | `test_dhis2_login.py` covers both the unhealthy (503) and healthy (rejected) paths |
+| Org unit codes | Stripping the type from a unit's code collapsed "Arua District" and "Arua City", losing ten peers | The internal code keeps the unit type | Import yields exactly 146 district/city peers |
+
 ## Live-DHIS2 correction — 2026-09-20
 
 | Area | Defect | Correction | Verification |

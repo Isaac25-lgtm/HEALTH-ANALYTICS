@@ -1,5 +1,54 @@
 # Context Changelog
 
+## 2026-09-21 - live national data, from empty control store to real values on screen
+
+The connectors were already correct; HPIP's own configuration tables were empty. They are now
+populated from the live instance under recorded owner decisions, and Uganda's real numbers render.
+
+- **Hierarchy.** `scripts/import_live_hierarchy.py` copied DHIS2's own structure: the national root
+  `akV6429SUqu` (MOH - Uganda, UG256), 15 regions and 146 district/city units, each bound to its
+  DHIS2 UID. 161 units and 162 mappings created; the cohort is exactly 146 peers. Idempotent,
+  transactional and audited. The internal code retains the unit type, because stripping it collapses
+  "Arua District" and "Arua City" into one unit and cost ten peers on the first run.
+- **Source mappings.** `scripts/import_source_mappings.py` applied 44 owner-confirmed mappings as
+  version `live-2026-09-21`, resolving every UID from retrieved metadata by HMIS code. The two
+  adolescent ANC keys are category slices of `105-AN01a`, with their category option UIDs resolved
+  live from that element's own combination.
+- **Caesarean sections.** The owner's first composite (`020-DP15` + `020-DP16`) failed its own
+  validation: both are Tracker/TRUE_ONLY and returned nothing at aggregate grain in all 146
+  districts. `108-SP01. Caesarean sections` passed all eight conditions - AGGREGATE,
+  INTEGER_ZERO_OR_POSITIVE, SUM, `default` category combination, HMIS 108 IPD Monthly matching the
+  HMIS 105 Monthly denominator, and reproducing June 2025 exactly at 142 districts and 18,523.
+  Conditional approval recorded. `zeroIsSignificant` is false, so the four non-reporting districts
+  stay missing rather than becoming zero.
+- **Deliberately withheld:** `TD_1549`, `DEWORM_1_14`, `VITA_6_11`, `UNDER5`. The instance measures
+  different age bands than those definitions require. Each disables exactly one indicator, so 4 of
+  60 indicators are unavailable and the other 56 are unaffected.
+- **Partial coverage no longer blocks a programme.** A mapping version is selected when it is
+  *usable* rather than complete; ambiguity between versions is still refused, a version resolving
+  nothing is still refused, and the unresolved keys are named in the job's freshness record.
+- **Population.** 146/146 units reconciled (143 exact, 3 audited aliases: Luweero -> Luwero
+  District, Ssembabule -> Sembabule District, Kampala Capital City -> Kampala District), 1,022
+  values across two approved versions, national totals derived from the 146-unit cohort and
+  matching the workbook for every year. Manafwa matched directly; no Gulu alias was needed. No
+  NATIONAL TOTAL pseudo-unit exists. The reconciler now indexes a unit under its stored name and,
+  when that name ends with its own level type, without the redundant suffix - DHIS2 writes "Yumbe
+  District" where the workbook writes "Yumbe" plus a Type column.
+- **Sign-in truthfulness.** A spurious upstream 401 was surfacing as "username or password is
+  incorrect". Sign-in now checks the unauthenticated `/api/ping` once - no credential sent, no
+  failed attempt added - and returns a temporary upstream error when the instance is unhealthy.
+- **Live evidence.** BCG June 2025 reproduces the benchmark exactly: 146 district rows, Uganda
+  158,721, Pader 600. Uganda FY2025/26 reports ANC1 92.4% (2,223,830 over 2,407,604.5 from the
+  approved 2025 projection of 48,152,090), ANC4 56.4%, IPT3 62.0%, institutional delivery 72.3%,
+  caesarean 15.2%, BCG 86.1%, OPV1 101.1%. 11,937 raw rows are stored.
+- **Formula governance, unchanged and UAT-only.** All 60 indicator versions remain undated.
+  Calculations render solely because `app_env=development` yields the `development_default` undated
+  policy. This is not production approval; a production environment refuses the fallback and every
+  indicator becomes unavailable. EPI coverage stays `unclassified` with no invented bands.
+- Verified: Ruff clean; SQLite **851 passed, 32 skipped**; PostgreSQL **871 passed, 2 Redis skips**;
+  TypeScript and ESLint clean; Vitest **111 passed**; production build exit 0.
+
+
 ## 2026-09-21 (later) - PostgreSQL downgrade correction and owner-capable verification
 
 - **Migration `0013_org_mapping_guard` had an unrunnable downgrade.** It called

@@ -49,3 +49,30 @@ For MPDSR, Event Analytics and Tracker are complementary. If they differ due to 
 - Scheduled refresh remains disabled pending governed mappings and production worker/Redis setup.
 - Store source freshness on values and exports. Metadata drift and mapping failure must become quality/operational signals.
 - Authenticate securely and enforce application geography/programme/action permissions in addition to DHIS2 access.
+
+## Live operating notes, 2026-09-21
+
+The integration is live for aggregate analytics. Mapping version `live-2026-09-21` binds 44 source
+keys, resolved from retrieved metadata by HMIS code; no UID is written by hand.
+
+**Instance behaviour to expect.** `hmis.health.go.ug` intermittently returns HTTP 500 "Unable to
+acquire JDBC Connection" and spurious 401s under load. Both are upstream conditions, not
+configuration faults. The connector retries 408/429/500/502/503/504 with bounded exponential
+backoff honouring `Retry-After`: with `DHIS2_MAX_RETRIES=8`, `DHIS2_RETRY_BASE_SECONDS=3` and
+`DHIS2_RETRY_MAX_SECONDS=45` the ladder is 3/6/12/24/45/45/45/45 seconds, capping total backoff at
+225 s and the worst case per request at about 495 s. Nothing waits unbounded.
+
+A 401 is never retried, so no sequence of attempts can lock the account. Because this host emits
+spurious 401s, sign-in checks the unauthenticated `/api/ping` once before believing a rejection:
+an unhealthy instance yields `dhis2_login_unavailable` (503) rather than telling a user their
+working password is wrong. New sign-ins may therefore fail while DHIS2 is unwell; already-issued
+local sessions continue until their legitimate expiry.
+
+**Request shape.** Aggregate analytics receives the explicit non-overlapping district/city peer
+cohort with `ouMode=SELECTED`, chunked at 50 data items by 100 organisation units, and any
+incomplete chunk set fails the job rather than storing a partial total. Category-specific mappings
+use the exact `dataElement.categoryOptionCombo` operand.
+
+**Periods.** Internal keys are never transmitted. `FY2025/26` is sent as `2025July`; financial-year
+quarters become calendar quarters; halves become `S1`/`S2`. Responses normalise back to the
+internal key before persistence.

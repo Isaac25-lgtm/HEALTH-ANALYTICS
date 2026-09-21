@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from app.api.routes import auth
 from app.config import get_settings
-from app.integrations.dhis2.errors import Dhis2TransientError
+from app.integrations.dhis2.errors import Dhis2AuthError, Dhis2TransientError
 from app.models import AuthSession, User
 
 
@@ -99,3 +100,49 @@ def test_dhis2_outage_returns_service_unavailable_not_bad_password(client, sessi
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "dhis2_login_unavailable"
+
+
+def test_upstream_401_while_dhis2_is_unhealthy_is_not_reported_as_a_wrong_password(monkeypatch):
+    """The national instance returns spurious 401s under load.
+
+    Telling someone their password is wrong when the upstream is merely unwell invites them to
+    change a working credential, so a rejection is only believed when /api/ping confirms the
+    instance is healthy.
+    """
+    from fastapi import HTTPException
+
+    from app.api.routes import auth as auth_routes
+
+    settings = get_settings().model_copy(
+        update={
+            "dhis2_enabled": True,
+            "dhis2_login_enabled": True,
+            "dhis2_base_url": "https://example.test",
+            "dhis2_username": "tester",
+            "dhis2_password": "secret-password",
+        }
+    )
+
+    class _Body:
+        username = "someone"
+        password = "whatever"
+
+    class _User:
+        username = "someone"
+        external_subject = None
+
+    def _raise_auth(*args, **kwargs):
+        raise Dhis2AuthError()
+
+    monkeypatch.setattr(auth_routes.Dhis2HttpClient, "get_json", _raise_auth)
+
+    # Instance unhealthy -> temporary upstream error, never "invalid credentials".
+    monkeypatch.setattr(auth_routes, "_dhis2_reachable", lambda _s: False)
+    with pytest.raises(HTTPException) as excinfo:
+        auth_routes._authenticate_dhis2(_Body(), _User(), settings)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail["code"] == "dhis2_login_unavailable"
+
+    # Instance healthy -> the rejection is believed and sign-in fails normally.
+    monkeypatch.setattr(auth_routes, "_dhis2_reachable", lambda _s: True)
+    assert auth_routes._authenticate_dhis2(_Body(), _User(), settings) == {}

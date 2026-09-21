@@ -83,6 +83,17 @@ Recorded from the owner's written execution instruction of 2026-09-14. Engineeri
   enumeration must fail closed; restricted Windows uses a PID/start-time baseline-delta check when
   parent-process enumeration is unavailable.
 
+## Live configuration decisions — owner, 2026-09-21
+
+| ID | Binding decision | Source / status |
+|---|---|---|
+| D-051 | The live DHIS2 hierarchy (levels 1-3) is imported as HPIP's operational geography: national root `akV6429SUqu`, 15 regions and the 146 district/city cohort, each bound to its DHIS2 UID. DHIS2 levels 4-7 are not imported; sub-county and facility analysis stay inactive. | Owner decision 2026-09-21; applied and audited |
+| D-052 | 44 source keys are bound as mapping version `live-2026-09-21`, resolved from live metadata by HMIS code. `ANC1_AGE_LT15` and `ANC1_AGE_15_19` are category slices of `105-AN01a` (`<15Yrs`, `15-19Yrs`); `IFA_30` is `105-AN10b` (Iron & Folic Acid, not folic acid alone); `HPV` is `105-VP01` after confirming its three site categories are mutually exclusive with no total category; `VITA_12_59` is `097c-VH15a`. | Owner decision 2026-09-21; applied and audited |
+| D-053 | **Caesarean sections: conditionally approved as `108-SP01`.** The originally approved composite `020-DP15` + `020-DP16` failed the owner's own validation - both are Tracker/TRUE_ONLY and returned no aggregate rows in any of the 146 districts. `108-SP01` satisfied all eight conditions: AGGREGATE domain, INTEGER_ZERO_OR_POSITIVE, aggregation SUM, `default` category combination (no double-counting), HMIS 108 IPD Monthly at the same grain as the `105-MA04` deliveries denominator, a current reporting dataset, the approved total-deliveries denominator, and exact reproduction of June 2025 (142 districts, 18,523). The Tracker pair must not be combined with it. | Owner conditional approval 2026-09-21; conditions verified and recorded |
+| D-054 | `TD_1549`, `DEWORM_1_14`, `VITA_6_11` and `UNDER5` remain deliberately unmapped because the instance measures different age bands than the approved definitions. Only their own four indicators are unavailable. No approximate element may be substituted. | Owner decision 2026-09-21 |
+| D-055 | The owner's UBOS workbook is the approved district/city population source for 2024-2030, applied as two governed versions with three audited aliases (Luweero, Ssembabule, Kampala Capital City). Uganda's national population is derived from the complete 146-unit cohort; the workbook's NATIONAL TOTAL is never imported as an organisation unit. | Owner decision 2026-09-21 (D-046 source approval); applied and approved |
+| D-056 | Undated formula versions remain permitted **for local UAT only**, through the `development_default` policy. This is not production approval. All 60 indicator versions still require owner-approved effective dates before hosted deployment. | Owner acknowledgement 2026-09-21 |
+
 ## Live DHIS2 direction — owner decision, 2026-09-20
 
 | ID | Binding decision | Source / status |

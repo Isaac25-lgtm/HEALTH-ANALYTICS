@@ -30,6 +30,33 @@ def _invalid_credentials(session: Session, username: str, ip: str | None) -> Non
     )
 
 
+def _dhis2_reachable(settings: Settings) -> bool:
+    """Whether DHIS2 is answering at all, checked without credentials.
+
+    ``/api/ping`` needs no authentication, so this adds no failed sign-in attempt and cannot
+    contribute to an account lockout. A single bounded request is made; any error is treated as
+    "not reachable" so the caller fails towards the temporary-upstream answer.
+    """
+    import httpx
+
+    url = f"{settings.dhis2_base_url.rstrip('/')}/api/ping"
+    try:
+        with httpx.Client(timeout=min(settings.dhis2_timeout_seconds, 10), follow_redirects=False) as client:
+            return client.get(url).status_code == 200
+    except Exception:  # noqa: BLE001 - any failure means we cannot confirm the instance is healthy
+        return False
+
+
+def _dhis2_upstream_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "dhis2_login_unavailable",
+            "message": "DHIS2 could not be reached to verify this sign-in. Please try again.",
+        },
+    )
+
+
 def _authenticate_dhis2(body: LoginRequest, user: User, settings: Settings) -> dict:
     if not settings.dhis2_enabled or not settings.dhis2_login_enabled:
         raise HTTPException(
@@ -40,16 +67,15 @@ def _authenticate_dhis2(body: LoginRequest, user: User, settings: Settings) -> d
     try:
         with Dhis2HttpClient(settings, basic_auth=(body.username, body.password)) as client:
             profile = client.get_json(path, params={"fields": "id,username,displayName"})
-    except Dhis2AuthError:
+    except Dhis2AuthError as exc:
+        # A 401 means "wrong password" only if the instance is actually healthy. Under load this
+        # host returns spurious 401s, and telling a user their password is wrong when it is not
+        # invites them to change a working credential.
+        if not _dhis2_reachable(settings):
+            raise _dhis2_upstream_unavailable() from exc
         return {}
     except Dhis2Error as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "dhis2_login_unavailable",
-                "message": "DHIS2 could not be reached to verify this sign-in. Please try again.",
-            },
-        ) from exc
+        raise _dhis2_upstream_unavailable() from exc
     returned_username = str(profile.get("username") or "")
     returned_subject = str(profile.get("id") or "")
     if returned_username.casefold() != user.username.casefold() or not returned_subject:

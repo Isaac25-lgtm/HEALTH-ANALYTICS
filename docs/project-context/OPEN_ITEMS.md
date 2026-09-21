@@ -62,6 +62,20 @@ Implemented defaults below are fail-closed. None is an owner decision until acce
 - Screenshot labels, values, and names are illustrative mock-up material, not production configuration.
 - The DHIS2 base host is `https://hmis.health.go.ug` (D-049/D-050). Live use is authorised and a read-only authenticated capability check has now succeeded from this workstation. Metadata correctness, mappings and synchronisation remain unverified and must not be claimed.
 - Phase 2 synthetic fixtures and mocked connector tests do **not** close any row in this register.
-- Live DHIS2 verification status: DHIS2-backed sign-in is complete end to end (`biostat.pader` bound to `external_subject=ALoyniVOIY2`), complete read-only metadata discovery succeeded, and one bounded non-sensitive national BCG query proved that all 146 district/city rows reconcile to the Uganda total. That check was not imported into the control store. **No governed production refresh has run**: there are still no approved organisation-unit or source mappings, so every dashboard value remains absent rather than wrong. See `OWNER_APPROVAL_PACKET.md` for the decisions that unblock extraction.
+- Live DHIS2 status (2026-09-21): the data plane is **operational for MNCH, EPI and the aggregate MPDSR keys at national, regional and district/city level**. 161 org units and 162 DHIS2 mappings are applied (D-051), 44 source mappings as version `live-2026-09-21` (D-052/D-053), the UBOS population is approved (D-055), and 11,937 raw rows are stored. BCG June 2025 reproduces the benchmark exactly (146 districts, Uganda 158,721, Pader 600). **Still not production**: all 60 formula versions are undated and render only under the UAT development default (D-056); boundaries are not activated; sub-county and facility levels are not imported; scheduled refresh is not running.
 - EPI performance bands and dropout thresholds remain TBD. Do not use screenshot targets as production rules.
 - Confirmed MPDSR semantic date/linkage fields, retention, and sensitive-data policy remain owner decisions.
+
+## Live-data status, 2026-09-21
+
+| Area | State |
+|---|---|
+| National / regional / district analysis | **Active** on real DHIS2 data |
+| Sub-county and facility analysis | **Inactive** - DHIS2 levels 4-7 were not imported (D-051) |
+| District and sub-county boundary maps | **Inactive** - no approved effective date, approval reference or feature mapping; the sub-county file is also 16 units short of the live 2,206 |
+| `TD_1549`, `DEWORM_1_14`, `VITA_6_11`, `UNDER5` | **Unavailable** - source definition unresolved (D-054); 4 of 60 indicators |
+| MPDSR timeliness and cause analysis | **Inactive** - event semantics, linkage and disclosure rules undecided |
+| Scheduled automatic refresh | **Not running** - no worker or scheduler process; refresh is operator-initiated |
+| EPI performance classification | **Unclassified by design** - no approved bands; values compute, no RAG is invented |
+| Hosted production deployment | **Not deployed** |
+| Formula effective dates | **Absent** - 60 versions undated; UAT-only fallback (D-056) |
