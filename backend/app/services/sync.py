@@ -1336,7 +1336,11 @@ def _record_freshness(session: Session, connector: str, job: SyncJob) -> Freshne
             programme_id=job.programme_id,
             mapping_version=job.mapping_version or "v1",
         )
-        detail["mapping_coverage"] = report.as_dict()
+        coverage = report.as_dict()
+        # Name the keys that were not extracted, so an operator can see exactly which indicators
+        # are unavailable and why, rather than inferring it from a count.
+        coverage["unresolved_source_keys"] = sorted(report.unresolved)
+        detail["mapping_coverage"] = coverage
         detail["programme_ready"] = bool(report.complete)
     row.detail = detail
     row.status = job.status

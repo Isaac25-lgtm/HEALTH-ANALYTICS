@@ -244,6 +244,24 @@ def normalise_name(value: object) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+def name_variants(unit: OrgUnit) -> list[str]:
+    """The normalised names one organisation unit may legitimately be written as.
+
+    DHIS2 embeds the unit type in the name ("Yumbe District"), while the owner's population source
+    carries the bare name plus a separate Type column ("Yumbe", District). Both spellings denote
+    the same unit, so the index holds the name as stored and, when the name ends with its own
+    level type, the name without that redundant suffix. This is a deterministic restatement of the
+    unit's own type, not a fuzzy match: nothing else is stripped and no other unit can collide,
+    because "Arua District" and "Arua City" reduce to "arua" and "arua city" respectively.
+    """
+    stored = normalise_name(unit.name)
+    variants = [stored]
+    suffix = f" {normalise_name(unit.level_type)}"
+    if stored.endswith(suffix) and len(stored) > len(suffix):
+        variants.append(stored[: -len(suffix)].strip())
+    return variants
+
+
 def _positive_int(value: object, *, row_number: int, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PopulationWorkbookError("invalid_value", f"Row {row_number} {label} is not numeric.")
@@ -341,7 +359,8 @@ def reconcile_workbook(session: Session, extract: WorkbookExtract) -> Reconcilia
     candidates = _candidate_units(session)
     by_name: dict[str, list[OrgUnit]] = {}
     for unit in candidates:
-        by_name.setdefault(normalise_name(unit.name), []).append(unit)
+        for variant in name_variants(unit):
+            by_name.setdefault(variant, []).append(unit)
     aliases = {
         row.source_unit_name: row
         for row in session.scalars(

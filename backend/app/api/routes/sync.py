@@ -112,33 +112,30 @@ def _complete_mapping_version(
         )
         for version in versions
     ]
-    complete = [report.mapping_version for report in reports if report.complete]
-    if len(complete) == 1:
-        return complete[0]
-    if len(complete) > 1:
+    # A version is usable when it resolves at least one required source key. Keys deliberately
+    # withheld because this instance has no matching definition leave only their own indicators
+    # unavailable; they must not remove the mapped keys from every other indicator.
+    usable = [report for report in reports if report.resolved]
+    if len(usable) == 1:
+        return usable[0].mapping_version
+    if len(usable) > 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "code": "mapping_version_ambiguous",
                 "message": (
-                    "More than one complete mapping version is in force. Close the superseded "
+                    "More than one usable mapping version is in force. Close the superseded "
                     "version's validity window before refreshing."
                 ),
             },
         )
-    best = max(reports, key=lambda report: len(report.resolved), default=None)
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail={
             "code": "mapping_coverage_incomplete",
             "message": (
-                f"No complete in-force source mapping exists for {programme.code}."
-                + (
-                    f" Best candidate {best.mapping_version!r} resolves "
-                    f"{len(best.resolved)} of {len(best.required)} required source keys."
-                    if best
-                    else " No source-mapping version has been applied."
-                )
+                f"No usable in-force source mapping exists for {programme.code}: no version "
+                "resolves any of the source keys its formulas require."
             ),
         },
     )

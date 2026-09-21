@@ -221,17 +221,27 @@ def test_reconciliation_is_exact_and_blocks_unreviewed_names(session, tmp_path):
     path = tmp_path / "synthetic.xlsx"
     extract = _quiet_read(path, expected_sha256=_write_workbook(path))
     report = reconcile_workbook(session, extract)
+    # A unit whose name ends with its own type ("Gulu District", a district) is the same unit the
+    # source calls by its bare name plus a Type column ("Gulu", District). DHIS2 spells names that
+    # way for every Ugandan district, so treating the redundant suffix as a different name would
+    # demand an alias decision for all 143 straightforward units. The suffix is a restatement of
+    # the unit's own level type and nothing else is stripped, so this stays an exact match rather
+    # than a fuzzy one. Genuinely different spellings are still blocked below.
     assert _statuses(report) == {
         "Pader": "matched_exact",
         "Kitgum": "matched_exact",
         "Gulu City": "matched_exact",
-        "Gulu": "unmatched",
+        "Gulu": "matched_exact",
         "Manafwa": "unmatched",
         "Kampala Capital City": "unmatched",
     }
+    # "Gulu" resolves to the district and never to the city: the type filter keeps them distinct
+    # even though both index under "gulu".
+    gulu = next(item for item in report.units if item.unit.name == "Gulu")
+    assert gulu.org_unit.id == units["gulu_district"].id
     assert report.can_apply is False
     uncovered = {unit.code for unit in report.internal_units_without_source}
-    assert {"TEST_GULU_DISTRICT", "TEST_MANAFA", "TEST_KAMPALA", "SOROTI"} <= uncovered
+    assert {"TEST_MANAFA", "TEST_KAMPALA", "SOROTI"} <= uncovered
     matched = next(item for item in report.units if item.unit.name == "Gulu City")
     assert matched.org_unit.id == units["gulu_city"].id
     admin = _user(session, "admin.user")
