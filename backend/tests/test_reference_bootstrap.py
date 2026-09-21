@@ -161,7 +161,7 @@ def run_release(monkeypatch, url: str, capsys) -> None:
         assert context.status_code == 200, context.text
         body = context.json()
         assert body["landing_org_unit"]["code"] == "UG"
-        assert "MPDSR" not in body["programmes"] and {"MNCH", "EPI"} <= set(body["programmes"])
+        assert set(body["programmes"]) == {"MNCH", "EPI", "MPDSR"}
         refused = client.post("/auth/login", json={"username": "uat.admin", "password": "wrong-password-value"})
         assert refused.status_code in (400, 401)
 

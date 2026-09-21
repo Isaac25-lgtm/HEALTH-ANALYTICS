@@ -16,6 +16,7 @@ class AggregateObservation:
     absence_reason: str | None = None
     payload_checksum: str | None = None
     value_invalid: bool = False
+    source_periods: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class EventAggregateObservation:
     metric: str
     value: float | None
     source_freshness_at: datetime | None = None
+    source_periods: tuple[str, ...] = ()
 
 
 @dataclass

@@ -59,12 +59,10 @@ class TrackerEventsAdapter:
         page_limit = False
         pages = 0
         targets = org_unit_uids or [None]
-        query_each = mode.upper() != "DESCENDANTS" or len(targets) > 1
-        if not query_each:
-            targets = [targets[0]]
-            effective_mode = mode
-        else:
-            effective_mode = "SELECTED"
+        # The service supplies non-overlapping district/city peers for a broad scope. Tracker
+        # accepts one orgUnit per request, so query each peer with the requested mode; switching
+        # to SELECTED here would silently omit events recorded below the district/city.
+        effective_mode = mode
         for org_unit_uid in targets:
             page = 1
             while True:

@@ -17,6 +17,8 @@ export type CurrentContext = {
   landing_org_unit: OrgUnitSummary | null;
   landing_org_units: OrgUnitSummary[];
   geography_scopes: OrgUnitSummary[];
+  geography_entry_units: OrgUnitSummary[];
+  available_geography_levels: string[];
   programmes: string[];
   actions: string[];
   identity_provider: string;
@@ -213,6 +215,8 @@ export type DashboardResponse = {
       severity: string;
       explanation: string;
     }>;
+    quality_alert_count?: number;
+    configuration_blockers?: Array<{ code: string; message: string }>;
     current_run_id: string;
     comparison_run_id?: string;
     comparison_grain?: string;
@@ -251,6 +255,51 @@ export type DashboardResponse = {
       available: boolean;
       implemented: boolean;
       message: string;
+    }>;
+  };
+};
+
+export type SyncJob = {
+  id: string;
+  job_type: string;
+  status: string;
+  requested_count: number;
+  received_count: number;
+  stored_count: number;
+  rejected_count: number;
+  flagged_count: number;
+  retry_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  source_freshness_at: string | null;
+};
+
+export type OpsStatus = {
+  database: string;
+  dhis2: string;
+  ai_enabled: boolean;
+  configuration: {
+    org_units: {
+      total: number;
+      by_level: Record<string, number>;
+      dhis2_mapped_by_level: Record<string, number>;
+    };
+    source_mappings: Array<{ programme: string; version: string; enabled_rows: number }>;
+    population: {
+      staging_batches_by_status: Record<string, number>;
+      versions_by_approval: Record<string, number>;
+      value_rows: number;
+    };
+    boundaries: { current_by_level: Record<string, number> };
+    formulas: { total_versions: number; dated_versions: number; undated_versions: number };
+  };
+  sync_jobs: {
+    by_status: Record<string, number>;
+    freshness: Array<{
+      connector: string;
+      status: string;
+      last_success_at: string | null;
+      source_freshness_at: string | null;
     }>;
   };
 };

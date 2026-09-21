@@ -193,7 +193,14 @@ def test_backend_image_installs_worker_dependencies_and_runs_unprivileged():
 
 RENDER = ROOT / "render.yaml"
 BACKEND_SERVICES = ("hpip-api", "hpip-worker", "hpip-purge")
-SECRET_KEYS = {"DATABASE_URL", "MIGRATION_DATABASE_URL", "AUTH_SECRET", "SEED_PASSWORD"}
+SECRET_KEYS = {
+    "DATABASE_URL",
+    "MIGRATION_DATABASE_URL",
+    "AUTH_SECRET",
+    "SEED_PASSWORD",
+    "DHIS2_PASSWORD",
+    "DHIS2_PAT",
+}
 DEPLOYMENT_SPECIFIC = {"WEB_ORIGIN", "ALLOWED_ORIGINS", "ALLOWED_HOSTS"}
 # Every setting a backend process needs in production, whatever its role.
 REQUIRED_BACKEND_SETTINGS = {
@@ -225,6 +232,9 @@ REQUIRED_BACKEND_SETTINGS = {
     "OPERATIONAL_RECORD_RETENTION_DAYS",
     "PURGE_ENABLED",
     "DHIS2_ENABLED",
+    "DHIS2_LOGIN_ENABLED",
+    "DHIS2_AUTH_METHOD",
+    "DHIS2_BASE_URL",
     "SYNC_ENABLED",
     "AI_ENABLED",
 }
@@ -359,6 +369,10 @@ def test_render_backend_environment_passes_production_validation(name):
         "WEB_ORIGIN": "https://hpip-web.example.test",
         "ALLOWED_ORIGINS": "https://hpip-web.example.test",
         "ALLOWED_HOSTS": "hpip-api",
+        # Empty while all DHIS2 gates are off. Render prompts for dedicated secrets before enablement.
+        "DHIS2_USERNAME": "",
+        "DHIS2_PASSWORD": "",
+        "DHIS2_PAT": "",
         "connectionString": "redis://red-example:6379",
     }
     environment: dict[str, str] = {}
@@ -392,7 +406,15 @@ def test_render_keeps_dhis2_and_ai_switched_off():
     assert values["AI_ENABLED"]["value"] == "false"
     assert values["DHIS2_BASE_URL"]["value"] == "https://hmis.health.go.ug"
     for key in ("DHIS2_USERNAME", "DHIS2_PASSWORD", "DHIS2_PAT"):
-        assert key not in values
+        assert values[key].get("sync") is False
+        assert "value" not in values[key]
+    worker = _effective(_service("hpip-worker"))
+    for key in ("DHIS2_USERNAME", "DHIS2_PASSWORD", "DHIS2_PAT"):
+        assert worker[key]["fromService"] == {
+            "type": "pserv",
+            "name": "hpip-api",
+            "envVarKey": key,
+        }
 
 
 def test_render_purge_job_uses_the_same_purge_service_and_retries():

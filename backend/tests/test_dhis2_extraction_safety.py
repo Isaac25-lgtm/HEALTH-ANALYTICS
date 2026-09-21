@@ -124,7 +124,7 @@ def test_empty_organisation_mapping_fails_instead_of_reporting_success(session, 
     settings = _enabled_settings()
     monkeypatch.setattr("app.services.sync.get_settings", lambda: settings)
 
-    uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
+    pader = session.scalar(select(OrgUnit).where(OrgUnit.code == "PADER"))
     programme = session.scalar(select(Programme).where(Programme.code == "MNCH"))
     # Map every source key the programme needs, so the missing organisation mapping is the only
     # thing wrong and the failure code cannot come from anywhere else.
@@ -143,7 +143,7 @@ def test_empty_organisation_mapping_fails_instead_of_reporting_success(session, 
 
     job = enqueue_sync_job(
         session,
-        org_unit=uganda,
+        org_unit=pader,
         periods=["202407"],
         user=None,
         job_type=ConnectorType.AGGREGATE.value,

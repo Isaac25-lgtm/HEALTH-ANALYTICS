@@ -27,6 +27,8 @@ export function fixtureContext(overrides: Partial<CurrentContext> = {}): Current
     landing_org_unit: null,
     landing_org_units: [],
     geography_scopes: [],
+    geography_entry_units: [],
+    available_geography_levels: [],
     programmes: ["MNCH", "EPI"],
     actions: ["view", "export"],
     identity_provider: "local",

@@ -1,5 +1,83 @@
 # Context Changelog
 
+## 2026-09-21 (later) - PostgreSQL downgrade correction and owner-capable verification
+
+- **Migration `0013_org_mapping_guard` had an unrunnable downgrade.** It called
+  `op.drop_constraint(..., type_="exclude")`, a constraint type Alembic does not accept
+  (`check`, `foreignkey`, `primary`, `unique` or `None` only), so the call raised `KeyError:
+  'exclude'`. The exclusion constraint created by `upgrade()` was correct; only its removal was
+  broken. The downgrade now issues explicit `ALTER TABLE ... DROP CONSTRAINT IF EXISTS`,
+  symmetric with the raw DDL used to create it.
+- The defect was invisible to the previous pass because that account could not start a disposable
+  PostgreSQL cluster (`pg_ctl` restricted-token error 87). Running it from an owner-capable
+  account failed `test_postgres_downgrade_is_explicit` and `test_postgres_upgrade_after_downgrade`
+  immediately; both pass after the fix.
+- Verification on this tree: Ruff clean; SQLite **841 passed, 32 skipped**; disposable PostgreSQL 18
+  **871 passed, 2 skipped**; migration suite alone **15 passed**; TypeScript and ESLint clean;
+  Vitest **111 passed** across 10 files; `npm run build` exit 0; `npm run e2e` **24 passed, 0
+  unexpected, 0 skipped, 0 flaky** with no surviving processes and ports 3000/8010 freed.
+- The two skips are exclusively `tests/test_redis_integration.py:28` and `:46`: no Redis or Docker
+  is installed on this workstation. They are skipped, not passed; CI runs them.
+- No hierarchy, source mapping, population version or boundary was applied. The control store
+  still holds only the neutral `UG` root and the unmatched staged population batch.
+
+## 2026-09-21 - final national-scope and DHIS2 response correction
+
+- A country sync can no longer resolve to whichever descendants happen to have mappings. Uganda
+  must have exactly the governed 146-district/city peer cohort, with exactly one effective and
+  unique DHIS2 UID per peer, before a request starts. Regional scopes likewise require every
+  district/city peer; leaf scopes require their own mapping. Missing or duplicate effective scope
+  fails closed.
+- Aggregate analytics uses the complete explicit peer cohort with `ouMode=SELECTED`, so parents
+  and children are never mixed. Tracker queries each non-overlapping peer with `DESCENDANTS`,
+  preserving events recorded at lower reporting units.
+- The period bridge now covers responses as well as requests. Native labels such as `2026July`
+  are persisted under `FY2026/27`; `AVERAGE` and `LAST` mappings retrieve months and fail closed
+  when required components are absent. Event Analytics also receives native periods and its
+  aggregate responses are normalised back to HPIP keys.
+- Category-specific mappings use the exact documented DHIS2 data-element operand
+  `dataElementUID.categoryOptionComboUID`. The connector no longer requests every visible category
+  combination and filters locally. Operand responses are split into their governed IDs, and a
+  category combo on an indicator mapping is rejected.
+- Final local verification: Ruff clean; backend **841 passed, 32 environment-gated skips**, zero
+  failures; TypeScript and ESLint clean; Vitest **111 passed**; production Next.js build exit 0;
+  E2E gate **24 passed, 0 skipped, 0 flaky**, natural Playwright exit, no survivors, ports
+  3000/8010 free and unchanged worktree fingerprint. Disposable PostgreSQL and Redis suites still
+  require the owner-capable/CI environment; `hpip_live` was not used as a test target.
+
+## 2026-09-20 (completion audit) — national readiness and honest empty-state correction
+
+- The system remains Uganda-wide by design. System administrators now receive all active
+  programmes and one reachable entry unit for every authorised geography level; the sidebar hides
+  levels and programme workspaces that do not exist or are not authorised, and preserves the
+  current geography/period/module in navigation.
+- The default is now the latest **closed** Uganda financial year (`FY2025/26` on this date), while
+  `FY2026/27` is explicitly labelled in progress. Recalculate reuses local governed source rows;
+  a separate `Refresh from DHIS2` action invokes server-owned mapping selection and never accepts
+  UIDs or mapping versions from the browser. MPDSR refresh remains blocked pending date semantics.
+- Aggregate sync creation now rejects incomplete formula-source coverage before queueing. Workers
+  claim a job atomically before network I/O, duplicate delivery cannot start a second extraction,
+  and a PostgreSQL per-job advisory lock lets a redelivery safely reclaim a row left `running`
+  after worker loss. Cancellation is permission-scoped and unexpected failures are persisted with
+  a safe code.
+- Migration `0013_org_mapping_guard` adds the PostgreSQL exclusion constraint that prevents
+  concurrent overlapping effective mappings for the same DHIS2 organisation-unit UID.
+- A governed packet service and CLI now separate discovery from application. Hierarchy and source
+  rows require an exact approval reference, explicit row approvals and two distinct authorised
+  users; `--check` validates the complete transaction and rolls it back. Nothing was auto-applied.
+- Empty snapshots expose configuration blockers separately from data-quality alerts and cannot
+  produce misleading exports. Administration cards now use live control-store counts rather than
+  stale configuration prose. The process-local operational-event buffer is bounded at 500 entries.
+- Render now declares the independent DHIS2 login switch and dedicated integration secret slots on
+  the API, forwarding them to the worker. The disclosed personal credential is for supervised
+  local verification only and must be rotated before hosting.
+- Before local database mutation, a custom-format logical backup was written under the ignored
+  `backend/.local/backups/` directory. The local PostgreSQL database was upgraded to revision 0013.
+  Population workbook checksum `5AE43DCA...E75072` was verified and all 1,022 cells were staged as
+  batch `7393d637-3d8d-4106-9fde-b5a30eb9515f`; all remain unmatched because the national
+  sub-national hierarchy is not approved/imported. No denominator, boundary, source mapping,
+  raw HMIS row or MPDSR event was created.
+
 ## 2026-09-20 (later) — live data-plane correction: connector fundamentals and governance proposals
 
 Measured against the live national instance, not assumed. Supporting artifacts are regenerable
@@ -32,8 +110,9 @@ under the gitignored `.local/dhis2/`.
   `app/services/mapping_coverage.py` evaluates the programme's formulas and fails with
   `mapping_coverage_incomplete`, and the scheduled refresh refuses uncovered sets.
 - **Request shape.** Analytics requests are chunked (50 data items x 100 organisation units),
-  merged without duplicates, and any incomplete chunk set fails the job. `dimension=co` is now
-  actually sent when an approved mapping distinguishes category detail.
+  merged without duplicates, and any incomplete chunk set fails the job. Superseded on
+  2026-09-21: category-specific mappings now request exact `DE.COC` operands instead of the
+  unbounded `dimension=co` response.
 - **Governance proposals generated, none applied.** Population crosswalk regenerated against the
   live hierarchy: **143/146 exact, 3 alias decisions, 0 unaccounted**, national totals matching the
   workbook for all seven years. District boundaries: **144/146 exact, 2 alias decisions**, the same

@@ -4,10 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, raise_authz
 from app.db.session import get_db
-from app.models import Role, User, UserRole
+from app.models import OrgUnit, Role, User, UserRole
 from app.schemas.api import CurrentContextResponse, OrgUnitSummary
 from app.services.authorization import (
+    ORG_UNIT_LEVEL_RANK_SAFE,
     AuthorizationError,
+    authorised_org_unit_ids,
     geography_scope_units,
     primary_landing_org_unit,
     programme_scope_codes,
@@ -40,6 +42,25 @@ def me_context(
         scopes = geography_scope_units(session, user)
         actions = sorted(user_actions(session, user))
         programmes = sorted(programme_scope_codes(session, user))
+        authorised_ids = authorised_org_unit_ids(session, user)
+        authorised_units = (
+            list(
+                session.scalars(
+                    select(OrgUnit)
+                    .where(OrgUnit.id.in_(authorised_ids), OrgUnit.active.is_(True))
+                    .order_by(OrgUnit.name, OrgUnit.code)
+                ).all()
+            )
+            if authorised_ids
+            else []
+        )
+        entry_by_level: dict[str, OrgUnit] = {}
+        for unit in authorised_units:
+            entry_by_level.setdefault(unit.level_type, unit)
+        entry_units = sorted(
+            entry_by_level.values(),
+            key=lambda unit: (ORG_UNIT_LEVEL_RANK_SAFE(unit.level_type), unit.name, unit.code),
+        )
         role_codes = list(
             session.scalars(
                 select(Role.code)
@@ -57,6 +78,8 @@ def me_context(
         landing_org_unit=_org_summary(landing) if landing else None,
         landing_org_units=[_org_summary(unit) for unit in roots],
         geography_scopes=[_org_summary(unit) for unit in scopes],
+        geography_entry_units=[_org_summary(unit) for unit in entry_units],
+        available_geography_levels=[unit.level_type for unit in entry_units],
         programmes=programmes,
         actions=actions,
         identity_provider=user.identity_provider,

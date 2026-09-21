@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.domain.enums import AbsenceReason, ConnectorType, JobStatus, MappingSourceSystem
+from app.domain.enums import (
+    AbsenceReason,
+    ConnectorType,
+    JobStatus,
+    MappingSourceSystem,
+    OrgUnitLevel,
+)
 from app.domain.mpdsr_minimisation import minimise_event_values
 from app.domain.periods import PeriodError, parse_period
 from app.integrations.dhis2.aggregate import AggregateAnalyticsAdapter
@@ -19,7 +29,7 @@ from app.integrations.dhis2.errors import (
 from app.integrations.dhis2.event_analytics import EventAnalyticsAdapter
 from app.integrations.dhis2.gates import Dhis2Disabled, ensure_extraction_enabled
 from app.integrations.dhis2.http import Dhis2HttpClient
-from app.integrations.dhis2.periods import covering_internal_period
+from app.integrations.dhis2.periods import PeriodTranslation, covering_internal_period
 from app.integrations.dhis2.periods import translate as translate_period
 from app.integrations.dhis2.tracker import TrackerEventsAdapter
 from app.integrations.dhis2.types import AggregateObservation, EventAggregateObservation, EventObservation
@@ -37,6 +47,7 @@ from app.models import (
 )
 from app.services.authorization import AuthorizationError
 from app.services.geography import descendants, resolve_org_unit_by_dhis2_uid, unmapped_dhis2_org_units
+from app.services.hierarchy_authority import DISTRICT_CITY_COHORT
 from app.services.mapping_coverage import evaluate_coverage
 from app.services.mappings import (
     MappingSelectionError,
@@ -129,7 +140,11 @@ def persist_aggregate_observations(
             checksum=observation.payload_checksum,
             is_current=True,
             value_invalid=invalid,
-            provenance={"sync_job_id": str(job.id), "mapping_id": str(mapping.id)},
+            provenance={
+                "sync_job_id": str(job.id),
+                "mapping_id": str(mapping.id),
+                "source_periods": list(observation.source_periods or (observation.period,)),
+            },
         )
         session.add(row)
         session.flush()
@@ -276,30 +291,98 @@ class OrgScopeError(RuntimeError):
 def _mapped_org_unit_uids(
     session: Session, org_unit: OrgUnit, as_of=None
 ) -> list[str]:
-    """Every DHIS2 organisation-unit UID this job is entitled to request.
+    """Resolve a complete, non-overlapping DHIS2 request cohort or fail closed.
 
-    An empty result is never returned. Previously it produced a request-free job that stored no
-    rows and was then marked succeeded, which is indistinguishable from a genuine "this area
-    reported nothing" result. A scope that cannot be proven is a configuration failure.
+    Country and regional requests use district/city peers, never a mixture of parents and
+    descendants.  Uganda is only a valid country scope when the approved 146-unit cohort is
+    present.  Every target must have exactly one effective mapping and every UID must identify
+    exactly one target.  This prevents a successful one-district extraction being presented as
+    national data.
     """
-    units = descendants(session, org_unit, include_self=True)
+    subtree = descendants(session, org_unit, include_self=True)
+    if as_of is not None:
+        subtree = [
+            unit
+            for unit in subtree
+            if (unit.valid_from is None or unit.valid_from <= as_of)
+            and (unit.valid_to is None or unit.valid_to >= as_of)
+        ]
+    if org_unit.level_type in {
+        OrgUnitLevel.COUNTRY.value,
+        OrgUnitLevel.REGION.value,
+        OrgUnitLevel.SUB_REGION.value,
+    }:
+        units = [
+            unit
+            for unit in subtree
+            if unit.level_type in {OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value}
+        ]
+        if org_unit.level_type == OrgUnitLevel.COUNTRY.value and len(units) != DISTRICT_CITY_COHORT:
+            raise OrgScopeError(
+                "org_hierarchy_incomplete",
+                "The Uganda request is blocked because the active district/city hierarchy is "
+                f"not the approved {DISTRICT_CITY_COHORT}-unit cohort.",
+            )
+        if not units:
+            raise OrgScopeError(
+                "org_hierarchy_incomplete",
+                "The requested geography has no active district/city cohort, so its DHIS2 "
+                "request scope cannot be proven.",
+            )
+    elif org_unit.level_type in {
+        OrgUnitLevel.DISTRICT.value,
+        OrgUnitLevel.CITY.value,
+        OrgUnitLevel.SUB_COUNTY.value,
+        OrgUnitLevel.FACILITY.value,
+    }:
+        units = [org_unit]
+    else:
+        raise OrgScopeError(
+            "org_hierarchy_unsupported",
+            "The requested geography level cannot be translated into a safe DHIS2 scope.",
+        )
+
     ids = [unit.id for unit in units]
     query = select(OrgUnitMapping).where(
         OrgUnitMapping.org_unit_id.in_(ids),
         OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
     )
     rows = session.scalars(query).all()
-    uids = [
-        row.external_uid
+    effective = [
+        row
         for row in rows
-        if (as_of is None or not row.valid_from or row.valid_from <= as_of)
-        and (as_of is None or not row.valid_to or row.valid_to >= as_of)
+        if (as_of is None or row.valid_from is None or row.valid_from <= as_of)
+        and (as_of is None or row.valid_to is None or row.valid_to >= as_of)
     ]
-    if not uids:
+    if not effective:
         raise OrgScopeError(
             "org_mapping_missing",
             "No approved DHIS2 organisation-unit mapping covers the requested geography, "
             "so the request scope cannot be proven.",
+        )
+    by_unit: dict[UUID, list[OrgUnitMapping]] = {unit.id: [] for unit in units}
+    for row in effective:
+        by_unit[row.org_unit_id].append(row)
+    missing = sum(1 for mappings in by_unit.values() if not mappings)
+    ambiguous = sum(1 for mappings in by_unit.values() if len(mappings) > 1)
+    if missing:
+        raise OrgScopeError(
+            "org_mapping_incomplete",
+            f"The DHIS2 geography mapping is incomplete for {missing} unit(s) in the requested "
+            "cohort; no partial extraction was started.",
+        )
+    if ambiguous:
+        raise OrgScopeError(
+            "org_mapping_ambiguous",
+            f"The DHIS2 geography mapping has multiple effective mappings for {ambiguous} "
+            "unit(s); no extraction was started.",
+        )
+    uids = [by_unit[unit.id][0].external_uid for unit in units]
+    if len(set(uids)) != len(uids):
+        raise OrgScopeError(
+            "org_mapping_ambiguous",
+            "A DHIS2 organisation-unit UID is assigned to more than one unit in the requested "
+            "cohort; no extraction was started.",
         )
     return uids
 
@@ -311,6 +394,42 @@ def _period_bounds(periods: list[str]) -> tuple[str | None, str | None]:
     start = min(item.start for item in specs)
     end = max(item.end for item in specs)
     return start.isoformat(), end.isoformat()
+
+
+def _event_native_periods(periods: list[str]) -> list[str]:
+    """Translate internal event-analysis periods without changing their boundaries."""
+    native: list[str] = []
+    for period in dict.fromkeys(periods):
+        translation = translate_period(period, aggregation_semantics="COUNT")
+        native.extend(translation.dhis2_periods)
+    return list(dict.fromkeys(native))
+
+
+def _normalise_event_aggregate_periods(
+    observations: list[EventAggregateObservation], internal_period: str
+) -> list[EventAggregateObservation]:
+    """Put event-aggregate responses back under the HPIP period key."""
+    translation = translate_period(internal_period, aggregation_semantics="COUNT")
+    unexpected = [
+        item.period
+        for item in observations
+        if not covering_internal_period(item.period, translation.internal_key)
+    ]
+    if unexpected:
+        raise Dhis2ValidationError(
+            f"DHIS2 returned {len(unexpected)} event rows outside {translation.internal_key}."
+        )
+    return [
+        EventAggregateObservation(
+            org_unit_uid=item.org_unit_uid,
+            period=translation.internal_key,
+            metric=item.metric,
+            value=item.value,
+            source_freshness_at=item.source_freshness_at,
+            source_periods=(item.period,),
+        )
+        for item in observations
+    ]
 
 
 def _close_if_owned(http: Dhis2HttpClient, owned: bool) -> None:
@@ -371,7 +490,97 @@ def enqueue_sync_job(
     return job
 
 
-def execute_sync_job(session: Session, job_id: UUID, client: Dhis2HttpClient | None = None) -> SyncJob:
+def _sync_lock_key(job_id: UUID) -> int:
+    return int.from_bytes(job_id.bytes[:8], byteorder="big", signed=True)
+
+
+@contextmanager
+def sync_job_execution_lock(session: Session, job_id: UUID) -> Iterator[bool]:
+    """Hold a PostgreSQL session lock for the complete network execution.
+
+    The lock is deliberately held on a dedicated connection. A worker crash closes that
+    connection, so a redelivery can reclaim a row left in ``running``. SQLite test/eager mode
+    remains guarded by the conditional status update in :func:`claim_sync_job`.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        yield True
+        return
+    key = _sync_lock_key(job_id)
+    connection = bind.connect()
+    acquired = bool(
+        connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar()
+    )
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+        connection.close()
+
+
+def claim_sync_job(
+    session: Session,
+    job_id: UUID,
+    *,
+    reclaim_running: bool = False,
+) -> bool:
+    """Durably claim one queued delivery before network I/O.
+
+    The conditional update is the concurrency guard: duplicate Celery deliveries cannot both
+    enter extraction. A failed row is reclaimed only for the explicit internal-error retry path.
+    """
+    now = datetime.now(UTC)
+    statuses = [SyncJob.status == JobStatus.QUEUED.value]
+    if reclaim_running:
+        statuses.append(SyncJob.status == JobStatus.RUNNING.value)
+    result = session.execute(
+        update(SyncJob)
+        .where(
+            SyncJob.id == job_id,
+            or_(
+                *statuses,
+                and_(
+                    SyncJob.status == JobStatus.FAILED.value,
+                    SyncJob.error_code == "internal_sync_error",
+                ),
+            ),
+            SyncJob.cancelled.is_(False),
+        )
+        .values(
+            status=JobStatus.RUNNING.value,
+            started_at=now,
+            finished_at=None,
+            error_code=None,
+            error_message=None,
+        )
+    )
+    session.commit()
+    return bool(result.rowcount)
+
+
+def record_sync_internal_failure(session: Session, job_id: UUID) -> None:
+    """Make an unexpected worker failure visible without storing exception details."""
+    session.execute(
+        update(SyncJob)
+        .where(SyncJob.id == job_id, SyncJob.status == JobStatus.RUNNING.value)
+        .values(
+            status=JobStatus.FAILED.value,
+            error_code="internal_sync_error",
+            error_message="The synchronisation worker failed unexpectedly and will retry.",
+            finished_at=datetime.now(UTC),
+        )
+    )
+    session.commit()
+
+
+def execute_sync_job(
+    session: Session,
+    job_id: UUID,
+    client: Dhis2HttpClient | None = None,
+    *,
+    already_claimed: bool = False,
+) -> SyncJob:
     job = session.get(SyncJob, job_id)
     if job is None:
         raise ValueError("Sync job not found.")
@@ -394,11 +603,15 @@ def execute_sync_job(session: Session, job_id: UUID, client: Dhis2HttpClient | N
         _finish(job)
         session.flush()
         return job
-    if job.status not in {JobStatus.QUEUED.value, JobStatus.FAILED.value}:
-        return job
-    job.status = JobStatus.RUNNING.value
-    job.started_at = datetime.now(UTC)
-    session.flush()
+    if already_claimed:
+        if job.status != JobStatus.RUNNING.value:
+            return job
+    else:
+        if job.status not in {JobStatus.QUEUED.value, JobStatus.FAILED.value}:
+            return job
+        job.status = JobStatus.RUNNING.value
+        job.started_at = datetime.now(UTC)
+        session.flush()
     org_unit = session.get(OrgUnit, job.org_unit_id) if job.org_unit_id else None
     if org_unit is None:
         job.status = JobStatus.FAILED.value
@@ -436,19 +649,192 @@ def execute_sync_job(session: Session, job_id: UUID, client: Dhis2HttpClient | N
         return job
 
 
-def _dominant_semantics(mappings) -> str:
-    """The approved aggregation semantics governing how a period may be retrieved.
+def _mapping_semantics(mapping: SourceMapping) -> str:
+    return str(mapping.aggregation_semantics or "SUM").strip().upper()
 
-    If any mapping in the set is not plainly summable, the whole request takes the monthly route
-    so HPIP applies the approved rule itself rather than inheriting the upstream element's.
+
+def _component_checksum(observations: list[AggregateObservation]) -> str:
+    evidence = [
+        {
+            "period": item.period,
+            "checksum": item.payload_checksum,
+            "value": item.value,
+            "absence": item.absence_reason,
+            "invalid": item.value_invalid,
+        }
+        for item in sorted(observations, key=lambda row: row.period)
+    ]
+    payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _normalise_period_observations(
+    observations: list[AggregateObservation],
+    translation: PeriodTranslation,
+    semantics: str,
+) -> list[AggregateObservation]:
+    """Return one observation per item/geography/category under the HPIP period key.
+
+    Native DHIS2 labels such as ``2026July`` are never persisted as analytical periods. Monthly
+    routes are fail-closed: AVERAGE needs every constituent month; LAST needs the final calendar
+    month. Missing components produce an unavailable value rather than a partial calculation.
     """
-    values = {
-        str(getattr(row, "aggregation_semantics", "") or "SUM").strip().upper()
-        for row in mappings
-    }
-    if values - {"SUM", "COUNT"}:
-        return "AVERAGE"
-    return "SUM"
+    unexpected = [
+        item.period
+        for item in observations
+        if not covering_internal_period(item.period, translation.internal_key)
+    ]
+    if unexpected:
+        raise Dhis2ValidationError(
+            f"DHIS2 returned {len(unexpected)} rows outside {translation.internal_key}."
+        )
+    if not translation.is_monthly_route:
+        return [
+            AggregateObservation(
+                org_unit_uid=item.org_unit_uid,
+                period=translation.internal_key,
+                item_uid=item.item_uid,
+                value=item.value,
+                category_option_combo_uid=item.category_option_combo_uid,
+                source_freshness_at=item.source_freshness_at,
+                absence_reason=item.absence_reason,
+                payload_checksum=item.payload_checksum,
+                value_invalid=item.value_invalid,
+                source_periods=(item.period,),
+            )
+            for item in observations
+        ]
+
+    grouped: dict[tuple[str, str, str], list[AggregateObservation]] = {}
+    for item in observations:
+        identity = (
+            item.item_uid,
+            item.org_unit_uid,
+            item.category_option_combo_uid or "",
+        )
+        grouped.setdefault(identity, []).append(item)
+    expected = tuple(translation.dhis2_periods)
+    results: list[AggregateObservation] = []
+    for (item_uid, org_uid, coc), rows in grouped.items():
+        by_period = {row.period: row for row in rows}
+        selected: list[AggregateObservation]
+        value: float | None
+        invalid = False
+        absence: str | None = None
+        if semantics == "AVERAGE":
+            selected = [by_period[period] for period in expected if period in by_period]
+            complete = len(selected) == len(expected)
+            invalid = any(row.value_invalid for row in selected)
+            numeric = [row.value for row in selected if row.value is not None]
+            if complete and not invalid and len(numeric) == len(expected):
+                value = sum(numeric) / len(numeric)
+            else:
+                value = None
+                absence = (
+                    AbsenceReason.INVALID_VALUE.value
+                    if invalid
+                    else AbsenceReason.NO_SOURCE_ROW.value
+                )
+        elif semantics == "LAST":
+            selected = list(rows)
+            last = by_period.get(expected[-1])
+            invalid = bool(last and last.value_invalid)
+            if last is not None and last.value is not None and not invalid:
+                value = last.value
+            else:
+                value = None
+                absence = (
+                    AbsenceReason.INVALID_VALUE.value
+                    if invalid
+                    else AbsenceReason.NO_SOURCE_ROW.value
+                )
+        else:  # guarded by mapping validation; retained as a fail-closed invariant
+            raise Dhis2ValidationError(
+                f"Monthly retrieval cannot apply aggregation semantics {semantics!r}."
+            )
+        freshness = [row.source_freshness_at for row in selected if row.source_freshness_at]
+        results.append(
+            AggregateObservation(
+                org_unit_uid=org_uid,
+                period=translation.internal_key,
+                item_uid=item_uid,
+                value=value,
+                category_option_combo_uid=coc or None,
+                source_freshness_at=min(freshness) if freshness else None,
+                absence_reason=absence,
+                payload_checksum=_component_checksum(selected),
+                value_invalid=invalid,
+                source_periods=tuple(row.period for row in sorted(selected, key=lambda row: row.period)),
+            )
+        )
+    return results
+
+
+def _fetch_aggregate_periods(
+    adapter: AggregateAnalyticsAdapter,
+    mappings: list[SourceMapping],
+    org_unit_uids: list[str],
+    periods: list[str],
+) -> tuple[list[AggregateObservation], int]:
+    """Fetch mappings in compatible groups and return internal-period observations."""
+    grouped: dict[tuple[str, bool], list[SourceMapping]] = {}
+    for mapping in mappings:
+        grouped.setdefault(
+            (_mapping_semantics(mapping), bool(mapping.category_option_combo_uid)), []
+        ).append(mapping)
+
+    normalised: list[AggregateObservation] = []
+    upstream_received = 0
+    for internal_period in dict.fromkeys(periods):
+        for (semantics, category_detail), rows in grouped.items():
+            translation = translate_period(
+                internal_period,
+                aggregation_semantics=semantics,
+            )
+            dx_uids = [
+                (
+                    f"{row.dhis2_item_uid}.{row.category_option_combo_uid}"
+                    if category_detail
+                    else row.dhis2_item_uid
+                )
+                for row in rows
+                if row.dhis2_item_uid
+            ]
+            fetched = adapter.fetch(
+                dx_uids=dx_uids,
+                org_unit_uids=org_unit_uids,
+                periods=list(translation.dhis2_periods),
+                # Category mappings use an exact data-element operand (DE.COC). Requesting the
+                # unrestricted `co` dimension would retrieve every visible category row and then
+                # discard most of them, and could hide a permission/configuration error.
+                include_category_option_combos=False,
+            )
+            if not fetched.complete:
+                raise Dhis2ValidationError(
+                    f"Only {fetched.chunks_succeeded} of {fetched.chunks_requested} analytics "
+                    "chunks completed, so the retrieval is partial."
+                )
+            upstream_received += len(fetched.observations)
+            if category_detail:
+                allowed = {
+                    (row.dhis2_item_uid, row.category_option_combo_uid or "")
+                    for row in rows
+                    if row.dhis2_item_uid
+                }
+                observations = [
+                    item
+                    for item in fetched.observations
+                    if (item.item_uid, item.category_option_combo_uid or "") in allowed
+                ]
+            else:
+                allowed_uids = {row.dhis2_item_uid for row in rows if row.dhis2_item_uid}
+                observations = [
+                    item for item in fetched.observations if item.item_uid in allowed_uids
+                ]
+            normalised.extend(
+                _normalise_period_observations(observations, translation, semantics)
+            )
+    return normalised, upstream_received
 
 
 def _run_aggregate(
@@ -485,54 +871,16 @@ def _run_aggregate(
     try:
         adapter = AggregateAnalyticsAdapter(http)
         ou_uids = _mapped_org_unit_uids(session, org_unit, as_of)
-        # Internal period keys such as FY2026/27 are HPIP labels that DHIS2 does not recognise.
-        # Translate every requested period, and remember which upstream period each came from so
-        # provenance can show it.
-        translations = [
-            translate_period(
-                period,
-                aggregation_semantics=_dominant_semantics(mappings),
-            )
-            for period in periods
-        ]
-        upstream_periods: list[str] = []
-        for translation in translations:
-            for upstream in translation.dhis2_periods:
-                if upstream not in upstream_periods:
-                    upstream_periods.append(upstream)
-        # Category detail is only returned when some approved mapping actually distinguishes it.
-        wants_coc = any(row.category_option_combo_uid for row in mappings)
-        fetched = adapter.fetch(
-            dx_uids=[row.dhis2_item_uid for row in mappings if row.dhis2_item_uid],
-            org_unit_uids=ou_uids,
-            periods=upstream_periods,
-            include_category_option_combos=wants_coc,
+        observations, upstream_received = _fetch_aggregate_periods(
+            adapter, mappings, ou_uids, periods
         )
-        if not fetched.complete:
-            raise Dhis2ValidationError(
-                f"Only {fetched.chunks_succeeded} of {fetched.chunks_requested} analytics chunks "
-                "completed, so the retrieval is partial."
-            )
-        observations = fetched.observations
-        # A response must not carry periods outside what was asked for.
-        unexpected = [
-            observation.period
-            for observation in observations
-            if not any(
-                covering_internal_period(observation.period, translation.internal_key)
-                for translation in translations
-            )
-        ]
-        if unexpected:
-            raise Dhis2ValidationError(
-                f"DHIS2 returned {len(unexpected)} rows for periods outside the requested window."
-            )
         by_uid = {
             (row.dhis2_item_uid, row.category_option_combo_uid or ""): row
             for row in mappings
             if row.dhis2_item_uid
         }
         counts = persist_aggregate_observations(session, job, observations, by_uid, datetime.now(UTC))
+        job.received_count = upstream_received
         job.retry_count = http.last_retry_count
         if _cancelled(session, job.id):
             job.status = JobStatus.CANCELLED.value
@@ -673,7 +1021,11 @@ def _run_event_analytics(
     try:
         adapter = EventAnalyticsAdapter(http)
         ou_uids = _mapped_org_unit_uids(session, org_unit, as_of)
-        observations = adapter.query_events(program_uid=program_uid, org_unit_uids=ou_uids, periods=periods)
+        observations = adapter.query_events(
+            program_uid=program_uid,
+            org_unit_uids=ou_uids,
+            periods=_event_native_periods(periods),
+        )
         persist_event_observations(session, job, observations, mappings, datetime.now(UTC))
         job.retry_count = http.last_retry_count
         job.page_limit_reached = adapter.page_limit_reached
@@ -718,6 +1070,7 @@ def persist_event_aggregate_observations(
             item_uid=item.metric,
             value=item.value,
             source_freshness_at=item.source_freshness_at,
+            source_periods=item.source_periods,
         )
         for item in observations
     ]
@@ -759,7 +1112,17 @@ def _run_event_analytics_aggregate(
     try:
         adapter = EventAnalyticsAdapter(http)
         ou_uids = _mapped_org_unit_uids(session, org_unit, as_of)
-        observations = adapter.aggregate(program_uid=program_uid, org_unit_uids=ou_uids, periods=periods)
+        observations: list[EventAggregateObservation] = []
+        for internal_period in dict.fromkeys(periods):
+            translation = translate_period(internal_period, aggregation_semantics="COUNT")
+            fetched = adapter.aggregate(
+                program_uid=program_uid,
+                org_unit_uids=ou_uids,
+                periods=list(translation.dhis2_periods),
+            )
+            observations.extend(
+                _normalise_event_aggregate_periods(fetched, internal_period)
+            )
         persist_event_aggregate_observations(session, job, observations, datetime.now(UTC))
         job.retry_count = http.last_retry_count
         job.status = JobStatus.SUCCEEDED.value if job.rejected_count == 0 else JobStatus.PARTIALLY_SUCCEEDED.value
@@ -919,8 +1282,7 @@ def should_run_eager() -> bool:
 
 
 def _cancelled(session: Session, job_id: UUID) -> bool:
-    job = session.get(SyncJob, job_id)
-    return bool(job and job.cancelled)
+    return bool(session.scalar(select(SyncJob.cancelled).where(SyncJob.id == job_id)))
 
 
 def _fail_mapping(session: Session, job: SyncJob) -> SyncJob:

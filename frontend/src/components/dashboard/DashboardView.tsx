@@ -2,7 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getAnalysisSnapshot, getChildren, getContext, newRequestKey, queryDashboard } from "@/lib/api";
+import {
+  getAnalysisSnapshot,
+  getChildren,
+  getContext,
+  getSyncJob,
+  newRequestKey,
+  queryDashboard,
+  refreshDashboardSource,
+} from "@/lib/api";
 import {
   DEFAULT_PERIOD,
   type DashboardLink,
@@ -49,6 +57,8 @@ export function DashboardView({
   const [error, setError] = useState<string | null>(null);
   const [denied, setDenied] = useState<string | null>(null);
   const [selected, setSelected] = useState<Measure | null>(null);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [refreshState, setRefreshState] = useState<string | null>(null);
   const contextRef = useRef<CurrentContext | null>(null);
   const executedRef = useRef<DashboardResponse | null>(null);
 
@@ -194,6 +204,36 @@ export function DashboardView({
     );
   }
 
+  async function refreshSource() {
+    setRefreshBusy(true);
+    setRefreshState("Submitting a governed DHIS2 refresh…");
+    try {
+      let job = await refreshDashboardSource({
+        org_unit_id: dashboard!.scope.id,
+        period: dashboard!.period,
+        module: dashboard!.module,
+        idempotency_key: newRequestKey(),
+      });
+      for (let attempt = 0; attempt < 80 && ["queued", "running"].includes(job.status); attempt += 1) {
+        setRefreshState(`DHIS2 refresh ${job.status.replaceAll("_", " ")}…`);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        job = await getSyncJob(job.id);
+      }
+      if (job.status === "succeeded") {
+        setRefreshState(
+          `DHIS2 refresh ${job.status.replaceAll("_", " ")}: ${job.stored_count} source rows stored. Recalculating…`,
+        );
+        navigate({});
+        return;
+      }
+      throw new Error(job.error_message ?? `DHIS2 refresh ended with status ${job.status}.`);
+    } catch (err) {
+      setRefreshState(err instanceof Error ? err.message : "DHIS2 refresh failed.");
+    } finally {
+      setRefreshBusy(false);
+    }
+  }
+
   const current = dashboard;
   const hrefFor = (target: LinkTarget) =>
     dashboardHref({
@@ -211,10 +251,16 @@ export function DashboardView({
   return (
     <AppShell
       context={context}
+      dashboard={current}
       screen={screen}
       workspace={workspace}
       subtitle={`${title} · ${current.scope.name}`}
-      alerts={{ count: current.module_result.quality_flags.length, href: hrefFor({ workspace: "quality" }) }}
+      alerts={{
+        count:
+          current.module_result.quality_alert_count ??
+          (current.module_result.freshness.raw_row_count > 0 ? current.module_result.quality_flags.length : 0),
+        href: hrefFor({ workspace: "quality" }),
+      }}
     >
       <FilterStrip
         dashboard={current}
@@ -227,6 +273,11 @@ export function DashboardView({
         dashboard={current}
         kicker={spec ? `${spec.label}: ${spec.summary}` : `${title} for ${current.scope.level_type.replaceAll("_", " ")} scope`}
         onRecalculate={() => navigate({})}
+        onRefreshSource={
+          context.actions.includes("manage_sync") && current.module !== "mpdsr" ? refreshSource : undefined
+        }
+        refreshState={refreshState}
+        refreshBusy={refreshBusy}
       />
       <Composition
         dashboard={current}

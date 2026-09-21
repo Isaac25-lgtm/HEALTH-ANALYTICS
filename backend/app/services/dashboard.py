@@ -240,8 +240,12 @@ def _population_payload(session: Session, org_unit: OrgUnit, period: str) -> dic
     }
 
 
-def _export_surface(actions: set[str]) -> dict:
-    can_export = ActionPermission.EXPORT.value in actions
+def _export_surface(actions: set[str], *, has_verified_values: bool) -> dict:
+    can_export = ActionPermission.EXPORT.value in actions and has_verified_values
+    unavailable_message = (
+        "No calculated value is available in this snapshot; refresh governed source data and "
+        "resolve configuration blockers before exporting."
+    )
     return {
         "phase6_implemented": True,
         "actions": [
@@ -251,7 +255,9 @@ def _export_surface(actions: set[str]) -> dict:
                 "available": can_export,
                 "implemented": True,
                 "format": "xlsx",
-                "message": "Generates a calculation-run workbook. Official MoH branding is still pending.",
+                "message": unavailable_message
+                if not has_verified_values
+                else "Generates a calculation-run workbook. Official MoH branding is still pending.",
             },
             {
                 "kind": "powerpoint",
@@ -259,7 +265,9 @@ def _export_surface(actions: set[str]) -> dict:
                 "available": can_export,
                 "implemented": True,
                 "format": "pptx",
-                "message": "Uses the platform-default template family until official slides are supplied.",
+                "message": unavailable_message
+                if not has_verified_values
+                else "Uses the platform-default template family until official slides are supplied.",
             },
             {
                 "kind": "report",
@@ -267,7 +275,9 @@ def _export_surface(actions: set[str]) -> dict:
                 "available": can_export,
                 "implemented": True,
                 "format": "md",
-                "message": (
+                "message": unavailable_message
+                if not has_verified_values
+                else (
                     "Writes a run-linked Markdown narrative. It is not a Word or PDF document; "
                     "official publishing templates are pending."
                 ),
@@ -400,6 +410,30 @@ def build_dashboard(
             }
         )
     payload["indicators"] = catalog_rows
+    has_verified_values = any(row.get("raw_value") is not None for row in catalog_rows)
+    configuration_blockers: list[dict[str, str]] = []
+    if int((payload.get("freshness") or {}).get("raw_row_count") or 0) == 0:
+        configuration_blockers.append(
+            {
+                "code": "no_source_rows",
+                "message": "No governed source rows are available for this programme, geography and period.",
+            }
+        )
+    if population.get("status") == "unavailable" and any(
+        row.get("population_derived") for row in catalog_rows
+    ):
+        configuration_blockers.append(
+            {
+                "code": "population_unavailable",
+                "message": "An approved population denominator is unavailable for this period and geography.",
+            }
+        )
+    payload["configuration_blockers"] = configuration_blockers
+    payload["quality_alert_count"] = (
+        len(payload.get("quality_flags") or [])
+        if int((payload.get("freshness") or {}).get("raw_row_count") or 0) > 0
+        else 0
+    )
     dashboard = {
         "screen": screen,
         "scope": {
@@ -428,7 +462,7 @@ def build_dashboard(
         "insights": _insights(payload, population),
         "geometry": geometry_meta,
         "map": map_block,
-        "exports": _export_surface(actions),
+        "exports": _export_surface(actions, has_verified_values=has_verified_values),
         "generated_at": datetime.now(UTC).isoformat(),
         "fixture_label": None,
     }

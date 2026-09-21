@@ -9,9 +9,13 @@ SixMonthly ``yyyySn``, Yearly ``yyyy``, FinancialJuly ``yyyyJuly``.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from app.domain.periods import PeriodError, parse_period
+from app.integrations.dhis2.aggregate import AggregateFetchResult
+from app.integrations.dhis2.errors import Dhis2ValidationError
 from app.integrations.dhis2.periods import (
     RETRIEVAL_MONTHLY,
     RETRIEVAL_NATIVE,
@@ -22,6 +26,57 @@ from app.integrations.dhis2.periods import (
     to_native_period,
     translate,
 )
+from app.integrations.dhis2.types import AggregateObservation, EventAggregateObservation
+from app.models import SourceMapping
+from app.services.sync import (
+    _event_native_periods,
+    _fetch_aggregate_periods,
+    _normalise_event_aggregate_periods,
+    _normalise_period_observations,
+)
+
+
+def _observation(period: str, value: float | None) -> AggregateObservation:
+    return AggregateObservation(
+        org_unit_uid="Abcdef12345",
+        period=period,
+        item_uid="Bbcdef12345",
+        value=value,
+        payload_checksum=f"checksum-{period}",
+    )
+
+
+def test_event_analytics_uses_native_periods_and_normalises_the_response():
+    assert _event_native_periods(["FY2026/27", "FY2026/27Q1"]) == [
+        "2026July",
+        "2026Q3",
+    ]
+    rows = _normalise_event_aggregate_periods(
+        [
+            EventAggregateObservation(
+                org_unit_uid="Abcdef12345",
+                period="2026July",
+                metric="event_count",
+                value=4,
+            )
+        ],
+        "FY2026/27",
+    )
+    assert rows[0].period == "FY2026/27"
+    assert rows[0].source_periods == ("2026July",)
+
+    with pytest.raises(Dhis2ValidationError, match="outside FY2026/27"):
+        _normalise_event_aggregate_periods(
+            [
+                EventAggregateObservation(
+                    org_unit_uid="Abcdef12345",
+                    period="2025July",
+                    metric="event_count",
+                    value=4,
+                )
+            ],
+            "FY2026/27",
+        )
 
 
 def test_internal_financial_year_is_never_sent_literally():
@@ -118,3 +173,116 @@ def test_unparseable_internal_period_is_rejected_before_any_translation():
     with pytest.raises(PeriodError):
         to_native_period("not-a-period")
     assert issubclass(PeriodBridgeError, PeriodError)
+
+
+def test_native_response_is_persistable_under_the_requested_internal_period():
+    translation = translate("FY2026/27", aggregation_semantics="SUM")
+    result = _normalise_period_observations(
+        [_observation("2026July", 120)], translation, "SUM"
+    )
+    assert len(result) == 1
+    assert result[0].period == "FY2026/27"
+    assert result[0].value == 120
+    assert result[0].source_periods == ("2026July",)
+
+
+def test_average_monthly_route_requires_all_months_and_records_lineage():
+    translation = translate("FY2026/27", aggregation_semantics="AVERAGE")
+    complete = [
+        _observation(period, float(index))
+        for index, period in enumerate(translation.dhis2_periods, start=1)
+    ]
+    result = _normalise_period_observations(complete, translation, "AVERAGE")[0]
+    assert result.period == "FY2026/27"
+    assert result.value == 6.5
+    assert result.source_periods == translation.dhis2_periods
+    assert result.payload_checksum
+
+    incomplete = _normalise_period_observations(complete[:-1], translation, "AVERAGE")[0]
+    assert incomplete.value is None
+    assert incomplete.absence_reason == "no_source_row"
+
+
+def test_last_month_route_does_not_substitute_an_earlier_value():
+    translation = translate("FY2026/27", aggregation_semantics="LAST")
+    prior = [_observation(translation.dhis2_periods[-2], 20)]
+    unavailable = _normalise_period_observations(prior, translation, "LAST")[0]
+    assert unavailable.value is None
+    assert unavailable.absence_reason == "no_source_row"
+
+    final = prior + [_observation(translation.dhis2_periods[-1], 30)]
+    resolved = _normalise_period_observations(final, translation, "LAST")[0]
+    assert resolved.value == 30
+    assert resolved.period == "FY2026/27"
+
+
+def test_fetch_groups_semantics_and_category_detail_before_normalising():
+    plain_sum = SourceMapping(
+        internal_source_key="SUM_KEY",
+        programme_id=uuid4(),
+        dhis2_item_uid="Bbcdef12345",
+        item_kind="data_element",
+        aggregation_semantics="SUM",
+    )
+    average = SourceMapping(
+        internal_source_key="AVERAGE_KEY",
+        programme_id=plain_sum.programme_id,
+        dhis2_item_uid="Cbcdef12345",
+        item_kind="data_element",
+        aggregation_semantics="AVERAGE",
+    )
+    category = SourceMapping(
+        internal_source_key="CATEGORY_KEY",
+        programme_id=plain_sum.programme_id,
+        dhis2_item_uid="Dbcdef12345",
+        item_kind="data_element",
+        category_option_combo_uid="Ebcdef12345",
+        aggregation_semantics="SUM",
+    )
+
+    class Adapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def fetch(self, **kwargs):
+            self.calls.append(kwargs)
+            observations = []
+            for operand in kwargs["dx_uids"]:
+                parts = operand.split(".", maxsplit=1)
+                uid = parts[0]
+                coc = parts[1] if len(parts) == 2 else None
+                for index, period in enumerate(kwargs["periods"], start=1):
+                    observations.append(
+                        AggregateObservation(
+                            org_unit_uid="Abcdef12345",
+                            period=period,
+                            item_uid=uid,
+                            value=float(index),
+                            category_option_combo_uid=coc,
+                        )
+                    )
+            return AggregateFetchResult(
+                observations=observations,
+                chunks_requested=1,
+                chunks_succeeded=1,
+            )
+
+    adapter = Adapter()
+    rows, upstream_received = _fetch_aggregate_periods(
+        adapter,
+        [plain_sum, average, category],
+        ["Abcdef12345"],
+        ["FY2026/27"],
+    )
+
+    assert len(adapter.calls) == 3
+    assert sorted(len(call["periods"]) for call in adapter.calls) == [1, 1, 12]
+    assert {row.period for row in rows} == {"FY2026/27"}
+    by_uid = {row.item_uid: row for row in rows}
+    assert by_uid["Bbcdef12345"].value == 1
+    assert by_uid["Cbcdef12345"].value == 6.5
+    assert by_uid["Dbcdef12345"].category_option_combo_uid == "Ebcdef12345"
+    category_call = next(call for call in adapter.calls if "." in call["dx_uids"][0])
+    assert category_call["dx_uids"] == ["Dbcdef12345.Ebcdef12345"]
+    assert category_call["include_category_option_combos"] is False
+    assert upstream_received == 14

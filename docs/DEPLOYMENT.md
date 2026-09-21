@@ -1,6 +1,6 @@
 # Deployment — Render + Neon UAT
 
-This runbook prepares a small, secure UAT deployment for about 100 light users (decisions D-042 to D-050). **Nothing described here has been deployed**, no Neon database has been connected, and `render.yaml` has **not** been validated by Render's Blueprint validator or CLI. Live DHIS2 use is authorised, but authenticated capability and metadata mappings are not yet verified. Passing tests is not owner acceptance.
+This runbook prepares a small, secure UAT deployment for about 100 light users (decisions D-042 to D-050). **Nothing described here has been deployed**, no Neon database has been connected, and `render.yaml` has **not** been validated by Render's Blueprint validator or CLI. Live DHIS2 authentication, national data-view reach and a bounded national aggregate read are verified; hierarchy and source mappings are not approved or applied. Passing tests is not owner acceptance.
 
 ## Topology
 
@@ -74,11 +74,30 @@ Check Render's current Blueprint specification for plan names, `pserv` pre-deplo
 The pre-deploy command runs, in order, on every release:
 
 ```bash
-alembic upgrade head                           # schema (head: 0012_population_staging_identity)
+alembic upgrade head                           # schema (head: 0013_org_mapping_guard)
 python scripts/bootstrap_reference_data.py     # approved reference configuration
 ```
 
 `bootstrap_reference_data.py` creates, only if missing: the MNCH, EPI and MPDSR programmes; roles and server-side action permissions; the versioned indicator catalogue (without effective dates, so production keeps them unavailable until dated or the governed fallback is enabled); the quality-rule catalogue; the D-045 population-period rules for 2024–2030; and a neutral `UG` country root. It never creates users, sub-national geography, DHIS2 UIDs, raw values, populations or boundaries. It is idempotent, serialised by a PostgreSQL advisory lock, refuses a database that is not at the Alembic head (exit 2), and refuses to overwrite configuration that differs from the approved reference (exit 3, nothing written). `--check` reports without writing.
+
+Approved hierarchy and source-mapping packets are separate from discovery proposals. Validate a
+reviewed packet first; then repeat without `--check` to apply the same packet atomically:
+
+```bash
+python scripts/apply_governed_packet.py hierarchy <reviewed-hierarchy.json> \
+  --actor <applying-user> --reviewer <different-approving-user> \
+  --approval-reference <exact-reference-in-packet> --check
+
+python scripts/apply_governed_packet.py source-mapping <reviewed-source-mappings.json> \
+  --actor <applying-user> --reviewer <different-clinical-reviewer> \
+  --approval-reference <exact-reference-in-packet> \
+  --mapping-version <approved-version> --check
+```
+
+Every row must be explicitly approved, the users must be distinct and active with
+`manage_mappings`, and the database must be at the Alembic head. The command never contacts
+DHIS2. A partial mapping packet may be stored after approval, but programme coverage remains
+incomplete and refresh stays blocked until all formula source keys are resolved.
 
 ### First administrator (once, after the first release)
 
@@ -86,7 +105,7 @@ python scripts/bootstrap_reference_data.py     # approved reference configuratio
 python scripts/create_initial_admin.py --username <name> --display-name "<full name>"
 ```
 
-No default username or password. The password is read from a prompt (or `HPIP_ADMIN_PASSWORD`), never printed, and the command is audited and idempotent. The administrator is scoped to `UG`; MPDSR programme access is not granted automatically.
+No default username or password. The password is read from a prompt (or `HPIP_ADMIN_PASSWORD`), never printed, and the command is audited and idempotent. A system administrator lands at `UG` and receives all active programme scopes, including the sensitive MPDSR workspace; non-administrator MPDSR access remains an explicit grant.
 
 For a pre-provisioned DHIS2 identity, use `--identity-provider dhis2 --no-prompt`. Its DHIS2 password is checked only during sign-in and is never stored by HPIP.
 

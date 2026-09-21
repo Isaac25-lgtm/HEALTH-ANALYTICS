@@ -84,6 +84,10 @@ envVarGroups:
         value: "false"
       - key: SYNC_ENABLED
         value: "false"
+      - key: DHIS2_LOGIN_ENABLED
+        value: "false"
+      - key: DHIS2_AUTH_METHOD
+        value: basic
       - key: DHIS2_BASE_URL
         value: https://hmis.health.go.ug
       - key: AI_ENABLED
@@ -136,6 +140,14 @@ services:
           type: keyvalue
           name: hpip-redis
           property: connectionString
+      # Enter a dedicated, least-privilege integration identity before enabling sync. Do not use
+      # an individual user's temporary password for a hosted deployment.
+      - key: DHIS2_USERNAME
+        sync: false
+      - key: DHIS2_PASSWORD
+        sync: false
+      - key: DHIS2_PAT
+        sync: false
 
   - type: worker
     name: hpip-worker
@@ -168,6 +180,12 @@ services:
         fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
       - key: CELERY_RESULT_BACKEND
         fromService: {type: keyvalue, name: hpip-redis, property: connectionString}
+      - key: DHIS2_USERNAME
+        fromService: {type: pserv, name: hpip-api, envVarKey: DHIS2_USERNAME}
+      - key: DHIS2_PASSWORD
+        fromService: {type: pserv, name: hpip-api, envVarKey: DHIS2_PASSWORD}
+      - key: DHIS2_PAT
+        fromService: {type: pserv, name: hpip-api, envVarKey: DHIS2_PAT}
 
   - type: web
     name: hpip-web

@@ -40,6 +40,8 @@ class CurrentContextResponse(BaseModel):
     landing_org_unit: OrgUnitSummary | None
     landing_org_units: list[OrgUnitSummary]
     geography_scopes: list[OrgUnitSummary]
+    geography_entry_units: list[OrgUnitSummary] = Field(default_factory=list)
+    available_geography_levels: list[str] = Field(default_factory=list)
     programmes: list[str]
     actions: list[str]
     identity_provider: str = Field(
@@ -267,6 +269,21 @@ class SyncJobRequest(BaseModel):
             "Needed to prove completion counts through the extraction date."
         ),
     )
+
+
+class DashboardRefreshRequest(BaseModel):
+    """Refresh live aggregate data for a dashboard module.
+
+    Mapping selection remains server-owned: browsers never choose a DHIS2 UID or silently
+    nominate one of several mapping versions.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    org_unit_id: UUID
+    period: str = Field(min_length=4, max_length=20)
+    module: str = Field(min_length=1, max_length=40)
+    idempotency_key: str | None = Field(default=None, max_length=80)
 
 
 class SyncJobResponse(BaseModel):

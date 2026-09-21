@@ -79,6 +79,11 @@ def geography_scope_units(session: Session, user: User) -> list[OrgUnit]:
 def programme_scope_codes(session: Session, user: User) -> set[str]:
     from app.models import Programme
 
+    if user.is_system_admin:
+        return set(
+            session.scalars(select(Programme.code).where(Programme.active.is_(True))).all()
+        )
+
     rows = session.execute(
         select(Programme.code, UserProgrammeScope.is_active, UserProgrammeScope.valid_from, UserProgrammeScope.valid_to)
         .join(UserProgrammeScope, UserProgrammeScope.programme_id == Programme.id)
@@ -150,7 +155,10 @@ def authorised_programme_ids(session: Session, user: User) -> set[UUID]:
 
     codes = programme_scope_codes(session, user)
     if user.is_system_admin:
-        return {row.id for row in session.scalars(select(Programme)).all()}
+        return {
+            row.id
+            for row in session.scalars(select(Programme).where(Programme.active.is_(True))).all()
+        }
     rows = session.scalars(select(Programme).where(Programme.code.in_(codes))).all()
     return {row.id for row in rows}
 

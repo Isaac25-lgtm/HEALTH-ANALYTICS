@@ -1,8 +1,37 @@
-export const PERIOD_OPTIONS = ["FY2024/25", "FY2025/26", "FY2026/27"] as const;
-// Defaults follow the configured period list. Adding an owner-approved period advances the default
-// without a second hard-coded year that can silently drift out of sync.
-export const DEFAULT_PERIOD = PERIOD_OPTIONS[PERIOD_OPTIONS.length - 1];
-export const DEFAULT_COMPARISON = PERIOD_OPTIONS[PERIOD_OPTIONS.length - 2];
+export function financialYearKey(startYear: number): string {
+  return `FY${startYear}/${String(startYear + 1).slice(-2)}`;
+}
+
+function currentFinancialYearStart(at: Date): number {
+  return at.getMonth() >= 6 ? at.getFullYear() : at.getFullYear() - 1;
+}
+
+export function financialYearOptions(at: Date = new Date()): string[] {
+  const currentStart = currentFinancialYearStart(at);
+  return [currentStart - 2, currentStart - 1, currentStart].map(financialYearKey);
+}
+
+export const PERIOD_OPTIONS = financialYearOptions();
+
+/** Latest fully closed Uganda financial year (July-June), never the in-progress year. */
+export function latestClosedFinancialYear(at: Date = new Date()): string {
+  const currentStart = currentFinancialYearStart(at);
+  return financialYearKey(currentStart - 1);
+}
+
+export function previousFinancialYear(period: string): string {
+  const match = /^FY(\d{4})\/\d{2}$/.exec(period);
+  return match ? financialYearKey(Number(match[1]) - 1) : period;
+}
+
+const latestClosed = latestClosedFinancialYear();
+export const DEFAULT_PERIOD = latestClosed;
+export const DEFAULT_COMPARISON = previousFinancialYear(DEFAULT_PERIOD);
+
+export function periodOptionLabel(period: string, at: Date = new Date()): string {
+  const currentStart = currentFinancialYearStart(at);
+  return period === financialYearKey(currentStart) ? `${period} (in progress)` : period;
+}
 
 const SCREEN_BY_LEVEL: Record<string, string> = {
   country: "national",

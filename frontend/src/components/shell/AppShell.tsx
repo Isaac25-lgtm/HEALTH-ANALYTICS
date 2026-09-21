@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { logout } from "@/lib/api";
 import { dashboardHref, MODULE_LABELS, screenForLevel } from "@/lib/scope";
-import type { CurrentContext } from "@/lib/types";
+import type { CurrentContext, DashboardResponse } from "@/lib/types";
 import { WORKSPACES } from "@/lib/workspaces";
 import { roleLabel } from "../dashboard/DashboardFrame";
 import { Icon, type IconName } from "../ui/Icon";
@@ -34,10 +34,18 @@ const WORKSPACE_NAV = Object.values(WORKSPACES)
   .filter((item) => item.slug !== "admin")
   .map((item) => ({ slug: item.slug, href: `/workspace/${item.slug}`, label: item.label, icon: WORKSPACE_ICONS[item.slug] }));
 
+const PROGRAMME_WORKSPACE: Record<string, string> = {
+  anc: "MNCH",
+  intrapartum: "MNCH",
+  immunization: "EPI",
+  mpdsr: "MPDSR",
+};
+
 export type ShellAlerts = { count: number; href: string };
 
 export function AppShell({
   context,
+  dashboard,
   screen,
   workspace,
   subtitle,
@@ -45,6 +53,7 @@ export function AppShell({
   children,
 }: {
   context: CurrentContext;
+  dashboard: DashboardResponse;
   screen: string;
   workspace?: string;
   subtitle?: string;
@@ -54,10 +63,25 @@ export function AppShell({
   const router = useRouter();
   const landing = context.landing_org_unit;
   const role = roleLabel(context);
+  const navCandidates = [dashboard.scope, ...dashboard.ancestors, ...context.geography_entry_units];
   const navUnit = (target: string) =>
-    [...context.landing_org_units, ...context.geography_scopes].find(
+    navCandidates.find(
       (unit) => screenForLevel(unit.level_type) === target,
-    ) ?? landing;
+    );
+  const visibleWorkspaces = WORKSPACE_NAV.filter((item) => {
+    const programme = PROGRAMME_WORKSPACE[item.slug];
+    if (programme) {
+      return context.actions.includes("view") && context.programmes.includes(programme);
+    }
+    if (item.slug === "reports") return context.actions.includes("export");
+    if (item.slug === "ai") return context.actions.includes("generate_ai_report");
+    return context.actions.includes("view");
+  });
+  const linkState = {
+    orgUnitId: dashboard.scope.id,
+    period: dashboard.period,
+    comparison: dashboard.comparison_period,
+  };
 
   async function onLogout() {
     await logout();
@@ -82,14 +106,20 @@ export function AppShell({
           </div>
         </div>
         <nav aria-label="Geography screens" className="nav-group">
-          {GEO_NAV.map((item) => {
+          {GEO_NAV.filter((item) => navUnit(item.screen)).map((item) => {
             const current = !workspace && item.screen === screen;
+            const unit = navUnit(item.screen);
             return (
               <Link
                 key={item.screen}
                 className={current ? "nav-item active" : "nav-item"}
                 aria-current={current ? "page" : undefined}
-                href={dashboardHref({ screen: item.screen, orgUnitId: navUnit(item.screen)?.id })}
+                href={dashboardHref({
+                  ...linkState,
+                  screen: item.screen,
+                  orgUnitId: unit?.id,
+                  module: dashboard.module,
+                })}
               >
                 <Icon name={item.icon} size={20} />
                 <span>{item.label}</span>
@@ -98,14 +128,19 @@ export function AppShell({
           })}
         </nav>
         <nav aria-label="Programme workspaces" className="nav-group">
-          {WORKSPACE_NAV.map((item) => {
+          {visibleWorkspaces.map((item) => {
             const current = workspace === item.slug;
+            const pinnedModule = WORKSPACES[item.slug]?.module;
             return (
               <Link
                 key={item.href}
                 className={current ? "nav-item active" : "nav-item"}
                 aria-current={current ? "page" : undefined}
-                href={item.href}
+                href={dashboardHref({
+                  ...linkState,
+                  workspace: item.slug,
+                  module: pinnedModule ?? dashboard.module,
+                })}
               >
                 <Icon name={item.icon} size={20} />
                 <span>{item.label}</span>
@@ -116,7 +151,7 @@ export function AppShell({
             <Link
               className={workspace === "admin" ? "nav-item active" : "nav-item"}
               aria-current={workspace === "admin" ? "page" : undefined}
-              href="/workspace/admin"
+              href={dashboardHref({ ...linkState, workspace: "admin", module: dashboard.module })}
             >
               <Icon name="admin" size={20} />
               <span>Administration</span>

@@ -2,9 +2,15 @@ from uuid import UUID
 
 from app.config import get_settings
 from app.db.session import get_session_factory
+from app.models import SyncJob
 from app.services.export_jobs import ExportAttempt, process_export_job
 from app.services.purge import PurgeFailed, purge_expired, raise_for_failures
-from app.services.sync import execute_sync_job
+from app.services.sync import (
+    claim_sync_job,
+    execute_sync_job,
+    record_sync_internal_failure,
+    sync_job_execution_lock,
+)
 from app.workers.celery_app import (
     EXPORT_TASK_NAME,
     PROBE_TASK_NAME,
@@ -15,13 +21,22 @@ from app.workers.celery_app import (
 
 
 def run_execute_sync_job(job_id: str) -> str:
+    parsed = UUID(job_id)
     session = get_session_factory()()
     try:
-        job = execute_sync_job(session, UUID(job_id))
-        session.commit()
-        return job.status
+        with sync_job_execution_lock(session, parsed) as acquired:
+            if not acquired:
+                job = session.get(SyncJob, parsed)
+                return job.status if job is not None else "not_found"
+            if not claim_sync_job(session, parsed, reclaim_running=True):
+                job = session.get(SyncJob, parsed)
+                return job.status if job is not None else "not_found"
+            job = execute_sync_job(session, parsed, already_claimed=True)
+            session.commit()
+            return job.status
     except Exception:
         session.rollback()
+        record_sync_internal_failure(session, parsed)
         raise
     finally:
         session.close()
@@ -57,7 +72,13 @@ def run_purge_expired_data(
 
 if celery_app is not None:
 
-    @celery_app.task(name=SYNC_TASK_NAME, bind=True, max_retries=3)
+    @celery_app.task(
+        name=SYNC_TASK_NAME,
+        bind=True,
+        max_retries=3,
+        acks_late=True,
+        reject_on_worker_lost=True,
+    )
     def execute_sync_job_task(self, job_id: str) -> str:
         try:
             return run_execute_sync_job(job_id)

@@ -66,6 +66,9 @@ def test_excel_governance_columns_are_never_blank(client, session, tmp_path, mon
 
 def test_powerpoint_includes_every_indicator_of_a_large_module(client, session, tmp_path, monkeypatch):
     uganda = _unit(session, "UG")
+    put_population(session, uganda, 2024, 10_000_000, code="EXPORT_EPI_POP")
+    put_raw(session, uganda, "FY2024/25", "BCG", 50_000)
+    session.commit()
     monkeypatch.setattr(get_settings(), "export_dir", str(tmp_path))
     headers = auth_header(login(client, "national.analyst"))
     dash = query_dashboard(client, headers, uganda.id, module="immunization").json()
@@ -88,6 +91,10 @@ def test_powerpoint_includes_every_indicator_of_a_large_module(client, session, 
 
 def test_labels_media_types_and_extensions_are_accurate(client, session, tmp_path, monkeypatch):
     pader = _unit(session, "PADER")
+    put_population(session, pader, 2024, 100_000, code="EXPORT_LABEL_POP")
+    put_raw(session, pader, "FY2024/25", "ANC1", 100)
+    put_raw(session, pader, "FY2024/25", "ANC4", 50)
+    session.commit()
     monkeypatch.setattr(get_settings(), "export_dir", str(tmp_path))
     headers = auth_header(login(client, "pader.focal"))
     dash = query_dashboard(client, headers, pader.id).json()

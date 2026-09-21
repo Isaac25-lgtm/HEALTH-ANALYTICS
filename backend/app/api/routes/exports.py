@@ -25,6 +25,7 @@ from app.services.export_jobs import (
     DISPATCH_ERROR_CODES,
     SAFE_ERROR_MESSAGES,
     ExportSubmission,
+    ExportUnavailable,
     export_job_payload,
     request_export_retry,
     start_export_job,
@@ -97,6 +98,12 @@ def _create(
             analysis_snapshot_id=UUID(body.analysis_snapshot_id) if body.analysis_snapshot_id else None,
             view_hash=body.view_hash,
         )
+    except ExportUnavailable as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except AuthorizationError as error:
         session.rollback()
         raise_authz(error)

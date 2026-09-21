@@ -16,8 +16,9 @@ Schema is defined in `backend/app/models/__init__.py`. Historical Alembic revisi
 | `0010_denominator_provenance` | `calculated_values.denominator_provenance` | `backend/alembic/versions/0010_denominator_provenance.py` |
 | `0011_population_import_staging` | `population_import_batches`, `population_import_rows` | `backend/alembic/versions/0011_population_import_staging.py` |
 | `0012_population_staging_identity` | `population_import_batches.reference_fingerprint` and unique staging identity (checksum, importer version, fingerprint) | `backend/alembic/versions/0012_population_staging_identity.py` |
+| `0013_org_mapping_guard` | PostgreSQL exclusion constraint preventing overlapping effective intervals for one DHIS2 organisation-unit UID | `backend/alembic/versions/0013_org_mapping_guard.py` |
 
-**Current head: `0012_population_staging_identity`.** Revisions 0001–0008 are historical and immutable; add forward revisions only.
+**Current head: `0013_org_mapping_guard`.** Revisions 0001–0008 are historical and immutable; add forward revisions only.
 
 Historical files must not import application ORM models, call `Base.metadata.create_all()`, or copy live columns. Importing a future model must not change what 0001 or 0002 creates.
 
@@ -33,7 +34,7 @@ A migrated database holds schema only. `python scripts/bootstrap_reference_data.
 
 No shared or staging database that had already applied the previous dynamic revisions was identified in this repository.
 
-- **Fresh databases:** run Alembic from empty to head (`0012_population_staging_identity`), then the reference bootstrap. Rewritten 0001/0002 are the intended history.
+- **Fresh databases:** run Alembic from empty to head (`0013_org_mapping_guard`), then the reference bootstrap. Rewritten 0001/0002 are the intended history.
 - **A database already stamped at the old 0002 head:** apply only `0003_phase12_corrections`. Do not drop that database and do not replay 0001/0002.
 - **A database created by the old dynamic 0001** (which could have created later tables): treat it as already containing later objects; stamp/upgrade with care and do not assume it can be deleted.
 

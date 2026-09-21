@@ -9,21 +9,47 @@ national BCG figure is 158,721 and Pader is 600, so the difference between "nati
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from sqlalchemy import select
 
-from app.domain.enums import ConnectorType
+from app.domain.enums import ConnectorType, OrgUnitLevel
+from app.integrations.dhis2.aggregate import AggregateAnalyticsAdapter
+from app.integrations.dhis2.http import Dhis2HttpClient
+from app.integrations.dhis2.tracker import TrackerEventsAdapter
 from app.models import OrgUnit, OrgUnitMapping, Programme
-from app.services.geography import descendants
+from app.services.geography import create_org_unit, descendants
+from app.services.hierarchy_authority import DISTRICT_CITY_COHORT
 from app.services.mapping_coverage import required_source_keys
 from app.services.sync import OrgScopeError, _mapped_org_unit_uids, enqueue_sync_job, execute_sync_job
+from tests.test_dhis2_client import _settings
 from tests.test_dhis2_extraction_safety import _enabled_settings
 
 
+def _complete_country_peer_cohort(session, uganda):
+    peers = [
+        unit
+        for unit in descendants(session, uganda)
+        if unit.level_type in {OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value}
+    ]
+    for index in range(DISTRICT_CITY_COHORT - len(peers)):
+        peers.append(
+            create_org_unit(
+                session,
+                code=f"TEST_NATIONAL_{index:03d}",
+                name=f"Test national peer {index:03d}",
+                level_type=OrgUnitLevel.DISTRICT,
+                parent=uganda,
+            )
+        )
+    assert len(peers) == DISTRICT_CITY_COHORT
+    return sorted(peers, key=lambda unit: unit.path)
+
+
 def test_country_root_scope_includes_every_mapped_descendant(session):
-    """A country-level job must request the whole mapped hierarchy, not just the root."""
+    """A country job requests exactly the complete district/city peer cohort."""
     uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
-    units = descendants(session, uganda, include_self=True)
+    units = _complete_country_peer_cohort(session, uganda)
     for index, unit in enumerate(units):
         session.add(
             OrgUnitMapping(
@@ -41,26 +67,93 @@ def test_country_root_scope_includes_every_mapped_descendant(session):
 
 
 def test_a_national_job_cannot_resolve_to_a_single_district(session):
-    """If only one descendant is mapped, the scope is that one unit and nothing pretends otherwise.
-
-    This is the shape of the failure being guarded against: the request would succeed, store rows,
-    and present one district's numbers under a national heading. The scope is therefore returned
-    explicitly so a caller can compare it against the hierarchy it claims to cover.
-    """
+    """One mapped district must fail before a national request reaches DHIS2."""
     uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
-    all_units = descendants(session, uganda, include_self=True)
+    all_units = _complete_country_peer_cohort(session, uganda)
     lone = all_units[-1]
     session.add(
         OrgUnitMapping(org_unit_id=lone.id, source_system="dhis2", external_uid="TEST_UID_ONE_UNIT")
     )
     session.flush()
 
-    uids = _mapped_org_unit_uids(session, uganda)
+    with pytest.raises(OrgScopeError) as excinfo:
+        _mapped_org_unit_uids(session, uganda)
+    assert excinfo.value.code == "org_mapping_incomplete"
+    assert "145" in excinfo.value.message
 
-    assert uids == ["TEST_UID_ONE_UNIT"]
-    # The point: the resolved scope is demonstrably narrower than the hierarchy being requested,
-    # which is exactly the comparison an operator must be able to make before trusting a total.
-    assert len(uids) < len(all_units), "a national request resolving to one unit must be detectable"
+
+def test_duplicate_effective_uid_is_not_a_proven_regional_scope(session):
+    acholi = session.scalar(select(OrgUnit).where(OrgUnit.code == "ACHOLI"))
+    peers = [
+        unit
+        for unit in descendants(session, acholi)
+        if unit.level_type in {OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value}
+    ]
+    assert len(peers) == 2
+    for unit in peers:
+        session.add(
+            OrgUnitMapping(
+                org_unit_id=unit.id,
+                source_system="dhis2",
+                external_uid="TEST_UID_DUPLICATED_SCOPE",
+            )
+        )
+    session.flush()
+
+    with pytest.raises(OrgScopeError) as excinfo:
+        _mapped_org_unit_uids(session, acholi)
+    assert excinfo.value.code == "org_mapping_ambiguous"
+
+
+def test_connectors_preserve_the_service_layer_scope_modes():
+    aggregate_requests: list[httpx.Request] = []
+
+    def aggregate_handler(request: httpx.Request) -> httpx.Response:
+        aggregate_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "headers": [
+                    {"name": "dx"},
+                    {"name": "ou"},
+                    {"name": "pe"},
+                    {"name": "value"},
+                ],
+                "rows": [],
+            },
+        )
+
+    aggregate_client = Dhis2HttpClient(
+        _settings(), transport=httpx.MockTransport(aggregate_handler)
+    )
+    AggregateAnalyticsAdapter(aggregate_client).fetch(
+        dx_uids=["TEST_UID_DX"],
+        org_unit_uids=["TEST_UID_PADER", "TEST_UID_KITGUM"],
+        periods=["202407"],
+        include_descendants=True,
+    )
+    aggregate_client.close()
+    assert [request.url.params["ouMode"] for request in aggregate_requests] == ["SELECTED"]
+
+    tracker_requests: list[httpx.Request] = []
+
+    def tracker_handler(request: httpx.Request) -> httpx.Response:
+        tracker_requests.append(request)
+        return httpx.Response(
+            200, json={"instances": [], "pager": {"page": 1, "pageCount": 1}}
+        )
+
+    tracker_client = Dhis2HttpClient(_settings(), transport=httpx.MockTransport(tracker_handler))
+    TrackerEventsAdapter(tracker_client).fetch_events_result(
+        program_uid="TEST_UID_PROGRAM",
+        org_unit_uids=["TEST_UID_PADER", "TEST_UID_KITGUM"],
+        ou_mode="DESCENDANTS",
+    )
+    tracker_client.close()
+    assert [request.url.params["ouMode"] for request in tracker_requests] == [
+        "DESCENDANTS",
+        "DESCENDANTS",
+    ]
 
 
 def test_unmapped_geography_fails_rather_than_reporting_a_narrow_total(session, monkeypatch):
@@ -68,6 +161,7 @@ def test_unmapped_geography_fails_rather_than_reporting_a_narrow_total(session, 
     settings = _enabled_settings()
     monkeypatch.setattr("app.services.sync.get_settings", lambda: settings)
     uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
+    _complete_country_peer_cohort(session, uganda)
     programme = session.scalar(select(Programme).where(Programme.code == "MNCH"))
 
     with pytest.raises(OrgScopeError) as excinfo:

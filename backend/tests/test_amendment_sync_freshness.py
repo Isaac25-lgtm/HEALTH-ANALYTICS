@@ -49,12 +49,12 @@ def _analytics_client(server_date: str | None = None, *, fail: bool = False) -> 
 
 
 def test_successful_sync_records_freshness_after_finish_and_failures_keep_last_success(session):
-    uganda = _unit(session, "UG")
+    pader = _unit(session, "PADER")
     mnch = _programme(session, "MNCH")
-    map_ou(session, uganda, "TEST_UID_UG")
+    map_ou(session, pader, "TEST_UID_UG")
     map_source(session, mnch.id, "ANC1", "TEST_UID_ANC1")
     job = enqueue_sync_job(
-        session, org_unit=uganda, periods=["202407"], user=None, job_type="aggregate", programme_id=mnch.id
+        session, org_unit=pader, periods=["202407"], user=None, job_type="aggregate", programme_id=mnch.id
     )
     execute_sync_job(session, job.id, client=_analytics_client("2024-08-01T06:00:00Z"))
     assert job.status == "succeeded"
@@ -68,7 +68,7 @@ def test_successful_sync_records_freshness_after_finish_and_failures_keep_last_s
     assert row.detail["last_attempt"]["sync_job_id"] == str(job.id)
 
     failing = enqueue_sync_job(
-        session, org_unit=uganda, periods=["202407"], user=None, job_type="aggregate", programme_id=mnch.id
+        session, org_unit=pader, periods=["202407"], user=None, job_type="aggregate", programme_id=mnch.id
     )
     execute_sync_job(session, failing.id, client=_analytics_client(fail=True))
     assert failing.status == "failed"
@@ -104,9 +104,9 @@ def test_freshness_cannot_be_recorded_before_the_job_finishes(session):
 
 
 def _tracker_setup(session):
-    acholi = _unit(session, "ACHOLI")
+    pader = _unit(session, "PADER")
     mpdsr = _programme(session, "MPDSR")
-    map_ou(session, acholi, "TEST_UID_ACHOLI")
+    map_ou(session, pader, "TEST_UID_ACHOLI")
     session.add(
         EventFieldMapping(
             programme_id=mpdsr.id,
@@ -119,7 +119,7 @@ def _tracker_setup(session):
         )
     )
     session.flush()
-    return acholi, mpdsr
+    return pader, mpdsr
 
 
 def _tracker_client(seen: dict) -> Dhis2HttpClient:
@@ -128,6 +128,38 @@ def _tracker_client(seen: dict) -> Dhis2HttpClient:
         return httpx.Response(200, json={"instances": [], "pager": {"page": 1, "pageCount": 1}})
 
     return Dhis2HttpClient(_settings(), transport=httpx.MockTransport(handler))
+
+
+def test_event_analytics_sends_the_dhis2_native_financial_period(session):
+    pader, mpdsr = _tracker_setup(session)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "headers": [{"name": "event"}, {"name": "ou"}],
+                "rows": [],
+                "metaData": {"pager": {"page": 1, "pageCount": 1}},
+            },
+        )
+
+    http = Dhis2HttpClient(_settings(), transport=httpx.MockTransport(handler))
+    job = enqueue_sync_job(
+        session,
+        org_unit=pader,
+        periods=["FY2024/25"],
+        user=None,
+        job_type="event_analytics_query",
+        programme_id=mpdsr.id,
+    )
+    execute_sync_job(session, job.id, client=http)
+    http.close()
+
+    assert job.status == "succeeded"
+    assert len(requests) == 1
+    assert "pe:2024July" in requests[0].url.params.get_list("dimension")
 
 
 def test_tracker_window_through_extraction_date_verifies_an_empty_cohort(session):
@@ -197,12 +229,12 @@ def test_event_window_end_is_validated(client, session, job_type, window_end, co
 
 
 def test_freshness_endpoint_reports_last_success_and_last_attempt(client, session):
-    uganda = _unit(session, "UG")
+    pader = _unit(session, "PADER")
     mnch = _programme(session, "MNCH")
-    map_ou(session, uganda, "TEST_UID_UG")
+    map_ou(session, pader, "TEST_UID_UG")
     map_source(session, mnch.id, "ANC1", "TEST_UID_ANC1")
     job = enqueue_sync_job(
-        session, org_unit=uganda, periods=["202407"], user=None, job_type="aggregate", programme_id=mnch.id
+        session, org_unit=pader, periods=["202407"], user=None, job_type="aggregate", programme_id=mnch.id
     )
     execute_sync_job(session, job.id, client=_analytics_client("2024-08-01T06:00:00Z"))
     session.commit()

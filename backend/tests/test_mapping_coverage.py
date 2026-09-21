@@ -81,7 +81,7 @@ def test_partial_coverage_cannot_report_a_programme_as_freshly_synchronised(sess
     settings = _enabled_settings()
     monkeypatch.setattr("app.services.sync.get_settings", lambda: settings)
 
-    uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
+    pader = session.scalar(select(OrgUnit).where(OrgUnit.code == "PADER"))
     programme = session.scalar(select(Programme).where(Programme.code == "MNCH"))
     session.add(
         SourceMapping(
@@ -93,12 +93,12 @@ def test_partial_coverage_cannot_report_a_programme_as_freshly_synchronised(sess
         )
     )
     # Give the job a provable geography scope so coverage is the only thing missing.
-    session.add(OrgUnitMapping(org_unit_id=uganda.id, source_system="dhis2", external_uid="TEST_UID_UG"))
+    session.add(OrgUnitMapping(org_unit_id=pader.id, source_system="dhis2", external_uid="TEST_UID_UG"))
     session.flush()
 
     job = enqueue_sync_job(
         session,
-        org_unit=uganda,
+        org_unit=pader,
         periods=["202407"],
         user=None,
         job_type=ConnectorType.AGGREGATE.value,

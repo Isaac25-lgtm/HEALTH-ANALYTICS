@@ -4,7 +4,9 @@ import type {
   DashboardQuery,
   DashboardResponse,
   MapFeatureCollection,
+  OpsStatus,
   OrgUnitSummary,
+  SyncJob,
 } from "./types";
 
 export type { CurrentContext, OrgUnitSummary };
@@ -249,4 +251,22 @@ export type SearchResults = {
 /** Authorised search. The server restricts results to the caller's geography and programmes. */
 export async function searchAuthorised(query: string, signal?: AbortSignal): Promise<SearchResults> {
   return api<SearchResults>(`/search?q=${encodeURIComponent(query)}`, { signal });
+}
+
+/** Ask the server to select the one complete, in-force mapping and refresh the dashboard source. */
+export async function refreshDashboardSource(body: {
+  org_unit_id: string;
+  period: string;
+  module: string;
+  idempotency_key: string;
+}): Promise<SyncJob> {
+  return api<SyncJob>("/sync/refresh", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function getSyncJob(jobId: string): Promise<SyncJob> {
+  return api<SyncJob>(`/sync/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function getOpsStatus(): Promise<OpsStatus> {
+  return api<OpsStatus>("/ops/status");
 }

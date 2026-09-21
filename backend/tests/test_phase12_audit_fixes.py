@@ -230,6 +230,17 @@ def test_dispatch_failure_marks_committed_job_failed(client, session, monkeypatc
 
     monkeypatch.setattr(sync_routes, "should_run_eager", lambda: False)
     monkeypatch.setattr(sync_routes, "dispatch_sync_job", fail_dispatch)
+    # This test isolates durable dispatch failure. Mapping-coverage rejection has its own tests,
+    # so provide the completed preflight result needed to reach the queue boundary.
+    monkeypatch.setattr(
+        sync_routes,
+        "evaluate_coverage",
+        lambda *args, **kwargs: type(
+            "CompleteCoverage",
+            (),
+            {"complete": True, "resolved": ["TEST"], "required": ["TEST"]},
+        )(),
+    )
     # This case is an enabled deployment whose queue is broken. The suite runs with the DHIS2 and
     # sync gates closed, which would otherwise refuse the request before it ever reached dispatch.
     enabled = sync_routes.get_settings().model_copy(

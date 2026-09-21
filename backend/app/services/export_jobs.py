@@ -83,6 +83,16 @@ class ExportGenerationError(RuntimeError):
         super().__init__(SAFE_ERROR_MESSAGES.get(self.error_code, "Export generation failed."))
 
 
+class ExportUnavailable(RuntimeError):
+    code = "export_no_verified_data"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This snapshot has no calculated values to export. Refresh governed source data "
+            "and resolve configuration blockers first."
+        )
+
+
 @dataclass
 class ExportSubmission:
     job: ExportJob
@@ -223,6 +233,9 @@ def submit_export(
         view_hash=view_hash,
     )
     dashboard = snapshot.payload_json or {}
+    indicators = (dashboard.get("module_result") or {}).get("indicators") or []
+    if not any(row.get("raw_value") is not None for row in indicators):
+        raise ExportUnavailable()
     programme = MODULE_PROGRAMME[dashboard["module"]]
     require_programme_access(session, user, programme)
     key = export_idempotency_key(user.id, snapshot.id, export_type)

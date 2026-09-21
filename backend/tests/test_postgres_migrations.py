@@ -9,15 +9,18 @@ from alembic.config import Config
 from historical.phase1 import PHASE1_TABLES
 from historical.phase2 import PHASE2_TABLES
 from sqlalchemy import MetaData, create_engine, inspect, select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.session import reset_engine
+from app.services.sync import sync_job_execution_lock
 
 # No default server: PostgreSQL tests run only against the disposable cluster named explicitly by
 # HPIP_POSTGRES_TEST_URL, so the suite never attempts to log in to a workstation instance.
 DEFAULT_ADMIN_URL = ""
 VERIFY_DB = "hpip_p18_alembic_verify"
-HEAD_REVISION = "0012_population_staging_identity"
+HEAD_REVISION = "0013_org_mapping_guard"
 
 
 def _admin_url() -> str:
@@ -102,6 +105,77 @@ def test_postgres_upgrade_empty_database_to_head(monkeypatch):
         export_cols = {column["name"] for column in inspect(engine).get_columns("export_jobs")}
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            overlap_guard = conn.execute(
+                text(
+                    "SELECT 1 FROM pg_constraint "
+                    "WHERE conname = 'ex_org_mapping_no_overlap' AND contype = 'x'"
+                )
+            ).scalar()
+        first_unit, second_unit = str(uuid4()), str(uuid4())
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO org_units "
+                    "(id, code, name, level_type, path, active) VALUES "
+                    "(:first, 'OVERLAP_A', 'Overlap A', 'district', '/UG/OVERLAP_A', true), "
+                    "(:second, 'OVERLAP_B', 'Overlap B', 'district', '/UG/OVERLAP_B', true)"
+                ),
+                {"first": first_unit, "second": second_unit},
+            )
+        first = engine.connect()
+        second = engine.connect()
+        first_tx = first.begin()
+        second_tx = second.begin()
+        try:
+            first.execute(
+                text(
+                    "INSERT INTO org_unit_mappings "
+                    "(id, org_unit_id, source_system, external_uid, valid_from, valid_to) "
+                    "VALUES (:id, :unit, 'dhis2', 'Abcdef12345', '2026-01-01', '2026-12-31')"
+                ),
+                {"id": str(uuid4()), "unit": first_unit},
+            )
+            second.execute(text("SET LOCAL lock_timeout = '250ms'"))
+            with pytest.raises(DBAPIError):
+                second.execute(
+                    text(
+                        "INSERT INTO org_unit_mappings "
+                        "(id, org_unit_id, source_system, external_uid, valid_from, valid_to) "
+                        "VALUES (:id, :unit, 'dhis2', 'Abcdef12345', "
+                        "'2026-06-01', '2027-05-31')"
+                    ),
+                    {"id": str(uuid4()), "unit": second_unit},
+                )
+            second_tx.rollback()
+            first_tx.commit()
+        finally:
+            if first_tx.is_active:
+                first_tx.rollback()
+            if second_tx.is_active:
+                second_tx.rollback()
+            first.close()
+            second.close()
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        "INSERT INTO org_unit_mappings "
+                        "(id, org_unit_id, source_system, external_uid, valid_from, valid_to) "
+                        "VALUES (:id, :unit, 'dhis2', 'Abcdef12345', "
+                        "'2026-06-01', '2027-05-31')"
+                    ),
+                    {"id": str(uuid4()), "unit": second_unit},
+                )
+            transaction.rollback()
+        lock_id = uuid4()
+        with Session(engine) as first_session, Session(engine) as second_session:
+            with sync_job_execution_lock(first_session, lock_id) as first_acquired:
+                assert first_acquired is True
+                with sync_job_execution_lock(second_session, lock_id) as duplicate_acquired:
+                    assert duplicate_acquired is False
+            with sync_job_execution_lock(second_session, lock_id) as reclaimed_after_release:
+                assert reclaimed_after_release is True
         engine.dispose()
         assert version == HEAD_REVISION
         assert "users" in names
@@ -109,6 +183,7 @@ def test_postgres_upgrade_empty_database_to_head(monkeypatch):
         assert "auth_sessions" in names
         assert "alembic_version" in names
         assert "file_path" in export_cols
+        assert overlap_guard == 1
     finally:
         _cleanup(admin, monkeypatch)
 

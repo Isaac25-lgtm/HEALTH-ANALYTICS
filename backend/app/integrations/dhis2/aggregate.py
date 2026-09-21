@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 
 from app.integrations.dhis2.errors import Dhis2ValidationError
@@ -13,6 +14,9 @@ from app.integrations.dhis2.types import AggregateObservation, parse_optional_da
 # query limits long before it exceeded the response-size cap, so requests are chunked.
 DEFAULT_DX_CHUNK = 50
 DEFAULT_OU_CHUNK = 100
+DATA_ELEMENT_OPERAND = re.compile(
+    r"^([A-Za-z][A-Za-z0-9]{10})\.([A-Za-z][A-Za-z0-9]{10})$"
+)
 
 
 @dataclass
@@ -46,7 +50,7 @@ class AggregateAnalyticsAdapter:
         dx_uids: list[str],
         org_unit_uids: list[str],
         periods: list[str],
-        include_descendants: bool = True,
+        include_descendants: bool = False,
         include_category_option_combos: bool = False,
         dx_chunk_size: int = DEFAULT_DX_CHUNK,
         ou_chunk_size: int = DEFAULT_OU_CHUNK,
@@ -79,8 +83,10 @@ class AggregateAnalyticsAdapter:
                     "skipMeta": "false",
                     "paging": "false",
                 }
-                if include_descendants:
-                    params["ouMode"] = self.client.settings.dhis2_ou_mode or "DESCENDANTS"
+                # The service layer supplies a complete, non-overlapping peer cohort. Expanding
+                # every member again would return child rows and could mix aggregation levels.
+                # Keep this compatibility argument, but never allow it to weaken explicit scope.
+                params["ouMode"] = "SELECTED"
                 if extra_params:
                     params.update(extra_params)
                 payload = self.client.get_json(f"{prefix}/analytics", params=params)
@@ -121,15 +127,26 @@ def parse_analytics_rows(payload: dict) -> list[AggregateObservation]:
         if not isinstance(row, list) or len(row) <= max(dx_i, ou_i, pe_i, value_i):
             continue
         raw_value = row[value_i]
+        raw_dx = str(row[dx_i])
+        item_uid = raw_dx
+        category_option_combo_uid = str(row[coc_i]) if coc_i is not None else None
+        operand = DATA_ELEMENT_OPERAND.fullmatch(raw_dx)
+        if operand:
+            item_uid, operand_coc = operand.groups()
+            if category_option_combo_uid and category_option_combo_uid != operand_coc:
+                raise Dhis2ValidationError(
+                    "Analytics row category option combo conflicts with its data element operand."
+                )
+            category_option_combo_uid = operand_coc
         checksum = hashlib.sha256(json.dumps(row, default=str).encode("utf-8")).hexdigest()
         value, absence, invalid = parse_numeric_value(raw_value)
         observations.append(
             AggregateObservation(
                 org_unit_uid=str(row[ou_i]),
                 period=str(row[pe_i]),
-                item_uid=str(row[dx_i]),
+                item_uid=item_uid,
                 value=value,
-                category_option_combo_uid=str(row[coc_i]) if coc_i is not None else None,
+                category_option_combo_uid=category_option_combo_uid,
                 source_freshness_at=freshness,
                 absence_reason=absence,
                 payload_checksum=checksum,

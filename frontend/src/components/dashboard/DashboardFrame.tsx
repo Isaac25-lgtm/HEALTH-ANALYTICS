@@ -1,6 +1,6 @@
 "use client";
 
-import { DEFAULT_COMPARISON, MODULE_LABELS, PERIOD_OPTIONS } from "@/lib/scope";
+import { DEFAULT_COMPARISON, MODULE_LABELS, PERIOD_OPTIONS, periodOptionLabel } from "@/lib/scope";
 import type { CurrentContext, DashboardResponse, OrgUnitSummary } from "@/lib/types";
 import { Icon } from "../ui/Icon";
 import { SearchBox } from "./SearchBox";
@@ -83,7 +83,7 @@ export function FilterStrip({
         <select name="period" defaultValue={dashboard.period} aria-label="Period">
           {PERIOD_OPTIONS.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {periodOptionLabel(option)}
             </option>
           ))}
         </select>
@@ -98,7 +98,7 @@ export function FilterStrip({
         >
           {PERIOD_OPTIONS.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {periodOptionLabel(option)}
             </option>
           ))}
         </select>
@@ -152,10 +152,16 @@ export function StatusLine({
   dashboard,
   kicker,
   onRecalculate,
+  onRefreshSource,
+  refreshState,
+  refreshBusy = false,
 }: {
   dashboard: DashboardResponse;
   kicker: string;
   onRecalculate: () => void;
+  onRefreshSource?: () => void;
+  refreshState?: string | null;
+  refreshBusy?: boolean;
 }) {
   const freshness = dashboard.module_result.freshness;
   const population = dashboard.population;
@@ -176,14 +182,31 @@ export function StatusLine({
           · snapshot <span data-volatile>{dashboard.analysis_snapshot_id}</span>
         </span>{" "}
         <button type="button" className="link-button" onClick={onRecalculate}>
-          Recalculate
+          Recalculate snapshot
         </button>
+        {onRefreshSource ? (
+          <>
+            {" "}·{" "}
+            <button type="button" className="link-button" onClick={onRefreshSource} disabled={refreshBusy}>
+              Refresh from DHIS2
+            </button>
+          </>
+        ) : null}
       </p>
+      {refreshState ? (
+        <p className="panel-note" role="status">
+          {refreshState}
+        </p>
+      ) : null}
       {population.status === "unavailable" ? (
         <p className="population-notice" role="status" title={population.reason ?? undefined}>
           Approved population is unavailable: population-derived indicators are non-assessable and missing population is
           not treated as zero.
-          {dashboard.can_edit_population ? " A catchment entry can be drafted." : ""}
+          {dashboard.can_edit_population
+            ? dashboard.scope.level_type === "facility"
+              ? " A facility catchment entry can be drafted for approval."
+              : " A governed population version must be staged and approved by authorised users."
+            : ""}
         </p>
       ) : (
         <p className="population-ok">

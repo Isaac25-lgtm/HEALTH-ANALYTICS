@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.models import EventFieldMapping, Programme, SourceMapping
 
+SUPPORTED_AGGREGATE_ITEM_KINDS = {"data_element", "indicator"}
+SUPPORTED_AGGREGATION_SEMANTICS = {"SUM", "COUNT", "AVERAGE", "LAST"}
+
 
 class MappingSelectionError(Exception):
     def __init__(self, code: str, message: str) -> None:
@@ -54,6 +57,22 @@ def select_aggregate_mappings(
     seen_uid: dict[tuple[str, str], str] = {}
     seen_key: dict[str, tuple[str, str]] = {}
     for row in rows:
+        semantics = (row.aggregation_semantics or "SUM").strip().upper()
+        if row.item_kind not in SUPPORTED_AGGREGATE_ITEM_KINDS:
+            raise MappingSelectionError(
+                "mapping_item_kind_invalid",
+                "An enabled aggregate mapping has an unsupported item kind.",
+            )
+        if semantics not in SUPPORTED_AGGREGATION_SEMANTICS:
+            raise MappingSelectionError(
+                "mapping_semantics_invalid",
+                "An enabled aggregate mapping has unsupported aggregation semantics.",
+            )
+        if row.category_option_combo_uid and row.item_kind != "data_element":
+            raise MappingSelectionError(
+                "mapping_operand_invalid",
+                "Only a data-element mapping may specify a category option combo.",
+            )
         if not row.dhis2_item_uid:
             continue
         uid_key = (row.dhis2_item_uid, row.category_option_combo_uid or "")

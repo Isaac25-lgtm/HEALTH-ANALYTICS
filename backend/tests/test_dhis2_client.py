@@ -42,6 +42,23 @@ def test_parse_aggregate_and_no_data():
     assert empty == []
 
 
+def test_parse_exact_data_element_operand_without_an_unbounded_category_dimension():
+    rows = parse_analytics_rows(
+        {
+            "headers": [
+                {"name": "dx"},
+                {"name": "ou"},
+                {"name": "pe"},
+                {"name": "value"},
+            ],
+            "rows": [["Abcdef12345.Bbcdef12345", "Cbcdef12345", "202407", "9"]],
+        }
+    )
+    assert rows[0].item_uid == "Abcdef12345"
+    assert rows[0].category_option_combo_uid == "Bbcdef12345"
+    assert rows[0].value == 9
+
+
 def test_parse_event_query_and_tracker():
     query = {
         "headers": [
