@@ -79,3 +79,25 @@ Implemented defaults below are fail-closed. None is an owner decision until acce
 | EPI performance classification | **Unclassified by design** - no approved bands; values compute, no RAG is invented |
 | Hosted production deployment | **Not deployed** |
 | Formula effective dates | **Absent** - 60 versions undated; UAT-only fallback (D-056) |
+
+### Local UAT runtime, as last verified
+
+These describe this workstation's running state, not a deployment.
+
+- **Status.** Real DHIS2 data is operational at national, regional and district/city level, and local
+  UAT is operational. Hosted production is **not** complete.
+- **Ports.** The web application is served on **port 3100**, not the documented 3000. Port 3000 is
+  held by an unrelated project on this workstation (`WEBSITE MOTION`), which was deliberately not
+  stopped. The API remains on 8010, with `WEB_ORIGIN` set to `http://localhost:3100` for that
+  process so the same-origin proxy and CSRF checks agree with the browser origin.
+- **Acceptance gate.** The Playwright gate was **not completed** on the live-data commits. It
+  hardcodes ports 3000 and 8010 and correctly refused to start while port 3000 was occupied. It was
+  not modified to use another port, since that would weaken the acceptance contract. The last
+  completed gate run passed 24 of 24 with no skips or flakes, on the tree before the live-data work.
+- **Organisation units.** `hpip_live` holds **162** organisation units: the original neutral `UG`
+  root plus **161** imported from DHIS2 (15 regions and the 146 district/city cohort). All 162 carry
+  a DHIS2 mapping, including the root, which is bound to the national root `akV6429SUqu`.
+- **Freshness.** The latest successful aggregate refresh is preserved. A later refresh failed on a
+  spurious DHIS2 authentication response (`dhis2_auth_failed`); the freshness record now shows that
+  failed attempt as its status while `last_success_at` still names the earlier successful job, as
+  D-037 requires. No failed attempt has overwritten a successful timestamp.

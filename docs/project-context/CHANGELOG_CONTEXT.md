@@ -7,7 +7,7 @@ populated from the live instance under recorded owner decisions, and Uganda's re
 
 - **Hierarchy.** `scripts/import_live_hierarchy.py` copied DHIS2's own structure: the national root
   `akV6429SUqu` (MOH - Uganda, UG256), 15 regions and 146 district/city units, each bound to its
-  DHIS2 UID. 161 units and 162 mappings created; the cohort is exactly 146 peers. Idempotent,
+  DHIS2 UID. 161 units were created beneath the existing neutral `UG` root, giving 162 in total, and all 162 carry a DHIS2 mapping; the cohort is exactly 146 peers. Idempotent,
   transactional and audited. The internal code retains the unit type, because stripping it collapses
   "Arua District" and "Arua City" into one unit and cost ten peers on the first run.
 - **Source mappings.** `scripts/import_source_mappings.py` applied 44 owner-confirmed mappings as
