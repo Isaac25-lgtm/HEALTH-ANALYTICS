@@ -82,18 +82,21 @@ Implemented defaults below are fail-closed. None is an owner decision until acce
 
 ### Local UAT runtime, as last verified
 
-These describe this workstation's running state, not a deployment.
+These describe this workstation's running state, not a deployment. The HPIP API and web run as ordinary background processes, not Windows services, so they do **not** survive a workstation restart and must be started again afterwards; PostgreSQL runs as a service and does. `hpip_live` and all live data persisted across the 2026-09-22 restart unchanged.
 
 - **Status.** Real DHIS2 data is operational at national, regional and district/city level, and local
   UAT is operational. Hosted production is **not** complete.
-- **Ports.** The web application is served on **port 3100**, not the documented 3000. Port 3000 is
-  held by an unrelated project on this workstation (`WEBSITE MOTION`), which was deliberately not
-  stopped. The API remains on 8010, with `WEB_ORIGIN` set to `http://localhost:3100` for that
-  process so the same-origin proxy and CSRF checks agree with the browser origin.
-- **Acceptance gate.** The Playwright gate was **not completed** on the live-data commits. It
-  hardcodes ports 3000 and 8010 and correctly refused to start while port 3000 was occupied. It was
-  not modified to use another port, since that would weaken the acceptance contract. The last
-  completed gate run passed 24 of 24 with no skips or flakes, on the tree before the live-data work.
+- **Ports.** The web application is served on **port 3000** and the API on **8010**, with the
+  `.env` origin `http://localhost:3000`. *Superseded 2026-09-22:* for a period on 2026-09-21 the web
+  ran on 3100 because an unrelated project on this workstation (`WEBSITE MOTION`) held port 3000 and
+  was deliberately not stopped. A workstation restart on 2026-09-22 freed port 3000; that project
+  did not restart, and HPIP was started on its documented ports.
+- **Acceptance gate.** The Playwright gate **passed on the live-data code** on 2026-09-22:
+  **24 expected, 0 unexpected, 0 skipped, 0 flaky**, Playwright exited by itself, no process
+  survived, ports 3000 and 8010 were freed and the working tree was unchanged. *Superseded:* it had
+  been blocked on 2026-09-21 while the unrelated project held port 3000; it hardcodes ports 3000
+  and 8010 and correctly refused to start then, and it was never modified to use another port. The
+  gate runs its own disposable SQLite API and never reads or writes `hpip_live`.
 - **Organisation units.** `hpip_live` holds **162** organisation units: the original neutral `UG`
   root plus **161** imported from DHIS2 (15 regions and the 146 district/city cohort). All 162 carry
   a DHIS2 mapping, including the root, which is bound to the national root `akV6429SUqu`.
