@@ -699,7 +699,8 @@ class CalculationRun(Base, TimestampMixin):
     software_version: Mapped[str | None] = mapped_column(String(40))
     aggregation_policy: Mapped[str | None] = mapped_column(String(80))
     evidence_manifest: Mapped[dict | None] = mapped_column(JSON)
-    idempotency_key: Mapped[str | None] = mapped_column(String(80))
+    # Input fingerprint for run reuse (see calculation.RUN_REUSE_PREFIX); indexed by 0014.
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), index=True)
 
 
 class CalculatedValue(Base, TimestampMixin):

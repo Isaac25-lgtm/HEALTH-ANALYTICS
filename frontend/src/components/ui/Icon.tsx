@@ -41,6 +41,7 @@ const PATHS = {
   download: "M12 4v11m0 0-4-4m4 4 4-4M5 19h14",
   arrow: "M5 12h14m0 0-5-5m5 5-5 5",
   logout: "M15 17l5-5-5-5m5 5H9m4 9H5V3h8",
+  chevron: "M6 9l6 6 6-6",
 } as const;
 
 export type IconName = keyof typeof PATHS;

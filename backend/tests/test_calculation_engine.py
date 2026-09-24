@@ -179,7 +179,8 @@ def test_mv4_coefficient_4_3(session):
     measure = _eval(session, "MV4_COVERAGE")
     assert measure.denominator == 10000 * 0.043
     assert round(measure.raw_value, 1) == 10.0
-    assert measure.status == "n_a"
+    # Owner-approved EPI bands (v2-epi-bands, 2026-09-24): coverage below 80% is red.
+    assert measure.status == "red"
 
 
 def test_missing_source_is_not_zero(session):
@@ -245,7 +246,7 @@ def test_remaining_coverage_indicators_execute(session):
     ):
         measure = _eval(session, code)
         assert measure.denominator == 10000 * 0.043
-        assert measure.status == "n_a"
+        assert measure.status == "red"
 
 
 def test_first_trimester_and_ifa_band_edges(session):

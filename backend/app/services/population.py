@@ -98,6 +98,19 @@ def _approved_rule(
 def resolve_population_year_rule(
     session: Session, period_key: str, programme_id: UUID | None = None
 ) -> PopulationYearResolution:
+    memo = _batch_memo(session)
+    key = ("year_rule", period_key, programme_id)
+    if memo is not None and key in memo:
+        return memo[key]
+    result = _resolve_population_year_rule(session, period_key, programme_id)
+    if memo is not None:
+        memo[key] = result
+    return result
+
+
+def _resolve_population_year_rule(
+    session: Session, period_key: str, programme_id: UUID | None = None
+) -> PopulationYearResolution:
     """Resolve the population year only from an approved rule covering this period kind.
 
     No year is assumed. Programme-specific rules take precedence over general rules;
@@ -172,6 +185,8 @@ class TargetDenominator:
     reason: str | None = None
     reason_code: str | None = None
     period_adjusted: bool = False
+    # For a custom range: how many of its months drew on each population year and version.
+    blend: tuple[dict, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -196,6 +211,7 @@ class TargetDenominator:
             ),
             "population_rule_id": str(self.rule_id) if self.rule_id else None,
             "reason_code": self.reason_code,
+            "blend": list(self.blend),
         }
 
 
@@ -215,6 +231,16 @@ def resolve_target_denominator(
     are never scaled by a period fraction.
     """
     spec = parse_period(period_key)
+    if spec.kind == "range":
+        return _range_target_denominator(
+            session,
+            org_unit,
+            spec=spec,
+            coefficient=coefficient,
+            programme_id=programme_id,
+            period_adjust=period_adjust,
+            policy=policy,
+        )
     fraction = spec.fraction_of_year if period_adjust else 1.0
     resolved = resolve_population(session, org_unit, period_key=period_key, programme_id=programme_id, policy=policy)
     if resolved.status != "ok" or resolved.population is None:
@@ -260,6 +286,90 @@ def resolve_target_denominator(
         rule_id=resolved.rule_id,
         reason=resolved.reason,
         period_adjusted=period_adjust,
+    )
+
+
+def _range_target_denominator(
+    session: Session,
+    org_unit: OrgUnit,
+    *,
+    spec,
+    coefficient: float | None,
+    programme_id: UUID | None,
+    period_adjust: bool,
+    policy: str,
+) -> TargetDenominator:
+    """Owner decision 2026-09-24 (D-058): a custom range blends population month by month.
+
+    Each month contributes one twelfth of its own year's approved annual target, so a range from
+    November 2024 to December 2025 uses two months of the 2024 figure and twelve of the 2025 one.
+    If any month has no approved population the whole range is unavailable - a partial target
+    would silently understate the denominator.
+    """
+    from app.integrations.dhis2.periods import months_in
+
+    months = months_in(spec)
+    fraction = spec.fraction_of_year if period_adjust else 1.0
+    parts: list[TargetDenominator] = [
+        resolve_target_denominator(
+            session,
+            org_unit,
+            period_key=month,
+            coefficient=coefficient,
+            programme_id=programme_id,
+            period_adjust=True,
+            policy=policy,
+        )
+        for month in months
+    ]
+    by_year: dict[tuple, int] = {}
+    for part in parts:
+        marker = (part.population_year, str(part.population_version_id) if part.population_version_id else None)
+        by_year[marker] = by_year.get(marker, 0) + 1
+    blend = tuple(
+        {"population_year": year, "population_version_id": version, "months": count}
+        for (year, version), count in sorted(by_year.items(), key=lambda item: (item[0][0] or 0))
+    )
+    missing = next((part for part in parts if not part.ok), None)
+    dominant_year = max(by_year.items(), key=lambda item: item[1])[0][0] if by_year else None
+    if missing is not None:
+        return TargetDenominator(
+            status="unavailable",
+            value=None,
+            period_kind=spec.kind,
+            parent_fy=spec.parent_fy,
+            population_year=dominant_year,
+            fraction=fraction,
+            coefficient=coefficient,
+            annual_target=None,
+            adjusted_target=None,
+            reason=missing.reason or "A month in the range has no approved population.",
+            reason_code=missing.reason_code or UnavailableReason.POPULATION_UNAVAILABLE.value,
+            period_adjusted=period_adjust,
+            blend=blend,
+        )
+    # Each part already carries its one-twelfth share of that month's annual target.
+    adjusted = sum(float(part.value or 0) for part in parts)
+    if not period_adjust:
+        adjusted = adjusted / spec.fraction_of_year
+    versions = {part.population_version_id for part in parts}
+    return TargetDenominator(
+        status="ok",
+        value=adjusted,
+        period_kind=spec.kind,
+        parent_fy=spec.parent_fy,
+        population_year=dominant_year,
+        fraction=fraction,
+        coefficient=float(coefficient or 0),
+        annual_target=adjusted / fraction if fraction else None,
+        adjusted_target=adjusted,
+        population=sum(float(part.population or 0) for part in parts) / len(parts),
+        population_version_id=next(iter(versions)) if len(versions) == 1 else None,
+        population_source=parts[0].population_source,
+        population_type="blended" if len(by_year) > 1 else parts[0].population_type,
+        approval_status=parts[0].approval_status,
+        period_adjusted=period_adjust,
+        blend=blend,
     )
 
 
@@ -734,7 +844,34 @@ def _version_covers_geography(session: Session, version: PopulationVersion, org_
     return _complete_version_class_sum(session, org_unit, version.id, year) is not None
 
 
+# Held in the calculation batch (see calculation.BATCH_INFO_KEY) so one dashboard request, which
+# resolves the same geography and year many times, reads population versions once. Outside a
+# batch nothing is memoised.
+_BATCH_INFO_KEY = "calc_batch"
+_MEMO_KEY = "population_memo"
+
+
+def _batch_memo(session: Session) -> dict | None:
+    batch = session.info.get(_BATCH_INFO_KEY)
+    if batch is None:
+        return None
+    return batch.setdefault(_MEMO_KEY, {})
+
+
 def _select_approved_version(
+    session: Session, org_unit: OrgUnit, year: int, as_of: date
+) -> tuple[PopulationVersion | None, str]:
+    memo = _batch_memo(session)
+    key = ("version", org_unit.id, year, as_of)
+    if memo is not None and key in memo:
+        return memo[key]
+    result = _select_approved_version_uncached(session, org_unit, year, as_of)
+    if memo is not None:
+        memo[key] = result
+    return result
+
+
+def _select_approved_version_uncached(
     session: Session, org_unit: OrgUnit, year: int, as_of: date
 ) -> tuple[PopulationVersion | None, str]:
     rows = list(
@@ -765,6 +902,19 @@ def _select_approved_version(
 
 
 def _direct_value(session: Session, version_id: UUID, org_unit_id: UUID, year: int) -> PopulationValue | None:
+    memo = _batch_memo(session)
+    key = ("direct", version_id, org_unit_id, year)
+    if memo is not None and key in memo:
+        return memo[key]
+    result = _direct_value_uncached(session, version_id, org_unit_id, year)
+    if memo is not None:
+        memo[key] = result
+    return result
+
+
+def _direct_value_uncached(
+    session: Session, version_id: UUID, org_unit_id: UUID, year: int
+) -> PopulationValue | None:
     return session.scalar(
         select(PopulationValue).where(
             PopulationValue.version_id == version_id,
@@ -788,6 +938,19 @@ def _approved_facility_entry(session: Session, org_unit_id: UUID, year: int) -> 
 
 
 def _complete_version_class_sum(
+    session: Session, parent: OrgUnit, version_id: UUID, year: int
+) -> tuple[float, str, list[UUID]] | None:
+    memo = _batch_memo(session)
+    key = ("cohort", parent.id, version_id, year)
+    if memo is not None and key in memo:
+        return memo[key]
+    result = _complete_version_class_sum_uncached(session, parent, version_id, year)
+    if memo is not None:
+        memo[key] = result
+    return result
+
+
+def _complete_version_class_sum_uncached(
     session: Session, parent: OrgUnit, version_id: UUID, year: int
 ) -> tuple[float, str, list[UUID]] | None:
     """Sum one complete, non-overlapping administrative cohort from a population version.

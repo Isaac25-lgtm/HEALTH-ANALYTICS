@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 from app.db.session import reset_engine
-from app.domain.indicator_catalog import INDICATOR_CATALOG, QUALITY_RULE_CATALOG
+from app.domain.indicator_catalog import INDICATOR_CATALOG, QUALITY_RULE_CATALOG, indicator_revisions
 from app.main import app
 from app.models import (
     AnalysisSnapshot,
@@ -105,7 +105,8 @@ def expected_reference_counts() -> dict[str, int]:
         "role_permissions": sum(len(actions) for actions in ROLE_CATALOG.values()),
         "org_units": 1,
         "indicators": len(INDICATOR_CATALOG),
-        "indicator_versions": len(INDICATOR_CATALOG),
+        # Base versions plus the owner-approved governed revisions (v2-epi-bands, 2026-09-24).
+        "indicator_versions": len(INDICATOR_CATALOG) + len(indicator_revisions()),
         "quality_rules": len(QUALITY_RULE_CATALOG),
         "period_rules": len(period_rule_specs()),
     }

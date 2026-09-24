@@ -32,6 +32,10 @@ _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$", re.IGNORECASE)
 _HALF_RE = re.compile(r"^(\d{4})(?:H|S)([12])$", re.IGNORECASE)
 _MONTH_RE = re.compile(r"^(\d{4})[-]?(\d{2})$")
 _YEAR_RE = re.compile(r"^(\d{4})$")
+# A custom month range, inclusive at both ends: 202411..202512 is Nov 2024 to Dec 2025.
+_RANGE_RE = re.compile(r"^(\d{4})(\d{2})\.\.(\d{4})(\d{2})$")
+# Longest range accepted, so an accidental request cannot ask for decades of months.
+MAX_RANGE_MONTHS = 72
 
 
 def uganda_fy_key(value: date) -> str:
@@ -45,8 +49,36 @@ def _fy_bounds(start_year: int) -> tuple[date, date, str]:
     return start, end, f"FY{start_year}/{str(start_year + 1)[2:]}"
 
 
+def range_key(start: date, end: date) -> str:
+    return f"{start.year}{start.month:02d}..{end.year}{end.month:02d}"
+
+
 def parse_period(key: str) -> PeriodSpec:
     raw = key.strip()
+    match = _RANGE_RE.match(raw)
+    if match:
+        start_year, start_month = int(match.group(1)), int(match.group(2))
+        end_year, end_month = int(match.group(3)), int(match.group(4))
+        if not (1 <= start_month <= 12 and 1 <= end_month <= 12):
+            raise PeriodError(f"Invalid month in range {key}")
+        start = date(start_year, start_month, 1)
+        end = date(end_year, end_month, calendar.monthrange(end_year, end_month)[1])
+        if end < start:
+            raise PeriodError(f"Range {key} ends before it starts")
+        months = (end_year - start_year) * 12 + (end_month - start_month) + 1
+        if months > MAX_RANGE_MONTHS:
+            raise PeriodError(f"Range {key} spans {months} months; the maximum is {MAX_RANGE_MONTHS}")
+        # A one-month range is simply that month, so it keeps a single canonical spelling.
+        if months == 1:
+            return parse_period(f"{start_year}{start_month:02d}")
+        return PeriodSpec(
+            key=range_key(start, end),
+            kind="range",
+            months=months,
+            start=start,
+            end=end,
+            parent_fy=uganda_fy_key(start),
+        )
     match = _FY_QUARTER_RE.match(raw)
     if match:
         start_year = int(match.group(1))
@@ -187,6 +219,12 @@ def previous_period(key: str) -> str:
         if half == 1:
             return f"{spec.start.year - 1}H2"
         return f"{spec.start.year}H1"
+    if spec.kind == "range":
+        # The same calendar window one year earlier, so a Nov-Dec range is compared with the
+        # previous Nov-Dec rather than with the months immediately before it.
+        start = date(spec.start.year - 1, spec.start.month, 1)
+        end = date(spec.end.year - 1, spec.end.month, 1)
+        return range_key(start, end)
     raise PeriodError(f"Cannot derive a previous period for {key}")
 
 
@@ -197,3 +235,34 @@ def trend_periods(key: str, count: int = 6) -> list[str]:
         current = previous_period(current)
         series.append(current)
     return list(reversed(series))
+
+
+def trend_window(key: str, today: date | None = None) -> list[str]:
+    """The monthly points a trend chart shows for a period, oldest first.
+
+    A multi-month period (financial year, quarter, half, calendar year or custom range) trends
+    across its own months, as the reference screens do (Jul to Jun). A single month trends across
+    the twelve months ending with it. Months after the last closed month are left out, so an
+    in-progress year shows only what has actually been reported.
+    """
+    spec = parse_period(key)
+    today = today or date.today()
+    last_closed = date(today.year, today.month, 1) - timedelta(days=1)
+    if spec.kind == "month":
+        end = spec.start
+        start_year, start_month = end.year, end.month - 11
+        while start_month < 1:
+            start_month += 12
+            start_year -= 1
+        start = date(start_year, start_month, 1)
+    else:
+        start, end = spec.start, spec.end
+    months: list[str] = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        if date(year, month, 1) <= last_closed:
+            months.append(f"{year}{month:02d}")
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    return months

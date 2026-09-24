@@ -20,6 +20,7 @@ from app.domain.enums import (
     aggregation_class,
 )
 from app.domain.indicator_catalog import QUALITY_RULE_CATALOG
+from app.domain.periods import PeriodError, previous_period
 from app.models import (
     CalculatedValue,
     CalculationRun,
@@ -47,6 +48,10 @@ from app.services.mpdsr import (
 
 RULES = {row["code"]: row for row in QUALITY_RULE_CATALOG}
 REOPEN_FROM_RESOLVED = True
+# Session-scoped cache of flags by fingerprint, held only for the duration of one scan so a
+# scan touching thousands of values reads existing flags in bulk rather than one at a time.
+_FLAG_CACHE_KEY = "quality_flag_cache"
+_FINGERPRINT_CHUNK = 1000
 EVENT_RULES = {
     "ACTIVE_MPDSR_WORKFLOW",
     "NOTIFICATION_BEFORE_DEATH",
@@ -78,6 +83,27 @@ def _fingerprint(
         ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _prime_flag_cache(session: Session, fingerprints: list[str]) -> None:
+    """Load every flag carrying one of these fingerprints into the scan's cache."""
+    cache = session.info.get(_FLAG_CACHE_KEY)
+    if cache is None:
+        return
+    missing = [value for value in dict.fromkeys(fingerprints) if value not in cache]
+    for value in missing:
+        cache[value] = []
+    for start in range(0, len(missing), _FINGERPRINT_CHUNK):
+        chunk = missing[start : start + _FINGERPRINT_CHUNK]
+        for flag in session.scalars(select(DataQualityFlag).where(DataQualityFlag.fingerprint.in_(chunk))):
+            cache[flag.fingerprint].append(flag)
+
+
+def _cached_flags(session: Session, fingerprint: str) -> list[DataQualityFlag] | None:
+    cache = session.info.get(_FLAG_CACHE_KEY)
+    if cache is None or fingerprint not in cache:
+        return None
+    return cache[fingerprint]
 
 
 def _enabled_rules(session: Session) -> dict[str, QualityRule]:
@@ -117,26 +143,40 @@ def _upsert_flag(
         indicator_id=indicator_id,
         extra=extra,
     )
-    existing = session.scalar(
-        select(DataQualityFlag).where(
-            DataQualityFlag.fingerprint == fingerprint,
-            DataQualityFlag.status.in_([QualityStatus.OPEN.value, QualityStatus.ACKNOWLEDGED.value]),
+    cached = _cached_flags(session, fingerprint)
+    if cached is not None:
+        live = (QualityStatus.OPEN.value, QualityStatus.ACKNOWLEDGED.value)
+        active = [flag for flag in cached if flag.status in live]
+        existing = active[0] if active else None
+    else:
+        existing = session.scalar(
+            select(DataQualityFlag).where(
+                DataQualityFlag.fingerprint == fingerprint,
+                DataQualityFlag.status.in_([QualityStatus.OPEN.value, QualityStatus.ACKNOWLEDGED.value]),
+            )
         )
-    )
     if existing is not None:
         existing.last_detected_at = now
         existing.calculation_run_id = calculation_run_id or existing.calculation_run_id
         existing.explanation = explanation
         existing.evidence = evidence
         return existing
-    resolved = session.scalar(
-        select(DataQualityFlag)
-        .where(
-            DataQualityFlag.fingerprint == fingerprint,
-            DataQualityFlag.status == QualityStatus.RESOLVED.value,
+    if cached is not None:
+        resolved_flags = sorted(
+            (flag for flag in cached if flag.status == QualityStatus.RESOLVED.value),
+            key=lambda flag: _aware(flag.last_detected_at),
+            reverse=True,
         )
-        .order_by(DataQualityFlag.last_detected_at.desc())
-    )
+        resolved = resolved_flags[0] if resolved_flags else None
+    else:
+        resolved = session.scalar(
+            select(DataQualityFlag)
+            .where(
+                DataQualityFlag.fingerprint == fingerprint,
+                DataQualityFlag.status == QualityStatus.RESOLVED.value,
+            )
+            .order_by(DataQualityFlag.last_detected_at.desc())
+        )
     if resolved is not None and REOPEN_FROM_RESOLVED:
         resolved.status = QualityStatus.OPEN.value
         resolved.reopen_count = (resolved.reopen_count or 0) + 1
@@ -146,12 +186,15 @@ def _upsert_flag(
         resolved.evidence = evidence
         resolved.resolved_at = None
         return resolved
-    suppressed = session.scalar(
-        select(DataQualityFlag).where(
-            DataQualityFlag.fingerprint == fingerprint,
-            DataQualityFlag.status == QualityStatus.SUPPRESSED.value,
+    if cached is not None:
+        suppressed = next((flag for flag in cached if flag.status == QualityStatus.SUPPRESSED.value), None)
+    else:
+        suppressed = session.scalar(
+            select(DataQualityFlag).where(
+                DataQualityFlag.fingerprint == fingerprint,
+                DataQualityFlag.status == QualityStatus.SUPPRESSED.value,
+            )
         )
-    )
     if suppressed is not None:
         return None
     flag = DataQualityFlag(
@@ -175,7 +218,15 @@ def _upsert_flag(
         last_detected_at=now,
     )
     session.add(flag)
+    if cached is not None:
+        cached.append(flag)
     return flag
+
+
+def _aware(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def scan_quality(
@@ -187,6 +238,25 @@ def scan_quality(
 ) -> list[DataQualityFlag]:
     enabled = _enabled_rules(session)
     created: list[DataQualityFlag] = []
+    session.info[_FLAG_CACHE_KEY] = {}
+    try:
+        _run_scanners(session, org_unit, period, calculation_run, enabled, created)
+    finally:
+        session.info.pop(_FLAG_CACHE_KEY, None)
+    session.flush()
+    if calculation_run is not None:
+        open_count = session.scalars(
+            select(DataQualityFlag).where(
+                DataQualityFlag.calculation_run_id == calculation_run.id,
+                DataQualityFlag.status.in_([QualityStatus.OPEN.value, QualityStatus.ACKNOWLEDGED.value]),
+            )
+        ).all()
+        calculation_run.quality_flag_count = len(open_count)
+    session.flush()
+    return created
+
+
+def _run_scanners(session, org_unit, period, calculation_run, enabled, created) -> None:
     scanners = [
         _scan_calculated,
         _scan_raw,
@@ -201,17 +271,6 @@ def scan_quality(
         for flag in scanner(session, org_unit, period, calculation_run, enabled):
             if flag is not None:
                 created.append(flag)
-    session.flush()
-    if calculation_run is not None:
-        open_count = session.scalars(
-            select(DataQualityFlag).where(
-                DataQualityFlag.calculation_run_id == calculation_run.id,
-                DataQualityFlag.status.in_([QualityStatus.OPEN.value, QualityStatus.ACKNOWLEDGED.value]),
-            )
-        ).all()
-        calculation_run.quality_flag_count = len(open_count)
-    session.flush()
-    return created
 
 
 def _scan_calculated(session, org_unit, period, run, enabled) -> list[DataQualityFlag | None]:
@@ -839,69 +898,111 @@ def _scan_stale_and_spike(session, org_unit, period, run, enabled) -> list[DataQ
     spike_rule = enabled.get("ANOMALOUS_SPIKE_DROP")
     units = descendants(session, org_unit, include_self=True)
     ids = [unit.id for unit in units]
-    query = select(RawAggregateValue).where(
-        RawAggregateValue.org_unit_id.in_(ids),
-        RawAggregateValue.period == period,
-        RawAggregateValue.is_current.is_(True),
-    )
-    if run is not None and run.programme_id is not None:
-        query = query.where(RawAggregateValue.programme_id == run.programme_id)
-    rows = session.scalars(query).all()
+    programme_id = run.programme_id if run is not None else None
+
+    def current_rows(period_key: str) -> list[RawAggregateValue]:
+        query = select(RawAggregateValue).where(
+            RawAggregateValue.org_unit_id.in_(ids),
+            RawAggregateValue.period == period_key,
+            RawAggregateValue.is_current.is_(True),
+        )
+        if programme_id is not None:
+            query = query.where(RawAggregateValue.programme_id == programme_id)
+        return list(session.scalars(query).all())
+
+    rows = current_rows(period)
+    # A spike or drop is judged against the immediately preceding period of the same kind
+    # (the month before a month, the year before a financial year). Comparing a year's total
+    # with a single month would always look like a threefold change.
+    reference_period: str | None = None
+    reference: dict[tuple, float] = {}
+    if spike_rule:
+        try:
+            reference_period = previous_period(period)
+        except PeriodError:
+            reference_period = None
+        if reference_period is not None:
+            for previous in current_rows(reference_period):
+                if previous.value is None or not previous.internal_source_key:
+                    continue
+                key = (previous.org_unit_id, previous.internal_source_key, previous.category_option_combo_uid)
+                reference[key] = float(previous.value)
+    ratio = float(((spike_rule.config if spike_rule else None) or {}).get("ratio") or 3.0)
     now = datetime.now(UTC)
+
+    stale: list[tuple[RawAggregateValue, float]] = []
+    spikes: list[tuple[RawAggregateValue, float]] = []
     for row in rows:
         if stale_rule and row.extracted_at:
-            extracted = row.extracted_at
-            if extracted.tzinfo is None:
-                extracted = extracted.replace(tzinfo=UTC)
-            age_hours = (now - extracted).total_seconds() / 3600
+            age_hours = (now - _aware(row.extracted_at)).total_seconds() / 3600
             if age_hours > settings.dhis2_stale_hours:
-                flags.append(
-                    _upsert_flag(
-                        session,
-                        rule="STALE_REPORTING",
-                        enabled=enabled,
-                        org_unit_id=row.org_unit_id,
-                        period=period,
-                        source_key=row.internal_source_key,
-                        programme_id=row.programme_id,
-                        calculation_run_id=run.id if run else None,
-                        extra="age",
-                        explanation=RULES["STALE_REPORTING"]["explanation"],
-                        evidence={"age_hours": round(age_hours, 1)},
-                    )
-                )
+                stale.append((row, age_hours))
         if spike_rule and row.value is not None and row.internal_source_key:
-            config = spike_rule.config or {}
-            ratio = float(config.get("ratio") or 3.0)
-            prior = session.scalars(
-                select(RawAggregateValue).where(
-                    RawAggregateValue.org_unit_id == row.org_unit_id,
-                    RawAggregateValue.internal_source_key == row.internal_source_key,
-                    RawAggregateValue.is_current.is_(True),
-                    RawAggregateValue.period != period,
-                    RawAggregateValue.value.is_not(None),
-                )
-            ).all()
-            for previous in prior:
-                old = float(previous.value)
-                new = float(row.value)
-                if old > 0 and (new / old >= ratio or old / max(new, 0.0001) >= ratio):
-                    flags.append(
-                        _upsert_flag(
-                            session,
-                            rule="ANOMALOUS_SPIKE_DROP",
-                            enabled=enabled,
-                            org_unit_id=row.org_unit_id,
-                            period=period,
-                            source_key=row.internal_source_key,
-                            programme_id=row.programme_id,
-                            calculation_run_id=run.id if run else None,
-                            extra=previous.period,
-                            explanation=RULES["ANOMALOUS_SPIKE_DROP"]["explanation"],
-                            evidence={"reference_period": previous.period, "ratio": ratio},
-                        )
-                    )
-                    break
+            old = reference.get((row.org_unit_id, row.internal_source_key, row.category_option_combo_uid))
+            new = float(row.value)
+            if old is not None and old > 0 and (new / old >= ratio or old / max(new, 0.0001) >= ratio):
+                spikes.append((row, old))
+
+    fingerprints = [
+        _fingerprint(
+            rule="STALE_REPORTING",
+            org_unit_id=row.org_unit_id,
+            period=period,
+            source_key=row.internal_source_key,
+            indicator_id=None,
+            extra="age",
+        )
+        for row, _ in stale
+    ] + [
+        _fingerprint(
+            rule="ANOMALOUS_SPIKE_DROP",
+            org_unit_id=row.org_unit_id,
+            period=period,
+            source_key=row.internal_source_key,
+            indicator_id=None,
+            extra=reference_period or "",
+        )
+        for row, _ in spikes
+    ]
+    _prime_flag_cache(session, fingerprints)
+
+    for row, age_hours in stale:
+        flags.append(
+            _upsert_flag(
+                session,
+                rule="STALE_REPORTING",
+                enabled=enabled,
+                org_unit_id=row.org_unit_id,
+                period=period,
+                source_key=row.internal_source_key,
+                programme_id=row.programme_id,
+                calculation_run_id=run.id if run else None,
+                extra="age",
+                explanation=RULES["STALE_REPORTING"]["explanation"],
+                evidence={"age_hours": round(age_hours, 1)},
+            )
+        )
+    for row, old in spikes:
+        flags.append(
+            _upsert_flag(
+                session,
+                rule="ANOMALOUS_SPIKE_DROP",
+                enabled=enabled,
+                org_unit_id=row.org_unit_id,
+                period=period,
+                source_key=row.internal_source_key,
+                programme_id=row.programme_id,
+                calculation_run_id=run.id if run else None,
+                extra=reference_period or "",
+                explanation=RULES["ANOMALOUS_SPIKE_DROP"]["explanation"],
+                evidence={
+                    "reference_period": reference_period,
+                    "reference_value": old,
+                    "value": float(row.value),
+                    "ratio": ratio,
+                },
+            )
+        )
     return flags
 
 

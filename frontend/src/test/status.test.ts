@@ -7,7 +7,7 @@ describe("status and units", () => {
     expect(resolveStatus({ raw_value: null, status: "n_a" })).toBe("missing");
     expect(resolveStatus({ raw_value: 0, status: "green" })).toBe("green");
     expect(formatMeasure(null, "%")).toBe("No data");
-    expect(formatMeasure(0, "%", "0.0")).toBe("0.0");
+    expect(formatMeasure(0, "%", "0.0")).toBe("0.0%");
   });
 
   it("does not treat BLUE as high performance", () => {

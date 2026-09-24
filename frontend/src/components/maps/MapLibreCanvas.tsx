@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { dashboardHref, screenForLevel } from "@/lib/scope";
-import { resolveStatus } from "@/lib/status";
+import { formatMeasure, resolveStatus } from "@/lib/status";
 import type { MapFeatureCollection } from "@/lib/types";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -84,7 +84,11 @@ export function MapLibreCanvas({
       properties: {
         ...feature.properties,
         status: resolveStatus(feature.properties),
-        label: `${feature.properties.name}: ${feature.properties.display_value ?? "No data"}`,
+        label: `${feature.properties.name}: ${formatMeasure(
+          feature.properties.raw_value ?? null,
+          feature.properties.unit ?? null,
+          feature.properties.display_value,
+        )}`,
       },
     }));
     const collection = { type: "FeatureCollection" as const, features };
@@ -175,6 +179,24 @@ export function MapLibreCanvas({
         };
         map.on("click", "units-fill", navigateToFeature);
         map.on("click", "units-points", navigateToFeature);
+        // Hover shows the unit and its snapshot value; nothing is computed here.
+        const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: "map-tip" });
+        const showTip = (event: maplibregl.MapLayerMouseEvent) => {
+          const props = event.features?.[0]?.properties;
+          if (!props) {
+            return;
+          }
+          map.getCanvas().style.cursor = "pointer";
+          popup.setLngLat(event.lngLat).setText(String(props.label ?? props.name ?? "")).addTo(map);
+        };
+        const hideTip = () => {
+          map.getCanvas().style.cursor = "";
+          popup.remove();
+        };
+        for (const layer of ["units-fill", "units-points"]) {
+          map.on("mousemove", layer, showTip);
+          map.on("mouseleave", layer, hideTip);
+        }
       }
       const points: number[][] = [];
       for (const feature of features) {

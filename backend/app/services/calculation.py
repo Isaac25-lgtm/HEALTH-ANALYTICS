@@ -6,7 +6,8 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm.util import identity_key
 
 from app.config import get_settings
 from app.domain.enums import (
@@ -27,9 +28,14 @@ from app.domain.periods import parse_period
 from app.models import (
     CalculatedValue,
     CalculationRun,
+    FacilityPopulationEntry,
     Indicator,
     IndicatorVersion,
     OrgUnit,
+    PeriodPopulationRule,
+    PopulationSourceAlias,
+    PopulationValue,
+    PopulationVersion,
     Programme,
     RawAggregateValue,
     RawEventSnapshot,
@@ -162,18 +168,40 @@ def prepare_calculation_batch(
     *,
     org_unit: OrgUnit,
     periods: list[str],
+    programme_codes: list[str] | None = None,
 ) -> dict:
+    # Financial years, quarters, calendar years and custom ranges are built from stored months
+    # before anything is read, so every period resolves from the same monthly source. A
+    # concurrent request may build the same period first; that is harmless, so the savepoint is
+    # rolled back and its rows are simply read.
+    from sqlalchemy.exc import IntegrityError
+
+    from app.services.period_rollup import ensure_period_rollups
+
+    try:
+        with session.begin_nested():
+            ensure_period_rollups(session, periods)
+    except IntegrityError:
+        pass
     units = descendants(session, org_unit, include_self=True)
     unit_ids = [unit.id for unit in units]
-    raw_rows = list(
-        session.scalars(
-            select(RawAggregateValue).where(
-                RawAggregateValue.org_unit_id.in_(unit_ids),
-                RawAggregateValue.period.in_(periods),
-                RawAggregateValue.is_current.is_(True),
-            )
-        ).all()
+    # Formulas read source rows of their own programme only, so a module's batch loads that
+    # programme's rows. Provenance JSON is not needed to calculate; lineage fetches the mapping IDs
+    # it needs in one light query (see _batch_mapping_ids).
+    raw_query = (
+        select(RawAggregateValue)
+        .options(defer(RawAggregateValue.provenance))
+        .where(
+            RawAggregateValue.org_unit_id.in_(unit_ids),
+            RawAggregateValue.period.in_(periods),
+            RawAggregateValue.is_current.is_(True),
+        )
     )
+    if programme_codes:
+        raw_query = raw_query.where(
+            RawAggregateValue.programme_id.in_(select(Programme.id).where(Programme.code.in_(programme_codes)))
+        )
+    raw_rows = list(session.scalars(raw_query).all())
     events = list(
         session.scalars(
             select(RawEventSnapshot).where(
@@ -194,6 +222,7 @@ def prepare_calculation_batch(
         "units": units,
         "unit_by_id": {unit.id: unit for unit in units},
         "raw_index": raw_index,
+        "raw_row_ids": [row.id for row in raw_rows],
         "events": events,
         "version_decisions_by_period": decisions_by_period,
         "indicators": {row.id: row for row in session.scalars(select(Indicator)).all()},
@@ -206,6 +235,120 @@ def prepare_calculation_batch(
     }
     session.info[BATCH_INFO_KEY] = batch
     return batch
+
+
+# Run reuse. Inside a dashboard batch, a run whose inputs are identical to an earlier successful
+# run is returned instead of recalculated: same software, unit, descendant hierarchy, period,
+# programme and indicator set, selected formula versions, current source rows (identity, checksum
+# and value), and reference tables (content-hashed, not timestamped). Event-based formulas depend
+# on the clock through event coverage and are never reused.
+RUN_REUSE_PREFIX = "inputs-v1:"
+_REFERENCE_MODELS = (
+    Indicator,
+    IndicatorVersion,
+    SourceMapping,
+    PeriodPopulationRule,
+    PopulationVersion,
+    PopulationValue,
+    PopulationSourceAlias,
+    FacilityPopulationEntry,
+)
+_REFERENCE_SKIP_COLUMNS = {"created_at", "updated_at"}
+
+
+def _reference_state(session: Session, batch: dict) -> str:
+    cached = batch.get("reference_state")
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    for model in _REFERENCE_MODELS:
+        columns = [column for column in model.__table__.columns if column.name not in _REFERENCE_SKIP_COLUMNS]
+        digest.update(model.__tablename__.encode())
+        rows = session.execute(select(*columns)).all()
+        for row in sorted(repr(tuple(row)) for row in rows):
+            digest.update(row.encode())
+    batch["reference_state"] = digest.hexdigest()
+    return batch["reference_state"]
+
+
+def _input_fingerprint(
+    session: Session,
+    *,
+    org_unit: OrgUnit,
+    period: str,
+    programme_codes: list[str] | None,
+    indicator_codes: list[str] | None,
+    versions: list[IndicatorVersion],
+    decisions: dict,
+) -> str | None:
+    batch = _batch(session)
+    if batch is None or not programme_codes or period not in (batch.get("version_decisions_by_period") or {}):
+        return None
+    indicators = batch.get("indicators") or {}
+    programmes = batch.get("programmes") or {}
+    for version in versions:
+        indicator = indicators.get(version.indicator_id)
+        programme = programmes.get(indicator.programme_id) if indicator is not None else None
+        if indicator is None or (programme is not None and programme.code not in programme_codes):
+            continue
+        if indicator_codes and indicator.code not in indicator_codes:
+            continue
+        spec = version.formula_spec or {}
+        if any(
+            isinstance(part, dict) and part.get("mode") == "event_count"
+            for part in (spec.get("numerator"), spec.get("denominator"))
+        ):
+            return None
+    units = descendants(session, org_unit, include_self=True)
+    unit_ids = {unit.id for unit in units}
+    digest = hashlib.sha256()
+    material = [
+        SOFTWARE_VERSION,
+        str(org_unit.id),
+        period,
+        ",".join(sorted(programme_codes)),
+        ",".join(sorted(indicator_codes or [])),
+        get_settings().undated_formula_policy,
+        _reference_state(session, batch),
+    ]
+    material.extend(sorted(f"{unit.id}|{unit.path}|{unit.level_type}|{unit.active}" for unit in units))
+    material.extend(
+        sorted(
+            f"{decision.indicator_id}|{decision.version.id if decision.version else '-'}|{decision.rule}"
+            for decision in decisions.values()
+        )
+    )
+    by_unit_period = batch.get("raw_by_unit_period")
+    if by_unit_period is None:
+        by_unit_period = {}
+        for (unit_id, row_period, _key), group in batch["raw_index"].items():
+            by_unit_period.setdefault((unit_id, row_period), []).extend(group)
+        batch["raw_by_unit_period"] = by_unit_period
+    rows = [row for unit_id in unit_ids for row in by_unit_period.get((unit_id, period), [])]
+    material.extend(
+        sorted(
+            f"{row.id}|{row.checksum}|{row.value}|{row.programme_id}|{row.value_invalid}|{row.absence_reason}"
+            for row in rows
+        )
+    )
+    for item in material:
+        digest.update(str(item).encode())
+        digest.update(b"\n")
+    return RUN_REUSE_PREFIX + digest.hexdigest()
+
+
+def _reusable_run(session: Session, org_unit: OrgUnit, period: str, fingerprint: str) -> CalculationRun | None:
+    return session.scalar(
+        select(CalculationRun)
+        .where(
+            CalculationRun.idempotency_key == fingerprint,
+            CalculationRun.geography_org_unit_id == org_unit.id,
+            CalculationRun.period == period,
+            CalculationRun.status == JobStatus.SUCCEEDED.value,
+        )
+        .order_by(CalculationRun.finished_at.desc())
+        .limit(1)
+    )
 
 
 def clear_calculation_batch(session: Session) -> None:
@@ -1134,6 +1277,27 @@ def evaluate_formula(
     )
 
 
+def _batch_mapping_ids(session: Session) -> dict | None:
+    """Mapping IDs recorded in the provenance of every row in the batch, read once."""
+    batch = _batch(session)
+    if batch is None or "raw_row_ids" not in batch:
+        return None
+    cached = batch.get("mapping_id_by_row")
+    if cached is None:
+        cached = {}
+        ids = batch["raw_row_ids"]
+        for start in range(0, len(ids), 5000):
+            chunk = ids[start : start + 5000]
+            for row_id, mapping_id in session.execute(
+                select(RawAggregateValue.id, RawAggregateValue.provenance["mapping_id"].as_string()).where(
+                    RawAggregateValue.id.in_(chunk)
+                )
+            ):
+                cached[row_id] = mapping_id
+        batch["mapping_id_by_row"] = cached
+    return cached
+
+
 def _mapping_for_source_row(
     session: Session,
     row: RawAggregateValue,
@@ -1146,7 +1310,11 @@ def _mapping_for_source_row(
     lookup for the duration of one calculation run, during which the mapping table cannot change;
     without it, lineage issues one query per row.
     """
-    mapping_id = (row.provenance or {}).get("mapping_id")
+    batch_ids = _batch_mapping_ids(session)
+    if batch_ids is not None and row.id in batch_ids:
+        mapping_id = batch_ids[row.id]
+    else:
+        mapping_id = (row.provenance or {}).get("mapping_id")
     key = (
         programme_id,
         row.internal_source_key,
@@ -1210,11 +1378,18 @@ def _source_lineage(
             parsed_ids.append(UUID(str(value)))
         except ValueError:
             continue
-    rows = (
-        list(session.scalars(select(RawAggregateValue).where(RawAggregateValue.id.in_(parsed_ids))).all())
-        if parsed_ids
-        else []
-    )
+    # Source rows are normally already loaded by the calculation batch; only rows the session has
+    # not seen are read from the database.
+    rows: list[RawAggregateValue] = []
+    missing: list[UUID] = []
+    for row_id in parsed_ids:
+        loaded = session.identity_map.get(identity_key(RawAggregateValue, row_id))
+        if loaded is not None:
+            rows.append(loaded)
+        else:
+            missing.append(row_id)
+    if missing:
+        rows.extend(session.scalars(select(RawAggregateValue).where(RawAggregateValue.id.in_(missing))).all())
     mapping_ids: set[str] = set()
     versions = {row.mapping_version for row in rows if row.mapping_version}
     freshness = [_utc(row.source_freshness_at) for row in rows if row.source_freshness_at]
@@ -1241,6 +1416,32 @@ def run_calculation(
     if programme_codes:
         programme = session.scalar(select(Programme).where(Programme.code == programme_codes[0]))
         programme_id = programme.id if programme else None
+    batch = _batch(session)
+    if batch is not None:
+        # The mapping table cannot change during one request, so lineage lookups are shared
+        # across every run in the batch.
+        mapping_cache = batch.setdefault("mapping_cache", {})
+    if batch and period in (batch.get("version_decisions_by_period") or {}):
+        decisions = batch["version_decisions_by_period"][period]
+    else:
+        decisions = resolve_indicator_versions_for_period(session, period)
+    versions = sorted(
+        (decision.version for decision in decisions.values() if decision.version is not None),
+        key=lambda row: str(row.id),
+    )
+    fingerprint = _input_fingerprint(
+        session,
+        org_unit=org_unit,
+        period=period,
+        programme_codes=programme_codes,
+        indicator_codes=indicator_codes,
+        versions=versions,
+        decisions=decisions,
+    )
+    if fingerprint is not None:
+        reused = _reusable_run(session, org_unit, period, fingerprint)
+        if reused is not None:
+            return reused
     run = CalculationRun(
         id=uuid4(),
         geography_org_unit_id=org_unit.id,
@@ -1251,18 +1452,10 @@ def run_calculation(
         started_at=started,
         software_version=SOFTWARE_VERSION,
         aggregation_policy=SourceAggregationPolicy.DIRECT_OR_COMPLETE_CHILDREN.value,
+        idempotency_key=fingerprint,
     )
     session.add(run)
     session.flush()
-    batch = _batch(session)
-    if batch and period in (batch.get("version_decisions_by_period") or {}):
-        decisions = batch["version_decisions_by_period"][period]
-    else:
-        decisions = resolve_indicator_versions_for_period(session, period)
-    versions = sorted(
-        (decision.version for decision in decisions.values() if decision.version is not None),
-        key=lambda row: str(row.id),
-    )
     # One load per batch (or per standalone run). The session identity map is weak, so repeated
     # session.get() calls would reload these rows for every run.
     indicator_rows = (batch or {}).get("indicators") or {

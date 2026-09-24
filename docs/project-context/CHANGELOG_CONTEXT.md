@@ -1,5 +1,36 @@
 # Context Changelog
 
+## 2026-09-24 - reference-screen rebuild, part 1: history, periods, colour, map and speed
+
+Owner decisions D-057 to D-064 (2026-09-24). Work continues with downloads, sub-county/facility
+drill-down and MPDSR discovery.
+
+- **History and periods.** 220/220 monthly extraction jobs succeeded for July 2020 to August 2026
+  (EPI 199,893, MNCH 181,612, MPDSR 23,854 rows). Financial years, quarters, calendar years and
+  custom ranges (`YYYYMM..YYYYMM`) are materialised from months with component row IDs, only when
+  every month was extracted (`period_rollup.py`). Custom ranges blend population month by month
+  (D-058). The filter strip has period and comparison pickers with range selection.
+- **EPI bands.** Governed revision `v2-epi-bands` for the 24 coverage and the dropout indicators
+  (D-059); immunisation ranking and the continuum follow the bands.
+- **Colour.** Whole-cell heat colouring in scorecards, status-coloured KPI cards, percentages shown
+  with "%", horizontal status-coloured performer bars, readable period labels and round trend ticks.
+- **Map.** 146/146 district/city boundaries imported, effective 2020-07-01 (D-060, D-061); the
+  importer matches the DHIS2 " District" suffix for district-type units and takes explicit
+  owner-approved aliases (`--alias`). National and regional screens evaluate the district/city
+  cohort for the map and the ranking (`district_comparison`); each feature carries its own
+  district's value and run. Hover shows name and value.
+- **Speed.** National ANC FY view 196 s -> about 8 s warm; monthly EPI about 12 s warm.
+  Data-quality scan reads flags in bulk and compares only comparable periods (D-064); dashboard
+  runs are reused when a SHA-256 fingerprint of every input is unchanged (`calculation_runs.
+  idempotency_key`, migration 0014; event-based MPDSR formulas never reused); the batch loads one
+  programme and no provenance JSON; population, period-rule and mapping lookups are memoised per
+  request; shapes are not loaded for map metadata and simplified shapes are cached by geometry ID.
+- **Flags.** 6,157 spike/drop flags from the old non-comparable comparison resolved with audit
+  (`scripts/resolve_superseded_spike_flags.py`); 332 genuine ones remain. Stale-reporting scope is an
+  open item.
+- **Tests.** Tests no longer inherit operator `.env` approvals or retention windows; EPI tests assert
+  the approved bands; new `test_period_rollup.py` and `test_run_reuse.py`.
+
 ## 2026-09-21 - live national data, from empty control store to real values on screen
 
 The connectors were already correct; HPIP's own configuration tables were empty. They are now

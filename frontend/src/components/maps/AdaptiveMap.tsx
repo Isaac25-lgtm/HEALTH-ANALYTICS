@@ -49,6 +49,9 @@ export function AdaptiveMap({
     return () => controller.abort();
   }, [mapState, snapshotId]);
 
+  const indicatorName =
+    dashboard.module_result.indicators.find((row) => row.indicator_code === block?.selected_indicator)?.name ??
+    block?.selected_indicator;
   const unavailable = mapStateCopy(mapState, block?.mapping_note);
   if (unavailable) {
     return <NoDataState title={unavailable.title} detail={unavailable.detail} />;
@@ -81,8 +84,8 @@ export function AdaptiveMap({
         ))}
       </ul>
       <p className="muted">
-        Coloured by {block.selected_indicator} from snapshot values · {features.feature_count} of{" "}
-        {block.map_feature_org_unit_ids.length + block.missing_geometry_ids.length} units mapped · boundaries effective{" "}
+        Coloured by {indicatorName} · {features.feature_count} of{" "}
+        {block.map_feature_org_unit_ids.length + block.missing_geometry_ids.length} units mapped · boundaries in force on{" "}
         {block.geometry_effective_date}
         {block.missing_geometry_ids.length ? ` · ${block.missing_geometry_ids.length} without approved geometry` : ""}
         {block.missing_value_ids.length ? ` · ${block.missing_value_ids.length} without a value` : ""}

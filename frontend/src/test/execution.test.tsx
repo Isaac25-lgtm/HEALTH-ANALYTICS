@@ -153,7 +153,8 @@ describe("direction-aware presentation", () => {
   });
 
   it("does not call BLUE or unclassified movement better or worse", () => {
-    expect(interpretationLabel({ interpretation: "not_interpreted" })).toBe("Not interpreted");
+    // No approved direction rule: no label at all, never "better" or "worse".
+    expect(interpretationLabel({ interpretation: "not_interpreted" })).toBeNull();
     expect(interpretationLabel({ interpretation: "deteriorated" })).toBe("Deteriorated");
     expect(interpretationLabel(null)).toBeNull();
   });

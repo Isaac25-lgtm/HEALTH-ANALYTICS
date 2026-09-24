@@ -33,7 +33,7 @@ def test_sensitive_event_column_comment_present():
     assert "names" in (table.c.data_values.comment or "").lower()
 
 
-HEAD_REVISION = "0013_org_mapping_guard"
+HEAD_REVISION = "0014_calculation_run_reuse"
 
 
 def test_alembic_head_is_corrective_revision():
@@ -65,6 +65,7 @@ def test_historical_revisions_do_not_import_orm_models():
         root / "versions" / "0011_population_import_staging.py",
         root / "versions" / "0012_population_staging_identity.py",
         root / "versions" / "0013_org_mapping_guard.py",
+        root / "versions" / "0014_calculation_run_reuse.py",
         root / "historical" / "phase1.py",
         root / "historical" / "phase2.py",
         root / "historical" / "phase12_corrections.py",

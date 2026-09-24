@@ -150,7 +150,7 @@ def test_intrapartum_units_and_appendix_t_states(session):
     assert by_code["SUCCESSFUL_RESUSCITATION"]["status"] == "blue"
 
 
-def test_immunization_unclassified_dropout_and_continuum(session):
+def test_immunization_epi_bands_dropout_and_continuum(session):
     uganda = _unit(session, "UG")
     admin = _user(session, "admin.user")
     put_population(session, uganda, 2024, 1_000_000, code="FIX_EPI")
@@ -167,12 +167,15 @@ def test_immunization_unclassified_dropout_and_continuum(session):
         include_children=False,
     )
     by_code = {row["indicator_code"]: row for row in result["indicators"]}
-    assert by_code["MV4_COVERAGE"]["status"] in {"n_a", "unclassified", None} or by_code[
-        "MV4_COVERAGE"
-    ]["performance_status"] in {"n_a", "unclassified"}
+    # 34,400 / (1,000,000 x 4.3%) = 80%: amber under the approved EPI bands (80-89%).
+    assert round(by_code["MV4_COVERAGE"]["raw_value"], 1) == 80.0
+    assert by_code["MV4_COVERAGE"]["status"] == "yellow"
     assert by_code["PENTA_DROPOUT"]["raw_value"] is not None
-    assert result["continuum"]["penta_dropout"]["threshold_state"] == "no_approved_threshold"
-    assert result["continuum"]["malaria_dropout"]["threshold_state"] == "no_approved_threshold"
+    # Penta dropout (43,000 - 40,000) / 43,000 = 7.0% is green; MV1-MV4 dropout 20% is red.
+    assert result["continuum"]["penta_dropout"]["status"] == "green"
+    assert result["continuum"]["penta_dropout"]["threshold_state"] == "approved_band"
+    assert result["continuum"]["malaria_dropout"]["status"] == "red"
+    assert result["continuum"]["malaria_dropout"]["threshold_state"] == "approved_band"
 
 
 def test_mpdsr_includes_both_streams_and_hides_event_uids(session):

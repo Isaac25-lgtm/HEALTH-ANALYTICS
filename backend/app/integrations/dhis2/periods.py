@@ -98,12 +98,23 @@ def to_native_period(key: str) -> str:
     if spec.kind == "fy":
         # Uganda's financial year starts in July, which DHIS2 spells <start-year>July.
         return f"{spec.start.year}July"
+    if spec.kind == "range":
+        # No DHIS2 period type has arbitrary boundaries. Ranges are always built from months.
+        raise PeriodBridgeError(f"Custom range {spec.key} has no native DHIS2 period; retrieve its months.")
     raise PeriodBridgeError(f"No DHIS2 period type matches internal period kind {spec.kind!r}.")
 
 
 def translate(key: str, *, aggregation_semantics: str | None = None) -> PeriodTranslation:
     """Decide how to retrieve one internal period, honouring approved aggregation semantics."""
     spec = parse_period(key)
+    if spec.kind == "range":
+        # A custom range has no DHIS2 equivalent, whatever the semantics: fetch its months.
+        return PeriodTranslation(
+            internal_key=spec.key,
+            route=RETRIEVAL_MONTHLY,
+            dhis2_periods=months_in(spec),
+            native_period=None,
+        )
     native = to_native_period(spec.key)
     semantics = (aggregation_semantics or "SUM").strip().upper()
     if spec.kind == "month" or semantics in _NATIVE_SAFE_SEMANTICS:

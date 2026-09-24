@@ -42,20 +42,28 @@ def _seed_first_trimester(session):
         put_raw(session, unit, "FY2024/25", "ANC1", total)
 
 
-def test_national_map_never_substitutes_district_polygons_for_regions(client, session):
+def test_national_map_shows_district_values_never_region_values_on_district_shapes(client, session):
+    # Since 2026-09-24 the national screen maps the district/city cohort (the reference layout).
+    # Every feature is a district drawn with that district's own calculated value; region values
+    # are never painted onto district polygons.
     _district_geometries(session)
     session.commit()
     headers = auth_header(login(client, "national.analyst"))
     body = query_dashboard(client, headers, _unit(session, "UG").id).json()
     block = body["map"]
-    assert block["map_state"] == "geometry_unavailable_for_level"
-    assert block["map_level"] == "region_equivalent"
-    assert block["map_feature_org_unit_ids"] == []
-    assert set(block["missing_geometry_ids"]) == {str(_unit(session, "ACHOLI").id), str(_unit(session, "TESO").id)}
-    assert "not substituted" in block["mapping_note"]
+    districts = {row["org_unit_id"]: row for row in body["module_result"]["district_comparison"]}
+    mapped = {str(_unit(session, code).id) for code in ("PADER", "KITGUM", "SOROTI")}
+    assert block["map_state"] == "mapped"
+    assert block["map_level"] == "district_equivalent"
+    assert set(block["map_feature_org_unit_ids"]) == mapped
+    assert mapped <= set(districts)
+    regions = {str(_unit(session, code).id) for code in ("ACHOLI", "TESO")}
+    assert not regions & set(block["map_feature_org_unit_ids"])
+    assert set(block["missing_geometry_ids"]) == set(districts) - mapped
     features = client.get(f"/analysis-snapshots/{body['analysis_snapshot_id']}/map-features", headers=headers).json()
-    assert features["features"] == []
-    assert features["map_state"] == "geometry_unavailable_for_level"
+    assert {feature["id"] for feature in features["features"]} == mapped
+    for feature in features["features"]:
+        assert feature["properties"]["calculation_run_id"] == districts[feature["id"]]["calculation_run_id"]
 
 
 def test_regional_map_features_match_the_value_rows_one_to_one(client, session):

@@ -181,7 +181,7 @@ def _facility_comparisons(
 ) -> list[dict]:
     programme = MODULE_PROGRAMME[module]
     codes = MODULE_INDICATORS[module]
-    prepare_calculation_batch(session, org_unit=org_unit, periods=[period])
+    prepare_calculation_batch(session, org_unit=org_unit, periods=[period], programme_codes=[programme])
     rows = []
     try:
         for child in descendants(session, org_unit, include_self=False):
@@ -219,7 +219,12 @@ def _facility_comparisons(
 
 
 def _population_payload(session: Session, org_unit: OrgUnit, period: str) -> dict:
-    resolved = resolve_population(session, org_unit, period_key=period)
+    spec = parse_period(period)
+    blended = spec.kind == "range"
+    # A custom range has no single population year: its denominators blend each month's own year
+    # (D-058). The caption shows the population in force at the range's end and says so.
+    caption_key = f"{spec.end.year}{spec.end.month:02d}" if blended else period
+    resolved = resolve_population(session, org_unit, period_key=caption_key)
     return {
         "status": resolved.status,
         "population": resolved.population,
@@ -237,6 +242,7 @@ def _population_payload(session: Session, org_unit: OrgUnit, period: str) -> dic
             str(resolved.used_facility_entry_id) if resolved.used_facility_entry_id else None
         ),
         "official_or_estimated": resolved.population_type,
+        "blended_by_month": blended,
     }
 
 
@@ -352,8 +358,12 @@ def build_dashboard(
         module=chosen,
         comparison_period=comparison_period,
         include_children=include_children,
+        district_cohort=screen in {"national", "regional"},
     )
     comparisons = payload.get("org_unit_comparison") or []
+    # National and regional screens map and rank districts/cities (the reference layout); the
+    # scorecard keeps the direct children.
+    district_rows = payload.get("district_comparison") or []
     if screen == "district":
         comparisons = _facility_comparisons(
             session,
@@ -374,7 +384,7 @@ def build_dashboard(
     rank_code = _resolve_selected_indicator(chosen, payload, selected_indicator)
     population = _population_payload(session, org_unit, period)
     effective_date = parse_period(period).end
-    geometry = map_feature_collection(session, user, org_unit, as_of=effective_date)
+    geometry = map_feature_collection(session, user, org_unit, as_of=effective_date, include_features=False)
     geometry_meta = {key: value for key, value in geometry.items() if key != "features"}
     if screen == "facility":
         map_rows = [
@@ -387,7 +397,7 @@ def build_dashboard(
             }
         ]
     else:
-        map_rows = comparisons
+        map_rows = district_rows or comparisons
     map_block = build_map_block(
         session,
         user,
@@ -457,7 +467,7 @@ def build_dashboard(
         "kpis": kpis,
         "module_result": payload,
         "facility_scorecard": comparisons if screen == "district" else [],
-        "ranking": _rank_rows(comparisons, rank_code, payload),
+        "ranking": _rank_rows(district_rows or comparisons, rank_code, payload),
         "selected_indicator": rank_code,
         "insights": _insights(payload, population),
         "geometry": geometry_meta,

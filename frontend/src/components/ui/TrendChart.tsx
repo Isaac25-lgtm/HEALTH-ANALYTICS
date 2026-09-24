@@ -1,3 +1,4 @@
+import { periodLabel, shortPeriodLabel } from "@/lib/periods";
 import type { DashboardResponse } from "@/lib/types";
 
 const WIDTH = 560;
@@ -6,6 +7,13 @@ const LEFT = 38;
 const RIGHT = 10;
 const TOP = 10;
 const BOTTOM = 26;
+
+function niceStep(rough: number): number {
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const scaled = rough / magnitude;
+  const factor = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 2.5 ? 2.5 : scaled <= 5 ? 5 : 10;
+  return factor * magnitude;
+}
 
 /**
  * Plots server-calculated values for one indicator across the snapshot's trend periods. The only
@@ -35,11 +43,18 @@ export function TrendChart({
   }
   const percent = series.some((item) => item.unit === "%");
   const present = series.filter((item) => item.value != null).map((item) => item.value as number);
-  const max = percent ? Math.max(100, ...present) : Math.max(...present, 0);
-  const min = Math.min(0, ...present);
+  const top = percent ? Math.max(100, ...present) : Math.max(...present, 0);
+  const bottom = Math.min(0, ...present);
+  // Axis ticks at round numbers (0, 25, 50 ... or 0, 2k, 4k ...); screen layout only.
+  const step = niceStep((top - bottom) / 4 || 1);
+  const min = Math.floor(bottom / step) * step;
+  const max = Math.ceil(top / step) * step;
   const span = max - min || 1;
   const yFor = (value: number) => TOP + plotHeight - ((value - min) / span) * plotHeight;
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((share) => min + share * span);
+  const ticks: number[] = [];
+  for (let tick = min; tick <= max + step / 2; tick += step) {
+    ticks.push(tick);
+  }
   let path = "";
   let drawing = false;
   for (const item of series) {
@@ -64,7 +79,7 @@ export function TrendChart({
           <g key={tick}>
             <line x1={LEFT} x2={WIDTH - RIGHT} y1={yFor(tick)} y2={yFor(tick)} className="trend-grid" />
             <text x={LEFT - 6} y={yFor(tick) + 4} textAnchor="end" className="trend-axis">
-              {Number.isInteger(tick) ? tick : tick.toFixed(1)}
+              {Number.isInteger(tick) ? tick.toLocaleString() : tick.toFixed(1)}
               {percent ? "%" : ""}
             </text>
           </g>
@@ -74,7 +89,7 @@ export function TrendChart({
           item.value == null ? null : (
             <circle key={item.period} cx={item.x} cy={yFor(item.value)} r="3.2" className="trend-point">
               <title>
-                {item.period}: {item.display ?? item.value}
+                {periodLabel(item.period)}: {item.display ?? item.value}
                 {item.unit === "%" ? "%" : item.unit ? ` ${item.unit}` : ""}
               </title>
             </circle>
@@ -83,7 +98,7 @@ export function TrendChart({
         {series.map((item, index) =>
           index % labelEvery === 0 ? (
             <text key={`label-${item.period}`} x={item.x} y={HEIGHT - 8} textAnchor="middle" className="trend-axis">
-              {item.period}
+              {shortPeriodLabel(item.period)}
             </text>
           ) : null,
         )}

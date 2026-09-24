@@ -601,13 +601,14 @@ def test_maternal_timely_boundaries(session):
     assert review.numerator == 1
 
 
-def test_mv1_mv4_dropout_has_no_invented_thresholds(session):
+def test_mv1_mv4_dropout_uses_only_the_approved_epi_band(session):
     uganda = _unit(session, "UG")
     put_raw(session, uganda, "FY2024/25", "MV1", 100)
     put_raw(session, uganda, "FY2024/25", "MV4", 80)
     measure = _eval(session, "MV1_MV4_DROPOUT")
     assert measure.raw_value == 20
-    assert measure.status == "n_a"
+    # Owner-approved EPI bands (v2-epi-bands, 2026-09-24): dropout of 10% or more is red.
+    assert measure.status == "red"
 
 
 def test_historical_source_lineage_remains_available(session):

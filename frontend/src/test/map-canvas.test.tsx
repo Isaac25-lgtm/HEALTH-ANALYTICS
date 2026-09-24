@@ -77,6 +77,10 @@ vi.mock("maplibre-gl", () => {
       }
     }
 
+    getCanvas() {
+      return { style: {} as Record<string, string> };
+    }
+
     emitIdle() {
       const queued = [...this.idleHandlers];
       this.idleHandlers.clear();
@@ -98,6 +102,18 @@ vi.mock("maplibre-gl", () => {
     default: {
       Map: FakeMap,
       NavigationControl: class {},
+      Popup: class {
+        setLngLat() {
+          return this;
+        }
+        setText() {
+          return this;
+        }
+        addTo() {
+          return this;
+        }
+        remove() {}
+      },
       LngLatBounds: FakeBounds,
     },
   };

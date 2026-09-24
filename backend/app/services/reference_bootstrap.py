@@ -49,7 +49,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.enums import ActionPermission, ApprovalStatus, OrgUnitLevel, PeriodRuleScope, ProgrammeCode
 from app.domain.formula_spec import validate_classification_spec, validate_formula_spec
-from app.domain.indicator_catalog import INDICATOR_CATALOG, QUALITY_RULE_CATALOG
+from app.domain.indicator_catalog import INDICATOR_CATALOG, QUALITY_RULE_CATALOG, indicator_revisions
 from app.models import (
     Indicator,
     IndicatorVersion,
@@ -448,6 +448,39 @@ def _ensure(session: Session, report: BootstrapReport) -> None:
                 )
             )
         report.count("indicators", created)
+
+    # Governed later versions (for example the approved EPI bands, D-059). Each is created once
+    # from its v1 base plus the approved overrides and becomes the current version; the version it
+    # replaces is kept, not edited, so earlier snapshots still resolve to what they used.
+    indicators = {row.code: row for row in session.scalars(select(Indicator)).all()}
+    for revision in indicator_revisions():
+        indicator = indicators.get(revision["code"])
+        if indicator is None:
+            continue
+        versions = session.scalars(select(IndicatorVersion).where(IndicatorVersion.indicator_id == indicator.id)).all()
+        if any(row.formula_version == revision["formula_version"] for row in versions):
+            report.count("indicator_revisions", False)
+            continue
+        base = next((row for row in versions if row.formula_version == INDICATOR_BASE_VERSION), None)
+        if base is None:
+            continue
+        fields = {column: getattr(base, column) for column in INDICATOR_VERSION_FIELDS}
+        fields.update(revision["overrides"])
+        validate_classification_spec(fields["classification_spec"])
+        for row in versions:
+            if row.is_current:
+                row.is_current = False
+        session.flush()
+        session.add(
+            IndicatorVersion(
+                indicator_id=indicator.id,
+                formula_version=revision["formula_version"],
+                is_current=True,
+                **fields,
+            )
+        )
+        session.flush()
+        report.count("indicator_revisions", True)
 
     rules = {(row.code, row.rule_version) for row in session.scalars(select(QualityRule)).all()}
     for item in QUALITY_RULE_CATALOG:

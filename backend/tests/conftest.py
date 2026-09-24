@@ -11,6 +11,12 @@ os.environ.setdefault("SEED_DEV_DATA", "false")
 os.environ.setdefault("DHIS2_ENABLED", "false")
 os.environ.setdefault("SYNC_ENABLED", "false")
 os.environ.setdefault("DHIS2_LOGIN_ENABLED", "false")
+# Owner approvals and history windows recorded in a local operator .env are live-instance facts;
+# tests assert the unapproved defaults and set approvals explicitly where they need them.
+os.environ.setdefault("BOUNDARY_DISTRICT_HIERARCHY_APPROVAL_REFERENCE", "")
+os.environ.setdefault("BOUNDARY_SUB_COUNTY_HIERARCHY_APPROVAL_REFERENCE", "")
+os.environ.setdefault("RAW_AGGREGATE_RETENTION_DAYS", "7")
+os.environ.setdefault("CALCULATION_SNAPSHOT_RETENTION_MONTHS", "36")
 # Explicit test-only gates. Production defaults are queue execution and Redis rate limiting.
 os.environ.setdefault("EXPORT_EAGER", "true")
 os.environ.setdefault("RATE_LIMIT_BACKEND", "memory")

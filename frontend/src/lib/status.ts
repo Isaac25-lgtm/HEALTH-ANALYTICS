@@ -3,7 +3,7 @@ export const STATUS_META: Record<
   { label: string; cue: string; className: string }
 > = {
   green: { label: "On track", cue: "G", className: "status-green" },
-  yellow: { label: "Watch", cue: "Y", className: "status-yellow" },
+  yellow: { label: "Needs attention", cue: "Y", className: "status-yellow" },
   red: { label: "Off track", cue: "R", className: "status-red" },
   blue: { label: "Non-assessable", cue: "B", className: "status-blue" },
   n_a: { label: "No approved threshold", cue: "NA", className: "status-na" },
@@ -37,12 +37,19 @@ export function formatMeasure(raw: number | null, unit: string | null, display?:
     return "No data";
   }
   if (display) {
-    return unit && unit !== "%" && !display.includes(unit) ? `${display} ${unit}` : display;
+    if (unit === "%") {
+      // Percentages read as "92.4%", as on the reference screens; the unit is part of the value.
+      return display.endsWith("%") ? display : `${display}%`;
+    }
+    return unit && !display.includes(unit) ? `${display} ${unit}` : display;
   }
   if (unit === "count") {
     return String(Math.round(raw));
   }
   const rounded = Number.isInteger(raw) ? String(raw) : raw.toFixed(1);
+  if (unit === "%") {
+    return `${rounded}%`;
+  }
   return unit ? `${rounded} ${unit}` : rounded;
 }
 
@@ -58,7 +65,9 @@ const INTERPRETATION_LABELS: Record<string, string> = {
  * The sign of the numeric change is never used to call a movement better or worse.
  */
 export function interpretationLabel(change?: { interpretation?: string | null } | null): string | null {
-  if (!change?.interpretation) {
+  // "Not interpreted" is the absence of an approved direction rule, not information for the
+  // reader; the neutral arrow already says the movement is not being judged.
+  if (!change?.interpretation || change.interpretation === "not_interpreted") {
     return null;
   }
   return INTERPRETATION_LABELS[change.interpretation] ?? INTERPRETATION_LABELS.not_interpreted;

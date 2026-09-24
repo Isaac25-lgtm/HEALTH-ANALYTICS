@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.domain.enums import ORG_UNIT_LEVEL_RANK, ActionPermission, OrgUnitLevel, aggregation_class
 from app.models import Geometry, OrgUnit, User
@@ -42,6 +42,8 @@ class GeometryImportPlan:
     ambiguous: list[dict] = field(default_factory=list)
     invalid: list[dict] = field(default_factory=list)
     duplicate_org_unit_codes: list[str] = field(default_factory=list)
+    # Owner-approved spelling aliases actually used, as {"feature": ..., "org_unit_code": ...}.
+    aliases_applied: list[dict] = field(default_factory=list)
 
     def summary(self, detail_limit: int = 50) -> dict:
         return {
@@ -54,6 +56,7 @@ class GeometryImportPlan:
             "ambiguous_count": len(self.ambiguous),
             "invalid_count": len(self.invalid),
             "duplicate_org_unit_codes": self.duplicate_org_unit_codes,
+            "aliases_applied": self.aliases_applied,
             "unmatched": self.unmatched[:detail_limit],
             "ambiguous": self.ambiguous[:detail_limit],
             "invalid": self.invalid[:detail_limit],
@@ -193,7 +196,23 @@ def _district_ancestor_name(session: Session, unit: OrgUnit) -> str | None:
     return None
 
 
-def prepare_geometry_import(session: Session, path: Path, level_type: str) -> GeometryImportPlan:
+# DHIS2 names districts "Abim District" while the boundary source names them "ABIM". The suffix is
+# a naming convention of the unit type, so a district (never a city) is also indexed without it.
+_DISTRICT_SUFFIX = " district"
+
+
+def prepare_geometry_import(
+    session: Session,
+    path: Path,
+    level_type: str,
+    aliases: dict[str, str] | None = None,
+) -> GeometryImportPlan:
+    """Match boundary features to organisation units by exact normalised name.
+
+    ``aliases`` maps a feature name to the full name of one organisation unit, for spellings the
+    owner has approved (for example LUWEERO to Luwero District). Each alias must resolve to exactly
+    one candidate unit or the plan is refused; nothing is matched approximately.
+    """
     if level_type not in {OrgUnitLevel.DISTRICT.value, OrgUnitLevel.SUB_COUNTY.value}:
         raise GeometryImportError("Only district and sub_county boundary imports are supported.")
     resolved = path.resolve(strict=True)
@@ -212,10 +231,24 @@ def prepare_geometry_import(session: Session, path: Path, level_type: str) -> Ge
     index: dict[tuple[str, ...], list[OrgUnit]] = {}
     for unit in candidates:
         if level_type == OrgUnitLevel.DISTRICT.value:
-            key = (_normalise_name(unit.name),)
+            name = _normalise_name(unit.name)
+            index.setdefault((name,), []).append(unit)
+            if unit.level_type == OrgUnitLevel.DISTRICT.value and name.endswith(_DISTRICT_SUFFIX):
+                stripped = name[: -len(_DISTRICT_SUFFIX)]
+                if stripped:
+                    index.setdefault((stripped,), []).append(unit)
         else:
             key = (_district_ancestor_name(session, unit) or "", _normalise_name(unit.name))
-        index.setdefault(key, []).append(unit)
+            index.setdefault(key, []).append(unit)
+    alias_targets: dict[str, OrgUnit] = {}
+    for feature_name, unit_name in (aliases or {}).items():
+        targets = [unit for unit in candidates if _normalise_name(unit.name) == _normalise_name(unit_name)]
+        if len(targets) != 1:
+            raise GeometryImportError(
+                f"Alias {feature_name!r} -> {unit_name!r} must name exactly one active unit at this level; "
+                f"found {len(targets)}."
+            )
+        alias_targets[_normalise_name(feature_name)] = targets[0]
 
     plan = GeometryImportPlan(
         source_path=resolved,
@@ -243,6 +276,9 @@ def prepare_geometry_import(session: Session, path: Path, level_type: str) -> Ge
             plan.invalid.append({"feature": feature_index, "name": feature_name, "reason": str(exc)})
             continue
         matches = index.get(key, [])
+        if not matches and level_type == OrgUnitLevel.DISTRICT.value and key[0] in alias_targets:
+            matches = [alias_targets[key[0]]]
+            plan.aliases_applied.append({"feature": feature_name, "org_unit_code": matches[0].code})
         if not matches:
             plan.unmatched.append({"feature": feature_index, "name": feature_name, "district": district_name})
             continue
@@ -480,6 +516,7 @@ def apply_geometry_import(
             "unchanged": unchanged,
             "superseded": superseded,
             "unmatched": len(plan.unmatched),
+            "aliases_applied": plan.aliases_applied,
         },
         commit=False,
     )
@@ -557,9 +594,30 @@ def simplify_geojson(geometry: dict | None, epsilon: float = SIMPLIFY_EPSILON_DE
     return geometry
 
 
-def _geometries_in_force(session: Session, unit_ids: list[UUID], effective_date: date) -> dict[UUID, Geometry]:
+# Simplified copies of stored geometry, by geometry row ID. A boundary change always creates a new
+# geometry row, so an entry can never go stale; the size bound only limits memory.
+_SIMPLIFIED_CACHE: dict[tuple[UUID, str], dict | None] = {}
+_SIMPLIFIED_CACHE_LIMIT = 20000
+
+
+def _simplified(row: Geometry) -> dict | None:
+    key = (row.id, SIMPLIFY_VERSION)
+    if key not in _SIMPLIFIED_CACHE:
+        if len(_SIMPLIFIED_CACHE) >= _SIMPLIFIED_CACHE_LIMIT:
+            _SIMPLIFIED_CACHE.clear()
+        _SIMPLIFIED_CACHE[key] = simplify_geojson(row.geojson)
+    return _SIMPLIFIED_CACHE[key]
+
+
+def _geometries_in_force(
+    session: Session, unit_ids: list[UUID], effective_date: date, *, with_geojson: bool = True
+) -> dict[UUID, Geometry]:
+    query = select(Geometry)
+    if not with_geojson:
+        # Only which geometry is in force is needed; the shapes are large and are not read.
+        query = query.options(defer(Geometry.geojson))
     rows = session.scalars(
-        select(Geometry)
+        query
         .where(
             Geometry.org_unit_id.in_(unit_ids),
             or_(Geometry.valid_from.is_(None), Geometry.valid_from <= effective_date),
@@ -607,7 +665,9 @@ def build_map_block(
     units = [row["_unit"] for row in rows_by_id.values()]
     level_types = sorted({unit.level_type for unit in units})
     classes = sorted({cls.value for unit in units if (cls := aggregation_class(unit.level_type))})
-    geometries = _geometries_in_force(session, [unit.id for unit in units], effective_date) if units else {}
+    geometries = (
+        _geometries_in_force(session, [unit.id for unit in units], effective_date, with_geojson=False) if units else {}
+    )
     feature_ids = [str(unit.id) for unit in units if unit.id in geometries]
     missing_geometry = [str(unit.id) for unit in units if unit.id not in geometries]
     missing_values = [
@@ -666,7 +726,11 @@ def snapshot_map_features(
         unit = session.get(OrgUnit, unit_id)
         if unit is not None and unit.active and can_access_org_unit(session, user, unit):
             authorised.append(unit)
-    geometries = _geometries_in_force(session, [unit.id for unit in authorised], effective_date) if authorised else {}
+    geometries = (
+        _geometries_in_force(session, [unit.id for unit in authorised], effective_date, with_geojson=not simplify)
+        if authorised
+        else {}
+    )
     features = []
     for unit in authorised:
         geometry = geometries.get(unit.id)
@@ -692,7 +756,7 @@ def snapshot_map_features(
                     "quality_status": value.get("quality_status"),
                     "calculation_run_id": row.get("calculation_run_id"),
                 },
-                "geometry": simplify_geojson(geometry.geojson) if simplify else geometry.geojson,
+                "geometry": _simplified(geometry) if simplify else geometry.geojson,
             }
         )
     return {
@@ -716,14 +780,22 @@ def map_feature_collection(
     *,
     as_of: date | None = None,
     simplify: bool = False,
+    include_features: bool = True,
 ) -> dict:
+    """Boundaries for the nearest mapped level below ``selected``.
+
+    ``include_features=False`` returns the same metadata without reading any shapes.
+    """
     effective_date = as_of or date.today()
     units = [
         unit for unit in descendants(session, selected, include_self=True) if can_access_org_unit(session, user, unit)
     ]
     ids = [unit.id for unit in units]
+    geometry_query = select(Geometry)
+    if not include_features or simplify:
+        geometry_query = geometry_query.options(defer(Geometry.geojson))
     geometry_rows = session.scalars(
-        select(Geometry)
+        geometry_query
         .where(
             Geometry.org_unit_id.in_(ids),
             or_(Geometry.valid_from.is_(None), Geometry.valid_from <= effective_date),
@@ -747,7 +819,7 @@ def map_feature_collection(
     target_units = [unit for unit in units if ORG_UNIT_LEVEL_RANK.get(OrgUnitLevel(unit.level_type), 99) == render_rank]
     mapped_units = [unit for unit in target_units if unit.id in current_by_unit]
     features = []
-    for unit in mapped_units:
+    for unit in mapped_units if include_features else []:
         row = current_by_unit[unit.id]
         features.append(
             {
@@ -762,10 +834,10 @@ def map_feature_collection(
                     "valid_from": row.valid_from.isoformat() if row.valid_from else None,
                     "valid_to": row.valid_to.isoformat() if row.valid_to else None,
                 },
-                "geometry": (simplify_geojson(row.geojson) if simplify else row.geojson),
+                "geometry": (_simplified(row) if simplify else row.geojson),
             }
         )
-    awaiting_mapping = len(features) == 0
+    awaiting_mapping = len(mapped_units) == 0
     return {
         "type": "FeatureCollection",
         "selected_org_unit": {
@@ -776,9 +848,9 @@ def map_feature_collection(
         },
         "render_levels": sorted({unit.level_type for unit in target_units}),
         "effective_date": effective_date.isoformat(),
-        "feature_count": len(features),
+        "feature_count": len(mapped_units),
         "eligible_unit_count": len(target_units),
-        "mapping_state": ("mapped" if features else "boundaries_awaiting_approved_mapping"),
+        "mapping_state": ("mapped" if mapped_units else "boundaries_awaiting_approved_mapping"),
         "simplify_applied": simplify,
         "simplify_version": SIMPLIFY_VERSION if simplify else None,
         "mapping_note": (

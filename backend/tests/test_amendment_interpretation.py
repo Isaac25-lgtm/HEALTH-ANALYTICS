@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import select
 
+from app.domain.indicator_catalog import EPI_VACCINE_COVERAGE_CODES
 from app.domain.interpretation import UNSAFE_RANK_CODES, interpret_change, rank_units
 from app.domain.modules import MODULE_INDICATORS
 from app.models import OrgUnit, User
@@ -230,11 +231,15 @@ def test_dashboard_ranks_lower_is_better_children_lowest_first(client, session):
     assert ranking["worst"][0]["org_unit_code"] == "KITGUM"
 
 
-def test_dashboard_does_not_rank_unclassified_immunization_indicators(client, session):
+def test_dashboard_ranks_immunization_only_under_the_approved_epi_bands(client, session):
+    # Immunisation coverage was unranked until the owner approved the EPI bands (v2-epi-bands,
+    # 2026-09-24); ranking now follows that rule and nothing else.
     uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
     headers = auth_header(login(client, "national.analyst"))
     response = query_dashboard(client, headers, uganda.id, module="immunization")
     assert response.status_code == 201, response.text
     ranking = response.json()["ranking"]
-    assert ranking["ranking_allowed"] is False
-    assert ranking["reason_code"] == "no_approved_ranking_rule"
+    assert ranking["indicator_code"] in EPI_VACCINE_COVERAGE_CODES
+    assert ranking["classification_mode"] == "higher_is_better"
+    assert ranking["ranking_allowed"] is True
+    assert ranking["order_rule"] == "higher_values_rank_first"

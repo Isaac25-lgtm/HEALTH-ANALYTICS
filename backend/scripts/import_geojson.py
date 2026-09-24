@@ -46,7 +46,24 @@ def _arguments() -> argparse.Namespace:
     )
     parser.add_argument("--effective-date-reference", help="Owner approval reference for the effective date.")
     parser.add_argument("--mapping-decision-reference", help="Reference to the approved feature-to-unit mapping.")
+    parser.add_argument(
+        "--alias",
+        action="append",
+        default=[],
+        metavar="FEATURE=UNIT NAME",
+        help="Owner-approved spelling alias, e.g. 'LUWEERO=Luwero District'. Repeatable; each must name one unit.",
+    )
     return parser.parse_args()
+
+
+def _aliases(values: list[str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for value in values:
+        feature, separator, unit = value.partition("=")
+        if not separator or not feature.strip() or not unit.strip():
+            raise GeometryImportError(f"--alias must be FEATURE=UNIT NAME, got {value!r}.")
+        aliases[feature.strip()] = unit.strip()
+    return aliases
 
 
 def main() -> int:
@@ -54,7 +71,7 @@ def main() -> int:
     factory = get_session_factory()
     with factory() as session:
         try:
-            plan = prepare_geometry_import(session, args.path, args.level)
+            plan = prepare_geometry_import(session, args.path, args.level, aliases=_aliases(args.alias))
             output = {
                 "mode": "apply" if args.apply else "dry_run",
                 **plan.summary(),

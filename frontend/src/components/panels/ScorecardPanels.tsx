@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { periodLabel } from "@/lib/periods";
 import { screenForLevel } from "@/lib/scope";
 import { formatMeasure, resolveStatus } from "@/lib/status";
 import type { DashboardResponse, Measure } from "@/lib/types";
@@ -21,7 +22,7 @@ function statusCell(key: string, value: Measure | undefined) {
   const status = value ? resolveStatus(value) : "missing";
   return (
     <td key={key} className={`num cell cell-${status}`} title={value ? undefined : "No value in this snapshot"}>
-      {formatMeasure(value?.raw_value ?? null, value?.unit === "%" ? null : value?.unit ?? null, value?.display_value)}
+      {formatMeasure(value?.raw_value ?? null, value?.unit ?? null, value?.display_value)}
     </td>
   );
 }
@@ -61,7 +62,6 @@ function UnitMatrix({
                 title={column.indicator_code ?? undefined}
               >
                 {column.name ?? column.indicator_code}
-                {column.unit === "%" ? " (%)" : ""}
               </th>
             ))}
           </tr>
@@ -104,7 +104,9 @@ export function IndicatorTable({ rows, onOpen }: { rows: Measure[]; onOpen: (mea
           {rows.map((row) => (
             <tr key={row.indicator_code ?? row.name ?? "row"}>
               <th scope="row">{row.name ?? row.indicator_code}</th>
-              <td className="num">{formatMeasure(row.raw_value, row.unit, row.display_value)}</td>
+              <td className={`num cell cell-${resolveStatus(row)}`}>
+                {formatMeasure(row.raw_value, row.unit, row.display_value)}
+              </td>
               <td>
                 <StatusPill status={resolveStatus(row)} />
               </td>
@@ -157,7 +159,7 @@ export function ScorecardPanel({
       icon="table"
       title={heading}
       className={className}
-      subtitle={`${dashboard.period} · snapshot values`}
+      subtitle={`${periodLabel(dashboard.period)} · snapshot values`}
       actions={
         <>
           <PanelTabs

@@ -2,7 +2,9 @@
 
 import { FormEvent, useState } from "react";
 import { submitFacilityPopulation } from "@/lib/api";
+import { formatMeasure } from "@/lib/status";
 import type { DashboardResponse } from "@/lib/types";
+import { StatusPill } from "../ui/StatusPill";
 import { Panel, PanelTabs } from "./Panel";
 
 /** Immunisation access-to-completion continuum exactly as returned by the server. */
@@ -17,14 +19,18 @@ export function ContinuumPanel({ dashboard, className }: { dashboard: DashboardR
               .filter(([key]) => key !== "note")
               .map(([key, value]) => {
                 const row = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-                const raw = row && "raw_value" in row ? row.raw_value : null;
+                const raw = row && typeof row.raw_value === "number" ? row.raw_value : null;
+                const unit = row && typeof row.unit === "string" ? row.unit : null;
+                const display = row && typeof row.display_value === "string" ? row.display_value : null;
                 return (
                   <div key={key}>
                     <dt>{key.replaceAll("_", " ")}</dt>
                     <dd>
-                      {raw === null || raw === undefined ? "No data" : `${raw} ${row?.unit ?? ""}`.trim()}
-                      {row?.threshold_state === "no_approved_threshold" ? (
-                        <span className="panel-note"> · no approved threshold</span>
+                      <span className="num continuum-value">{formatMeasure(raw, unit, display)}</span>
+                      {raw !== null && row?.threshold_state === "approved_band" && typeof row.status === "string" ? (
+                        <StatusPill status={row.status} />
+                      ) : raw !== null ? (
+                        <span className="panel-note">no approved threshold</span>
                       ) : null}
                     </dd>
                   </div>

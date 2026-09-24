@@ -64,6 +64,7 @@ def get_snapshot_map_features(
             }
         ]
     else:
-        value_rows = module_result.get("org_unit_comparison") or []
+        # National and regional snapshots map the district/city cohort; others map direct children.
+        value_rows = module_result.get("district_comparison") or module_result.get("org_unit_comparison") or []
     content = snapshot_map_features(session, user, map_block=map_block, value_rows=value_rows, simplify=simplify)
     return JSONResponse(content=content, headers={"Cache-Control": "private, max-age=3600", "Vary": "Cookie"})

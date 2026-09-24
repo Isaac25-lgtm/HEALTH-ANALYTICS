@@ -8,11 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.domain.enums import ActionPermission, OrgUnitLevel, ProgrammeCode
+from app.domain.enums import ActionPermission, AggregationClass, OrgUnitLevel, ProgrammeCode
 from app.domain.interpretation import interpret_change
 from app.domain.modules import MODULE_INDICATORS, MODULE_PROGRAMME
 from app.domain.mpdsr_cause_taxonomy import CauseTaxonomy, current_cause_taxonomy
-from app.domain.periods import parse_period, previous_period, trend_periods
+from app.domain.periods import parse_period, previous_period, trend_window
 from app.models import (
     CalculatedValue,
     CalculationRun,
@@ -32,7 +32,7 @@ from app.services.authorization import (
     require_programme_access,
 )
 from app.services.calculation import clear_calculation_batch, prepare_calculation_batch, run_calculation
-from app.services.geography import descendants
+from app.services.geography import descendants, top_units_of_class
 from app.services.mpdsr import is_completed
 from app.services.mpdsr_events import scoped_mpdsr_events
 from app.services.quality import scan_quality
@@ -237,6 +237,22 @@ def _quality_flags(session: Session, run: CalculationRun) -> list[dict]:
     ]
 
 
+_BANDED_STATUSES = {"green", "yellow", "red"}
+
+
+def _continuum_step(value: CalculatedValue | None, *, missing_status: str = "n_a") -> dict:
+    """One continuum step as calculated: value, display, unit and status, plus whether an approved
+    band classified it. Nothing is re-derived here."""
+    status = value.status if value is not None else missing_status
+    return {
+        "raw_value": float(value.raw_value) if value is not None and value.raw_value is not None else None,
+        "display_value": value.display_value if value is not None else None,
+        "unit": value.unit if value is not None else "%",
+        "status": status,
+        "threshold_state": "approved_band" if status in _BANDED_STATUSES else "no_approved_threshold",
+    }
+
+
 def _continuum(current: dict[str, CalculatedValue]) -> dict | None:
     penta1 = current.get("PENTA1_COVERAGE")
     penta3 = current.get("PENTA3_COVERAGE")
@@ -247,37 +263,15 @@ def _continuum(current: dict[str, CalculatedValue]) -> dict | None:
     if not any([penta1, penta3, dropout, mv1, mv4, mv_drop]):
         return None
     return {
-        "penta_access": {
-            "raw_value": float(penta1.raw_value) if penta1 and penta1.raw_value is not None else None,
-            "unit": penta1.unit if penta1 else "%",
-            "status": penta1.status if penta1 else "n_a",
-        },
-        "penta_completion": {
-            "raw_value": float(penta3.raw_value) if penta3 and penta3.raw_value is not None else None,
-            "unit": penta3.unit if penta3 else "%",
-            "status": penta3.status if penta3 else "n_a",
-        },
-        "penta_dropout": {
-            "raw_value": float(dropout.raw_value) if dropout and dropout.raw_value is not None else None,
-            "unit": dropout.unit if dropout else "%",
-            "status": dropout.status if dropout else "unclassified",
-            "threshold_state": "no_approved_threshold",
-        },
-        "malaria_access": {
-            "raw_value": float(mv1.raw_value) if mv1 and mv1.raw_value is not None else None,
-            "unit": mv1.unit if mv1 else "%",
-        },
-        "malaria_completion": {
-            "raw_value": float(mv4.raw_value) if mv4 and mv4.raw_value is not None else None,
-            "unit": mv4.unit if mv4 else "%",
-        },
-        "malaria_dropout": {
-            "raw_value": float(mv_drop.raw_value) if mv_drop and mv_drop.raw_value is not None else None,
-            "threshold_state": "no_approved_threshold",
-        },
+        "penta_access": _continuum_step(penta1),
+        "penta_completion": _continuum_step(penta3),
+        "penta_dropout": _continuum_step(dropout, missing_status="unclassified"),
+        "malaria_access": _continuum_step(mv1),
+        "malaria_completion": _continuum_step(mv4),
+        "malaria_dropout": _continuum_step(mv_drop, missing_status="unclassified"),
         "note": (
-            "Continuum distinguishes access from completion. "
-            "Dropout remains unclassified until approved bands exist."
+            "Continuum distinguishes access (first dose) from completion (last dose). "
+            "Colours follow the approved EPI bands; a step without an approved band is not classified."
         ),
     }
 
@@ -381,7 +375,13 @@ def evaluate_module(
     module: str,
     comparison_period: str | None = None,
     include_children: bool = True,
+    district_cohort: bool = False,
 ) -> dict:
+    """Evaluate one module for a unit.
+
+    ``district_cohort`` additionally evaluates every authorised district/city below the unit, so a
+    national or regional screen can map and rank districts, as the reference screens do.
+    """
     if module not in MODULE_INDICATORS:
         raise AuthorizationError("invalid_input", "Analytical module is not recognised.")
     programme_code = MODULE_PROGRAMME[module]
@@ -392,8 +392,8 @@ def evaluate_module(
     compare_key = comparison_period or previous_period(period)
     parse_period(compare_key)
     codes = MODULE_INDICATORS[module]
-    periods = [period, compare_key, *trend_periods(period, 3)]
-    prepare_calculation_batch(session, org_unit=org_unit, periods=periods)
+    periods = [period, compare_key, *trend_window(period)]
+    prepare_calculation_batch(session, org_unit=org_unit, periods=periods, programme_codes=[programme_code])
     try:
         return _evaluate_module_body(
             session,
@@ -405,6 +405,7 @@ def evaluate_module(
             programme_code=programme_code,
             codes=codes,
             include_children=include_children,
+            district_cohort=district_cohort,
         )
     finally:
         clear_calculation_batch(session)
@@ -421,6 +422,7 @@ def _evaluate_module_body(
     programme_code: str,
     codes: list[str],
     include_children: bool,
+    district_cohort: bool = False,
 ) -> dict:
     current_run = run_calculation(
         session,
@@ -464,7 +466,7 @@ def _evaluate_module_body(
         indicators.append(payload)
 
     trend = []
-    for key in trend_periods(period, 3):
+    for key in trend_window(period):
         run = run_calculation(
             session,
             org_unit=org_unit,
@@ -483,33 +485,44 @@ def _evaluate_module_body(
             }
         )
 
+    def unit_row(child: OrgUnit) -> dict:
+        run = run_calculation(
+            session,
+            org_unit=child,
+            period=period,
+            user=user,
+            programme_codes=[programme_code],
+            indicator_codes=codes,
+        )
+        values = _value_map(session, run)
+        selection = _selection_map(run)
+        return {
+            "org_unit_id": str(child.id),
+            "org_unit_code": child.code,
+            "org_unit_name": child.name,
+            "level_type": child.level_type,
+            "calculation_run_id": str(run.id),
+            "values": {code: _indicator_payload(session, code, values.get(code), selection) for code in codes},
+        }
+
     comparisons = []
+    children: list[OrgUnit] = []
     if include_children:
-        for child in _children(session, org_unit):
-            if not can_access_org_unit(session, user, child):
-                continue
-            run = run_calculation(
-                session,
-                org_unit=child,
-                period=period,
-                user=user,
-                programme_codes=[programme_code],
-                indicator_codes=codes,
-            )
-            values = _value_map(session, run)
-            selection = _selection_map(run)
-            comparisons.append(
-                {
-                    "org_unit_id": str(child.id),
-                    "org_unit_code": child.code,
-                    "org_unit_name": child.name,
-                    "level_type": child.level_type,
-                    "calculation_run_id": str(run.id),
-                    "values": {
-                        code: _indicator_payload(session, code, values.get(code), selection) for code in codes
-                    },
-                }
-            )
+        children = [child for child in _children(session, org_unit) if can_access_org_unit(session, user, child)]
+        comparisons = [unit_row(child) for child in children]
+
+    district_rows: list[dict] = []
+    if district_cohort:
+        cohort = sorted(
+            top_units_of_class(descendants(session, org_unit), AggregationClass.DISTRICT_EQUIVALENT),
+            key=lambda unit: unit.name,
+        )
+        by_id = {row["org_unit_id"]: row for row in comparisons}
+        district_rows = [
+            by_id.get(str(unit.id)) or unit_row(unit)
+            for unit in cohort
+            if can_access_org_unit(session, user, unit)
+        ]
 
     result = {
         "module": module,
@@ -532,6 +545,7 @@ def _evaluate_module_body(
         "indicators": indicators,
         "trends": trend,
         "org_unit_comparison": comparisons,
+        "district_comparison": district_rows,
         "fixture_label": None,
     }
     if module == "immunization":

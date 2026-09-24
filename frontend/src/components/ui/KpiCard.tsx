@@ -1,3 +1,4 @@
+import { periodLabel } from "@/lib/periods";
 import { changeLabel, formatMeasure, interpretationLabel, resolveStatus, unavailableLabel } from "@/lib/status";
 import type { Measure } from "@/lib/types";
 import { Icon } from "./Icon";
@@ -18,7 +19,7 @@ export function KpiCard({
   const interpretation = interpretationLabel(measure.change);
   const change = changeLabel(measure.change);
   return (
-    <article className="kpi-card" data-testid={`kpi-${measure.indicator_code ?? "unknown"}`}>
+    <article className={`kpi-card kpi-${status}`} data-testid={`kpi-${measure.indicator_code ?? "unknown"}`}>
       <p className="kpi-label" title={measure.name ?? measure.indicator_code ?? undefined}>
         {measure.name ?? measure.indicator_code}
       </p>
@@ -44,7 +45,7 @@ export function KpiCard({
               </span>
             ) : null}
             {comparisonPeriod && measure.change?.change_kind ? (
-              <span className="kpi-versus"> vs {comparisonPeriod}</span>
+              <span className="kpi-versus"> vs {periodLabel(comparisonPeriod)}</span>
             ) : null}
           </p>
         ) : null}

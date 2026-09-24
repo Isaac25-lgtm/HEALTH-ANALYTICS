@@ -45,6 +45,17 @@ from tests.helpers import put_population, put_raw
 OLD = datetime(2020, 1, 1, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _default_retention_windows(monkeypatch):
+    # These tests exercise the documented default windows; a local operator .env (for example one
+    # keeping aggregate history for ten years) must not change what they measure.
+    monkeypatch.setenv("RAW_AGGREGATE_RETENTION_DAYS", "7")
+    monkeypatch.setenv("CALCULATION_SNAPSHOT_RETENTION_MONTHS", "36")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def _unit(session, code="PADER"):
     return session.scalar(select(OrgUnit).where(OrgUnit.code == code))
 

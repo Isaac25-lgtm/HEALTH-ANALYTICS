@@ -1,8 +1,11 @@
 "use client";
 
-import { DEFAULT_COMPARISON, MODULE_LABELS, PERIOD_OPTIONS, periodOptionLabel } from "@/lib/scope";
+import { useState } from "react";
+import { sameWindowLastYear } from "@/lib/periods";
+import { DEFAULT_COMPARISON, MODULE_LABELS } from "@/lib/scope";
 import type { CurrentContext, DashboardResponse, OrgUnitSummary } from "@/lib/types";
 import { Icon } from "../ui/Icon";
+import { PeriodPicker } from "./PeriodPicker";
 import { SearchBox } from "./SearchBox";
 
 export type FilterChange = {
@@ -46,6 +49,10 @@ export function FilterStrip({
   onApply: (change: FilterChange) => void;
 }) {
   const selectedCode = dashboard.selected_indicator ?? dashboard.ranking.indicator_code;
+  const [period, setPeriod] = useState(dashboard.period);
+  const [comparisonPeriod, setComparisonPeriod] = useState(
+    dashboard.comparison_period ?? comparison ?? DEFAULT_COMPARISON,
+  );
   return (
     <form
       className="filter-strip"
@@ -77,32 +84,20 @@ export function FilterStrip({
           <span className="filter-key">Role:</span> <strong>{roleLabel(context)}</strong>
         </span>
       </p>
-      <label className="filter-field">
-        <span>Period</span>
-        <Icon name="calendar" size={16} className="field-icon" />
-        <select name="period" defaultValue={dashboard.period} aria-label="Period">
-          {PERIOD_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {periodOptionLabel(option)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="filter-field">
-        <span>Compare</span>
-        <Icon name="compare" size={16} className="field-icon" />
-        <select
-          name="comparison"
-          defaultValue={dashboard.comparison_period ?? comparison ?? DEFAULT_COMPARISON}
-          aria-label="Comparison period"
-        >
-          {PERIOD_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {periodOptionLabel(option)}
-            </option>
-          ))}
-        </select>
-      </label>
+      <PeriodPicker
+        value={period}
+        onChange={(key) => {
+          setPeriod(key);
+          // Comparison follows the chosen period: the same window one year earlier.
+          setComparisonPeriod(sameWindowLastYear(key));
+        }}
+      />
+      <PeriodPicker
+        label="Compare"
+        name="comparison"
+        value={comparisonPeriod}
+        onChange={setComparisonPeriod}
+      />
       <label className="filter-field">
         <span>Geography</span>
         <Icon name="pin" size={16} className="field-icon" />

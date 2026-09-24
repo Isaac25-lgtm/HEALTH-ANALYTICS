@@ -19,7 +19,8 @@ const base: Measure = {
 describe("dashboard presentation", () => {
   it("renders KPI units and accessible status text", () => {
     render(<KpiCard measure={base} />);
-    expect(screen.getByText("95.4")).toBeInTheDocument();
+    // Percentages read as "95.4%", as on the reference screens.
+    expect(screen.getByText("95.4%")).toBeInTheDocument();
     expect(screen.getByText("On track")).toBeInTheDocument();
   });
 
@@ -35,7 +36,7 @@ describe("dashboard presentation", () => {
         onOpen={() => undefined}
       />,
     );
-    expect(screen.getByText("0.0")).toBeInTheDocument();
+    expect(screen.getByText("0.0%")).toBeInTheDocument();
     expect(screen.getAllByText("No data").length).toBeGreaterThan(0);
   });
 });

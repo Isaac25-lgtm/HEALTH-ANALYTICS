@@ -1155,3 +1155,77 @@ QUALITY_RULE_CATALOG: list[dict] = [
         ),
     },
 ]
+
+
+# Owner decision 2026-09-24 (D-059): immunisation performance bands follow the WHO/UNEPI coverage
+# targets - green at 90% or above, amber from 80% to under 90%, red below 80% - and a dropout rate
+# is green below 10%, red from 10%. They are published as a second formula version so every
+# snapshot calculated under the unclassified v1 keeps its original, traceable classification.
+# Vitamin A, deworming and under-five targets are not immunisation targets and stay unclassified.
+EPI_BAND_VERSION = "v2-epi-bands"
+EPI_VACCINE_COVERAGE_CODES = (
+    "BCG_COVERAGE",
+    "OPV0_COVERAGE",
+    "HEPB_BIRTH_COVERAGE",
+    "OPV1_COVERAGE",
+    "OPV2_COVERAGE",
+    "OPV3_COVERAGE",
+    "PENTA1_COVERAGE",
+    "PENTA2_COVERAGE",
+    "PENTA3_COVERAGE",
+    "ROTAV1_COVERAGE",
+    "ROTAV2_COVERAGE",
+    "PCV1_COVERAGE",
+    "PCV2_COVERAGE",
+    "PCV3_COVERAGE",
+    "IPV1_COVERAGE",
+    "IPV2_COVERAGE",
+    "MR_COVERAGE",
+    "YF_COVERAGE",
+    "MV1_COVERAGE",
+    "MV2_COVERAGE",
+    "MV3_COVERAGE",
+    "MV4_COVERAGE",
+    "TD_1549_COVERAGE",
+    "HPV_COVERAGE",
+)
+EPI_DROPOUT_CODES = ("PENTA_DROPOUT", "MV1_MV4_DROPOUT")
+
+
+def indicator_revisions() -> list[dict]:
+    """Governed later versions of catalogue indicators, applied on top of their v1 base."""
+    revisions = []
+    for code in EPI_VACCINE_COVERAGE_CODES:
+        revisions.append(
+            {
+                "code": code,
+                "formula_version": EPI_BAND_VERSION,
+                "decision": "D-059",
+                "overrides": {
+                    "target": "90%",
+                    "green_band": ">=90%",
+                    "yellow_band": "80.0-89.9%",
+                    "red_band": "<80%",
+                    "blue_rule": "Values above 100% remain visible and are classified by the same bands.",
+                    "classification_spec": _higher(90, 80),
+                },
+            }
+        )
+    for code in EPI_DROPOUT_CODES:
+        revisions.append(
+            {
+                "code": code,
+                "formula_version": EPI_BAND_VERSION,
+                "decision": "D-059",
+                "overrides": {
+                    "target": "<10%",
+                    "green_band": "<10%",
+                    "yellow_band": None,
+                    "red_band": ">=10%",
+                    "blue_rule": "A negative dropout means later doses exceed first doses; it is shown, not hidden.",
+                    # One decimal place: 9.9 or less is green, 10.0 or more is red.
+                    "classification_spec": _lower_max(9.9, 9.9),
+                },
+            }
+        )
+    return revisions
