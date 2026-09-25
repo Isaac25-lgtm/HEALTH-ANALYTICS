@@ -45,7 +45,8 @@ from app.services.authorization import (
     require_programme_access,
 )
 from app.services.evidence import evidence_package
-from app.services.publishing import TEMPLATE_VERSION, export_output_dir, write_artifact
+from app.services.geometry import snapshot_map_features
+from app.services.publishing import MAP_FEATURES_KEY, TEMPLATE_VERSION, export_output_dir, write_artifact
 from app.services.rate_limit import check_rate
 from app.version import SOFTWARE_VERSION
 
@@ -464,6 +465,23 @@ def _audit(db: Session, job: ExportJob, action: str, after: dict) -> None:
     )
 
 
+def _export_map_features(db: Session, user: User, dashboard: dict) -> dict | None:
+    """The snapshot's map cohort with simplified shapes, access re-checked for the export owner.
+
+    Values come from the snapshot rows; only the stored geometry is read. A map that cannot be
+    produced is left out of the export rather than failing it.
+    """
+    map_block = dashboard.get("map") or {}
+    if map_block.get("map_state") != "mapped" or not map_block.get("geometry_effective_date"):
+        return None
+    module_result = dashboard.get("module_result") or {}
+    value_rows = module_result.get("district_comparison") or module_result.get("org_unit_comparison") or []
+    try:
+        return snapshot_map_features(db, user, map_block=map_block, value_rows=value_rows, simplify=True)
+    except (ValueError, KeyError):
+        return None
+
+
 def _generate(db: Session, job_id: UUID, token: str, temp_holder: list[Path]) -> ExportAttempt:
     job = db.get(ExportJob, job_id)
     if job is None:
@@ -482,8 +500,9 @@ def _generate(db: Session, job_id: UUID, token: str, temp_holder: list[Path]) ->
         comparison_period=job.comparison_period,
         view_hash=job.view_hash,
     )
-    dashboard = snapshot.payload_json or {}
+    dashboard = dict(snapshot.payload_json or {})
     package = snapshot.evidence_json or evidence_package(dashboard)
+    dashboard[MAP_FEATURES_KEY] = _export_map_features(db, user, dashboard)
     settings = get_settings()
     directory = export_output_dir()
     temp_path = directory / f".{job.id}.{token}.partial"

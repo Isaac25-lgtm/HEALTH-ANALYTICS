@@ -12,6 +12,7 @@ from app.domain.exports import EXPORT_FORMATS
 from app.domain.modules import MODULE_INDICATORS
 from app.models import ExportJob, OrgUnit
 from app.services.publishing import NOT_RECORDED
+from app.services.publishing_pptx import SCORECARD_TABLE_NAME
 from tests.conftest import auth_header, download_export, login, query_dashboard
 from tests.helpers import put_population, put_raw
 
@@ -78,7 +79,7 @@ def test_powerpoint_includes_every_indicator_of_a_large_module(client, session, 
     notes = ""
     for slide in deck.slides:
         for shape in slide.shapes:
-            if shape.has_table:
+            if shape.has_table and shape.name == SCORECARD_TABLE_NAME:
                 table_rows.extend(row.cells[0].text for index, row in enumerate(shape.table.rows) if index > 0)
             elif shape.has_text_frame and "indicators in the snapshot" in shape.text_frame.text:
                 notes = shape.text_frame.text
@@ -113,5 +114,5 @@ def test_labels_media_types_and_extensions_are_accurate(client, session, tmp_pat
     assert "Markdown" in actions["report"]["label"]
     assert "Word" not in actions["report"]["label"] and "PDF" not in actions["report"]["label"]
     for kind in ("word", "pdf"):
-        assert actions[kind]["available"] is False
-        assert actions[kind]["implemented"] is False
+        assert actions[kind]["available"] is True
+        assert actions[kind]["implemented"] is True

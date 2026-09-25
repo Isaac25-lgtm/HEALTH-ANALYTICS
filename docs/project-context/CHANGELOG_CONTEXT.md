@@ -1,5 +1,19 @@
 # Context Changelog
 
+## 2026-09-25 - reference-screen rebuild, part 2: colour-coded downloads
+
+- Excel, PowerPoint, PDF and Word are rebuilt from one snapshot presentation model
+  (`export_view.py`, template `hpip-publish-2`); status labels, heat colours and value formatting
+  match the dashboard. Excel adds Units, Ranking and Trends sheets with exact values and display
+  formats; PowerPoint is 16:9 with KPI cards, coloured tables, a vector district map, performer and
+  trend charts; PDF (reportlab) and Word (python-docx) are new, colour-coded and no longer listed
+  as unavailable. Export jobs attach the snapshot's map cohort with simplified geometry.
+- Browser PDF downloads were empty: Chrome intercepted the `*.pdf` attachment. The web client now
+  uses `?transport=blob` (octet-stream, filename in `X-Export-Filename`).
+- Verified through the browser against live national ANC FY2025/26: all five downloads succeed
+  (xlsx 31.7 KB, pptx 132.8 KB, pdf 76.1 KB, docx 45.0 KB, md 2.4 KB) and were rendered through
+  Office and PyMuPDF for visual inspection.
+
 ## 2026-09-24 - reference-screen rebuild, part 1: history, periods, colour, map and speed
 
 Owner decisions D-057 to D-064 (2026-09-24). Work continues with downloads, sub-county/facility

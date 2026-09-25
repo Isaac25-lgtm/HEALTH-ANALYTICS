@@ -172,6 +172,26 @@ def queue_report(
     return _create(request, body, "report", session, user)
 
 
+@router.post("/pdf", response_model=ExportAcceptedResponse, status_code=202)
+def queue_pdf(
+    request: Request,
+    body: ExportRequest,
+    session: Session = Depends(require_write),
+    user: User = Depends(get_current_user),
+) -> ExportAcceptedResponse | JSONResponse:
+    return _create(request, body, "pdf", session, user)
+
+
+@router.post("/word", response_model=ExportAcceptedResponse, status_code=202)
+def queue_word(
+    request: Request,
+    body: ExportRequest,
+    session: Session = Depends(require_write),
+    user: User = Depends(get_current_user),
+) -> ExportAcceptedResponse | JSONResponse:
+    return _create(request, body, "word", session, user)
+
+
 @router.get("/jobs")
 def list_export_jobs(
     limit: int = Query(default=20, ge=1, le=100),
@@ -230,6 +250,7 @@ def retry_export_job(
 @router.post("/jobs/{job_id}/download")
 def download_export(
     job_id: str,
+    transport: str | None = Query(default=None, pattern="^blob$"),
     session: Session = Depends(require_write),
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -237,6 +258,10 @@ def download_export(
 
     Permissions are re-checked on every download, and an expired artifact is reported as
     ``artifact_expired`` (HTTP 410) rather than an unexplained 404.
+
+    ``transport=blob`` is for the web client, which saves the bytes itself: the file is sent as
+    ``application/octet-stream`` with its name in ``X-Export-Filename``, so a browser's own PDF
+    handler cannot intercept the response and hand the page an empty body.
     """
     job = session.get(ExportJob, parse_uuid(job_id, "job_id"))
     if job is None or job.user_id != user.id:
@@ -282,6 +307,14 @@ def download_export(
         after={"checksum": job.checksum, "export_type": job.export_type, "storage": job.artifact_storage},
         commit=True,
     )
+    if transport == "blob":
+        # No Content-Disposition: Chrome treats an attachment named *.pdf as a PDF download even
+        # for fetch(), and gives the page an empty response. The client names the file itself.
+        return StreamingResponse(
+            payload.chunks(),
+            media_type="application/octet-stream",
+            headers={"X-Export-Filename": payload.filename, "Content-Length": str(payload.size_bytes)},
+        )
     return StreamingResponse(
         payload.chunks(),
         media_type=payload.media_type,

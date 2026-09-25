@@ -83,7 +83,7 @@ describe("analytical execution contract", () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     await downloadExportFile("job-1");
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toMatch(/\/exports\/jobs\/job-1\/download$/);
+    expect(url).toMatch(/\/exports\/jobs\/job-1\/download\?transport=blob$/);
     expect(init.method).toBe("POST");
     expect(init.headers["X-CSRF-Token"]).toBe("csrf-test-token");
     expect(click).toHaveBeenCalled();

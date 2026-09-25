@@ -1427,8 +1427,9 @@ td.cell {
 .export-excel { background: #e3f3ea; color: #145c37; border-color: #bfe3cd; }
 .export-powerpoint { background: #fbe7e1; color: #93321a; border-color: #f3c7b8; }
 .export-report { background: var(--blue-50); color: var(--blue-700); border-color: var(--blue-100); }
-.export-word,
-.export-pdf { background: var(--neutral-bg); color: var(--neutral); border-color: var(--line-strong); }
+.export-word { background: #e4edfb; color: #1d4f9c; border-color: #c3d6f3; }
+.export-pdf { background: #fbe4e6; color: #9b1c2c; border-color: #f2c2c8; }
+.download-button:disabled { background: var(--neutral-bg); color: var(--neutral); border-color: var(--line-strong); }
 
 .downloads-meta {
   margin-left: auto;

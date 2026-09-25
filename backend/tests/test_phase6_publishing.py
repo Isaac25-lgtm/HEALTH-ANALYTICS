@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.models import ExportJob, OrgUnit
+from app.services.export_view import status_label
 from tests.conftest import auth_header, download_export, login, query_dashboard
 from tests.helpers import put_population, put_raw
 
@@ -72,7 +73,8 @@ def test_excel_matches_dashboard_and_embeds_run_metadata(client, session, tmp_pa
     names = {row[0]: row for row in book["Scorecard"].iter_rows(min_row=2, values_only=True)}
     anc1 = by_code["ANC1_COVERAGE"]
     assert names[anc1["name"]][1] == anc1["raw_value"]
-    assert names[anc1["name"]][3] == anc1["status"]
+    # The workbook shows the status as the dashboard names it, on a whole-cell colour.
+    assert names[anc1["name"]][3] == status_label(anc1["status"])
     meta_rows = {row[0]: row[1] for row in book["Metadata"].iter_rows(min_row=2, values_only=True)}
     assert meta_rows["current_run_id"] == meta.json()["calculation_run_id"]
     assert meta_rows["period"] == "FY2024/25"

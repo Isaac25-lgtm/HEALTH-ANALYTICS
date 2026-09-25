@@ -291,18 +291,22 @@ def _export_surface(actions: set[str], *, has_verified_values: bool) -> dict:
             {
                 "kind": "word",
                 "label": "Word report (.docx)",
-                "available": False,
-                "implemented": False,
+                "available": can_export,
+                "implemented": True,
                 "format": "docx",
-                "message": "Unavailable until an approved Word generator and template exist.",
+                "message": unavailable_message
+                if not has_verified_values
+                else "Colour-coded Word report in the platform-default layout; official templates are pending.",
             },
             {
                 "kind": "pdf",
                 "label": "PDF report (.pdf)",
-                "available": False,
-                "implemented": False,
+                "available": can_export,
+                "implemented": True,
                 "format": "pdf",
-                "message": "Unavailable until an approved PDF generator and template exist.",
+                "message": unavailable_message
+                if not has_verified_values
+                else "Colour-coded PDF report with the district map; official templates are pending.",
             },
         ],
     }

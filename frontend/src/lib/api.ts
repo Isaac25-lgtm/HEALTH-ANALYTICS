@@ -199,7 +199,11 @@ export async function requestExport(
     view_hash?: string;
   },
 ): Promise<{ job_id: string; status: string; message: string }> {
-  const path = kind === "excel" ? "/exports/excel" : kind === "powerpoint" ? "/exports/powerpoint" : "/exports/report";
+  const known = ["excel", "powerpoint", "report", "pdf", "word"];
+  if (!known.includes(kind)) {
+    throw new Error(`Unsupported export type: ${kind}`);
+  }
+  const path = `/exports/${kind}`;
   return api(path, {
     method: "POST",
     body: JSON.stringify(body),
@@ -213,7 +217,8 @@ export async function downloadExportFile(jobId: string): Promise<void> {
   if (csrf) {
     headers["X-CSRF-Token"] = csrf;
   }
-  const response = await fetch(`${API_BASE}/exports/jobs/${encodeURIComponent(jobId)}/download`, {
+  // transport=blob: raw bytes, so the browser's PDF handler cannot intercept the response.
+  const response = await fetch(`${API_BASE}/exports/jobs/${encodeURIComponent(jobId)}/download?transport=blob`, {
     method: "POST",
     credentials: "include",
     headers,
@@ -225,13 +230,18 @@ export async function downloadExportFile(jobId: string): Promise<void> {
   const blob = await response.blob();
   const header = response.headers.get("content-disposition") ?? "";
   const match = header.match(/filename="?([^"]+)"?/i);
-  const filename = match?.[1] ?? `export-${jobId}`;
+  const filename = response.headers.get("x-export-filename") ?? match?.[1] ?? `export-${jobId}`;
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  // Browsers start some downloads (notably PDF) after click() returns; revoking the object URL
+  // at once hands them an empty file.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export async function listExportJobs(limit = 20): Promise<{ jobs: import("./types").ExportJobSummary[] }> {
