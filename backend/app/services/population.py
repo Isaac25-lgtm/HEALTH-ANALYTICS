@@ -19,6 +19,7 @@ from app.domain.enums import (
     PopulationAggregationPolicy,
     PopulationType,
     UnavailableReason,
+    aggregation_class,
 )
 from app.domain.periods import PeriodSpec, parse_period
 from app.models import (
@@ -31,7 +32,7 @@ from app.models import (
 )
 from app.services.audit import write_audit
 from app.services.authorization import AuthorizationError, require_action, require_org_unit_access
-from app.services.geography import descendant_classes_below, descendants, top_units_of_class
+from app.services.geography import descendant_classes_below, descendants, escape_like, top_units_of_class
 
 # Period kinds that are sub-periods or keys of a financial year, and those that are
 # calendar-year based. A rule governs only the kinds it lists explicitly.
@@ -959,7 +960,12 @@ def _complete_version_class_sum_uncached(
     values are never summed into a parent: catchment populations stay facility-only.
     The nearest complete class below the parent is used; classes are never mixed.
     """
-    units = descendants(session, parent, include_self=False)
+    # Facility values are never summed into a parent (see below), so facilities are not loaded.
+    units = [
+        unit
+        for unit in _non_facility_descendants(session, parent)
+        if aggregation_class(unit.level_type) != AggregationClass.FACILITY
+    ]
     if not units:
         return None
     values = {
@@ -982,6 +988,23 @@ def _complete_version_class_sum_uncached(
             total = sum(float(values[unit.id].population) for unit in cohort)
             return total, cls.value, sorted((unit.id for unit in cohort), key=str)
     return None
+
+
+def _non_facility_descendants(session: Session, parent: OrgUnit) -> list[OrgUnit]:
+    if session.info.get(_BATCH_INFO_KEY) is not None:
+        return descendants(session, parent, include_self=False)
+    prefix = parent.path.rstrip("/") + "/"
+    return list(
+        session.scalars(
+            select(OrgUnit)
+            .where(
+                OrgUnit.path.like(escape_like(prefix) + "%", escape="\\"),
+                OrgUnit.active.is_(True),
+                OrgUnit.level_type != OrgUnitLevel.FACILITY.value,
+            )
+            .order_by(OrgUnit.path)
+        ).all()
+    )
 
 
 def now_utc() -> datetime:

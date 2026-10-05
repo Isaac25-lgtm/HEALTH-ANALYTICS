@@ -8,6 +8,7 @@ district map and the trend as vector graphics. No value is recalculated.
 from __future__ import annotations
 
 import math
+from html import escape
 from pathlib import Path
 
 from docx import Document
@@ -18,13 +19,15 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from reportlab.graphics.charts.lineplots import LinePlot
-from reportlab.graphics.shapes import Drawing, Polygon, String
+from reportlab.graphics.shapes import Circle, Drawing, String
+from reportlab.graphics.shapes import Path as DrawingPath
 from reportlab.graphics.widgets.markers import makeMarker
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
+from reportlab.pdfgen.canvas import FILL_EVEN_ODD
 from reportlab.platypus import (
     KeepTogether,
     PageBreak,
@@ -151,14 +154,14 @@ def _kpi_table(view: ExportView, styles: dict) -> Table:
         status = resolve_status(indicator)
         interpretation = interpretation_text(indicator)
         change = change_text(indicator) + (f" · {interpretation}" if interpretation else "")
-        name = indicator.get("name") or indicator.get("indicator_code")
+        name = escape(str(indicator.get("name") or indicator.get("indicator_code") or ""))
         row.append(
             [
                 Paragraph(f"<b>{name}</b>", name_style),
-                Paragraph(f"<b>{format_measure(indicator)}</b>", value_style),
+                Paragraph(f"<b>{escape(format_measure(indicator))}</b>", value_style),
                 Paragraph(
                     f"<font color='#{STATUS_INK.get(status, INK)}'><b>{status_label(status)}</b></font>"
-                    f"<font color='#{MUTED}'> · {change}</font>",
+                    f"<font color='#{MUTED}'> · {escape(change)}</font>",
                     note_style,
                 ),
             ]
@@ -184,12 +187,15 @@ def _scorecard_table(view: ExportView, styles: dict) -> Table:
         comparison = indicator.get("comparison") or {}
         rows.append(
             [
-                Paragraph(f"<b>{indicator.get('name') or indicator.get('indicator_code')}</b>", styles["cell"]),
+                Paragraph(
+                    f"<b>{escape(str(indicator.get('name') or indicator.get('indicator_code') or ''))}</b>",
+                    styles["cell"],
+                ),
                 format_measure(indicator),
                 status_label(status),
                 format_measure(comparison),
                 change_text(indicator),
-                Paragraph(thresholds_text(indicator) or "", styles["small"]),
+                Paragraph(escape(thresholds_text(indicator) or ""), styles["small"]),
             ]
         )
         _status_style(commands, 1, index, status)
@@ -206,7 +212,9 @@ def _unit_table(view: ExportView, styles: dict) -> Table | None:
         return None
     header = ["Unit"] + [
         Paragraph(
-            f"<font color='white'><b>{column.get('name') or column.get('indicator_code')}</b></font>", styles["cell"]
+            "<font color='white'><b>"
+            f"{escape(str(column.get('name') or column.get('indicator_code') or ''))}</b></font>",
+            styles["cell"],
         )
         for column in view.unit_columns
     ]
@@ -259,8 +267,13 @@ def _ranking_table(view: ExportView, styles: dict) -> list | None:
 def _map_drawing(view: ExportView, width: float, height: float) -> Drawing | None:
     points = []
     for feature in view.map_features:
-        for ring in _rings(feature.get("geometry") or {}):
+        geometry = feature.get("geometry") or {}
+        for ring in _rings(geometry):
             points.extend(point for point in ring if len(point) >= 2)
+        if geometry.get("type") == "Point":
+            points.append(geometry["coordinates"])
+        elif geometry.get("type") == "MultiPoint":
+            points.extend(geometry["coordinates"])
     if not points:
         return None
     lons = [point[0] for point in points]
@@ -272,20 +285,34 @@ def _map_drawing(view: ExportView, width: float, height: float) -> Drawing | Non
     drawing = Drawing(width, height)
     for feature in view.map_features:
         status = resolve_status(feature.get("properties") or {})
-        for ring in _rings(feature.get("geometry") or {}):
-            flat: list[float] = []
-            for point in ring:
-                if len(point) >= 2:
-                    flat.extend(((point[0] - min(lons)) * factor * scale, (point[1] - min(lats)) * scale))
-            if len(flat) >= 6:
-                drawing.add(
-                    Polygon(
-                        flat,
-                        fillColor=_hex(STATUS_FILL.get(status, STATUS_FILL["missing"])),
-                        strokeColor=colors.white,
-                        strokeWidth=0.4,
-                    )
+        geometry = feature.get("geometry") or {}
+        fill = _hex(STATUS_FILL.get(status, STATUS_FILL["missing"]))
+        path = DrawingPath(fillColor=fill, strokeColor=colors.white, strokeWidth=0.4, fillMode=FILL_EVEN_ODD)
+        for ring in _rings(geometry):
+            for index, point in enumerate(ring):
+                x, y = (point[0] - min(lons)) * factor * scale, (point[1] - min(lats)) * scale
+                (path.moveTo if index == 0 else path.lineTo)(x, y)
+            path.closePath()
+        if path.points:
+            drawing.add(path)
+        coordinates = geometry.get("coordinates") or []
+        markers = (
+            [coordinates]
+            if geometry.get("type") == "Point"
+            else coordinates
+            if geometry.get("type") == "MultiPoint"
+            else []
+        )
+        for point in markers:
+            drawing.add(
+                Circle(
+                    (point[0] - min(lons)) * factor * scale,
+                    (point[1] - min(lats)) * scale,
+                    3,
+                    fillColor=fill,
+                    strokeColor=colors.white,
                 )
+            )
     return drawing
 
 
@@ -293,9 +320,9 @@ def _rings(geometry: dict) -> list[list]:
     kind = geometry.get("type")
     coordinates = geometry.get("coordinates") or []
     if kind == "Polygon":
-        return [coordinates[0]] if coordinates else []
+        return coordinates
     if kind == "MultiPolygon":
-        return [polygon[0] for polygon in coordinates if polygon]
+        return [ring for polygon in coordinates for ring in polygon]
     return []
 
 
@@ -307,10 +334,22 @@ def _trend_drawing(view: ExportView) -> Drawing | None:
     drawing = Drawing(25 * cm, 7 * cm)
     plot = LinePlot()
     plot.x, plot.y, plot.width, plot.height = 1.5 * cm, 1.2 * cm, 22.5 * cm, 5.3 * cm
-    plot.data = [present]
-    plot.lines[0].strokeColor = _hex(NAVY)
-    plot.lines[0].strokeWidth = 2
-    plot.lines[0].symbol = makeMarker("FilledCircle", size=4, fillColor=_hex(NAVY))
+    segments = []
+    segment = []
+    for index, (_label, value) in enumerate(series):
+        if value is None:
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append((index, value))
+    if segment:
+        segments.append(segment)
+    plot.data = segments
+    for index in range(len(segments)):
+        plot.lines[index].strokeColor = _hex(NAVY)
+        plot.lines[index].strokeWidth = 2
+        plot.lines[index].symbol = makeMarker("FilledCircle", size=4, fillColor=_hex(NAVY))
     plot.xValueAxis.valueMin = 0
     plot.xValueAxis.valueMax = max(len(series) - 1, 1)
     plot.xValueAxis.valueSteps = list(range(len(series)))
@@ -364,8 +403,8 @@ def write_pdf(view: ExportView, destination: Path, template_version: str) -> Non
         author="Health Performance Intelligence",
     )
     story: list = [
-        Paragraph(view.title, styles["title"]),
-        Paragraph(f"{view.subtitle} · generated {view.generated_at}", styles["subtitle"]),
+        Paragraph(escape(view.title), styles["title"]),
+        Paragraph(escape(f"{view.subtitle} · generated {view.generated_at}"), styles["subtitle"]),
         Spacer(1, 0.35 * cm),
         _legend_table(),
         Spacer(1, 0.35 * cm),
@@ -375,14 +414,15 @@ def write_pdf(view: ExportView, destination: Path, template_version: str) -> Non
     trend = _trend_drawing(view)
     if trend is not None:
         indicator = view.trend_indicator or {}
-        story.append(KeepTogether([Paragraph(f"Trend · {indicator.get('name') or ''}", styles["h2"]), trend]))
+        story.append(KeepTogether([Paragraph(escape(f"Trend · {indicator.get('name') or ''}"), styles["h2"]), trend]))
     drawing = _map_drawing(view, 11 * cm, 11 * cm)
     ranking = _ranking_table(view, styles)
     if drawing is not None or ranking is not None:
         story.append(PageBreak())
         story.append(
             Paragraph(
-                f"Geographic performance · {view.map_indicator_name or view.ranking_indicator_name}", styles["h2"]
+                escape(f"Geographic performance · {view.map_indicator_name or view.ranking_indicator_name}"),
+                styles["h2"],
             )
         )
         side = [[drawing or "", ranking or Paragraph("Ranking is not available.", styles["body"])]]
@@ -390,17 +430,18 @@ def write_pdf(view: ExportView, destination: Path, template_version: str) -> Non
         layout.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
         story.append(layout)
         if view.map_note:
-            story.append(Paragraph(view.map_note, styles["small"]))
+            story.append(Paragraph(escape(view.map_note), styles["small"]))
     story.extend([PageBreak(), Paragraph("Verified scorecard", styles["h2"]), _scorecard_table(view, styles)])
     units = _unit_table(view, styles)
     if units is not None:
-        story.extend([PageBreak(), Paragraph(f"{view.unit_label} scorecard", styles["h2"]), units])
+        story.extend([PageBreak(), Paragraph(escape(f"{view.unit_label} scorecard"), styles["h2"]), units])
     story.append(Paragraph("Data quality", styles["h2"]))
     if view.quality_flags:
         for flag in view.quality_flags:
             story.append(
                 Paragraph(
-                    f"<b>{flag.get('rule_id')}</b> ({flag.get('occurrences') or 1}): {flag.get('explanation')}",
+                    f"<b>{escape(str(flag.get('rule_id') or ''))}</b> ({int(flag.get('occurrences') or 1)}): "
+                    f"{escape(str(flag.get('explanation') or ''))}",
                     styles["body"],
                 )
             )
@@ -408,7 +449,7 @@ def write_pdf(view: ExportView, destination: Path, template_version: str) -> Non
         story.append(Paragraph("No quality flags were attached to this run.", styles["body"]))
     story.append(Paragraph("Evidence notes", styles["h2"]))
     for line in _notes(view, template_version):
-        story.append(Paragraph(f"• {line}", styles["body"]))
+        story.append(Paragraph(escape(f"• {line}"), styles["body"]))
     document.build(story, onFirstPage=decorate, onLaterPages=decorate)
 
 

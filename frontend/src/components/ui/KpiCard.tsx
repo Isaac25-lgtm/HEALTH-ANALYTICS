@@ -50,6 +50,11 @@ export function KpiCard({
           </p>
         ) : null}
       </div>
+      {measure.raw_value !== null && measure.aggregation_policy === "children_reporting" ? (
+        <p className="kpi-note" role="note" title="Owner decision D-067: units that report nothing add nothing.">
+          Sum of reporting districts
+        </p>
+      ) : null}
       {measure.raw_value === null ? (
         <p className="kpi-unavailable" role="note">
           {unavailableLabel(measure.reason_code)}

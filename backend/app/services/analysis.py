@@ -79,6 +79,9 @@ def persist_snapshot(
     request_key: str | None = None,
     request: dict | None = None,
 ) -> AnalysisSnapshot:
+    from app.services.prepared_dashboard import preparation_metadata
+
+    preparation = preparation_metadata(session, user, dashboard["module"])
     snapshot_id = uuid4()
     view_hash = compute_view_hash(
         org_unit_id=dashboard["scope"]["id"],
@@ -112,6 +115,7 @@ def persist_snapshot(
         evidence_json=evidence,
         idempotency_key=request_key,
         view_config={
+            "preparation": preparation,
             "org_unit_code": dashboard.get("scope", {}).get("code"),
             "period": dashboard["period"],
             "comparison_period": dashboard.get("comparison_period"),
@@ -130,11 +134,14 @@ def _authorise_snapshot(session: Session, user: User, row: AnalysisSnapshot) -> 
     if row.user_id != user.id:
         raise AuthorizationError("not_found", "Analytical snapshot was not found.")
     require_action(session, user, ActionPermission.VIEW)
-    require_org_unit_access(session, user, row.org_unit_id)
+    require_org_unit_access(session, user, row.org_unit_id, period=row.period)
     programme = MODULE_PROGRAMME.get(row.module)
     if programme is None:
         raise AuthorizationError("not_found", "Analytical snapshot was not found.")
     require_programme_access(session, user, programme)
+    extras = ((row.payload_json or {}).get("module_result") or {}).get("mpdsr") or {}
+    if extras.get("structured_cause_mentions") or extras.get("active_events") is not None:
+        require_action(session, user, ActionPermission.VIEW_MPDSR_EVENTS)
 
 
 def load_snapshot(

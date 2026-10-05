@@ -1,5 +1,55 @@
 # Open Production Inputs
 
+## Current October correction status (read before historical entries below)
+
+October 5 follow-up: [CODEX_FIX_HANDOFF_2026-10-05.md](CODEX_FIX_HANDOFF_2026-10-05.md) adds
+complete-refresh withdrawal reconciliation, retention-aware quality, durable dispatch recovery,
+prefetch failure isolation and the remaining historical facility access fixes. It does not activate
+the live system. Claude reported prior PostgreSQL/build proof; the new recovery races and real
+Redis/restart path still need execution on the final tree. The last read-only audit found live
+migration 0014 and no retained-current MPDSR events; do not present those as fixed by code alone.
+
+Follow-up evidence: broad backend 928 passed/35 skipped, final affected-code regressions 182
+passed/0 skipped (29 new cases), Ruff clean. The broad run preceded the final CLI/Tracker timestamp
+edge fixes; the final focused run covers those. A new disposable PostgreSQL 18 initdb attempt
+still failed with restricted-token error 87; Claude/operator must run the database races under a
+normal permitted account. No worker, live migration, refresh, purge or service restart occurred.
+
+The owner authorised repairs on 2026-10-02. Full evidence and the operator handoff are in
+[CODEX_CORRECTIONS_2026-10-02.md](CODEX_CORRECTIONS_2026-10-02.md). Local code changes are not
+production acceptance. Older rows referring to missing national population imports, a neutral-only
+hierarchy, unwired MPDSR candidates, or unapproved district boundaries describe earlier stages and
+are superseded by D-051 through D-068. The supplied district/city workbook must NOT be requested or
+imported again blindly. No new population or hierarchy was fabricated in this pass.
+
+Still required:
+
+- Claude/operator: final disposable PostgreSQL verification of migration 0015, real Redis/Celery
+  queue/restart tests, a real-repository build and Playwright gate, a backup before live migration,
+  supervised DHIS2 GET refresh, prewarming and real browser timings/downloads. This sandbox could
+  not start PostgreSQL (`initdb` restricted-token error 87), and a scratch build could not resolve
+  Next's client modules through a cross-volume dependency junction.
+- Operator activation: worker and a single approved scheduler instance. The new precompute/refresh
+  flags default off; prepared code is not evidence that a worker or Beat is running. Do not enable
+  purge alone while short-retention MPDSR refresh is absent.
+- Owner: D-069 confirmation or withdrawal; approved facility/sub-county denominator contracts,
+  cause taxonomy/disclosure, formula effective dates for hosted use, remaining source definitions,
+  boundary/coordinate approvals where absent, official publishing assets and production operations.
+- Engineering: bounded/streaming upstream Tracker extraction (withdrawal reconciliation is now
+  implemented locally; see October 5 handoff); improve cold
+  view preparation/coalescing and period-scoped roll-up work; reconcile all aggregate refresh paths
+  with the monthly-source contract and mapping validity across long periods. These are NOT labelled
+  complete merely because warm reads bypass calculation.
+- Quality cleanup: old missing-cause/stale flags were not mass-resolved or deleted. New cause flags
+  require an approved taxonomy and cause mapping; new age-based stale flags concern current/latest
+  reporting windows. Resolve obsolete flags only with an auditable reason, preserving saved history.
+- Retention: D-057's later owner decision extends routine aggregate history locally; it supersedes
+  the original seven-day default for that store. Do not apply the example's shorter default to the
+  operator environment. MPDSR remains short-retention.
+
+These are engineering safeguards, not new clinical decisions. No credentials, live DHIS2 writes,
+live database migrations, commit/push, or service restarts were performed by this pass.
+
 Do not invent any item in this register. Each requires a project-owner, Ministry/programme, or authorised technical decision before production configuration.
 
 | Area | Required input | Why it is needed |
@@ -24,9 +74,9 @@ Do not invent any item in this register. Each requires a project-owner, Ministry
 | Phase 5–7 inputs | Approved AI provider/model and processing agreement; official MoH publishing templates; production hosting, Redis, monitoring, and PostgreSQL backup | Platform fallbacks exist. These inputs are still required before a production go-live. |
 | Corrective snapshot operations | Redis-backed export/AI workers in the owner-approved topology, production query SLA, and map tile hosting if a basemap is required | Exact-run snapshot IDs are required. MapLibre renders owner geometry without a third-party basemap. Test/dev export generation may still be eager. |
 
-| KMC source binding | `KMC_PERCENT` is bound to 105-MA08 (X6rK1GHbLYp), a count of LBW babies initiated on KMC, while the approved formula expects a direct percentage. Candidates: bind the DHIS2 indicator DUFsfDA9YD2 "RMNCAH: Proportion of low birth weight babies initiated on KMC", or change the formula to 105-MA08 over an approved LBW-births element | Until decided the value exceeds 100% and is shown BLUE (non-assessable), never capped |
-| Successful resuscitation denominator | The approved formula is 105-MA24 (live babies successfully resuscitated) / 105-MA23 (babies with birth asphyxia). FY2025/26 national totals are 56,972 / 43,152 = 132%, because MA24 counts all resuscitated babies. DHIS2's own indicator TINZln9PHmu uses expected asphyxia (1.5% of expected births) as denominator | Definition decision; the >100% value is shown BLUE, not capped |
-| Malaria vaccine cohort | MV1/MV4 are reported by 110-119 of 146 districts (phased rollout since early 2025). A national value requires the complete district cohort, so national malaria coverage and the continuum show no data | Decide whether malaria vaccine aggregates over rollout districts only (and who approves that list) |
+| Facility catchment populations | Approved facility catchment populations (or an approved rule) so population-based coverage can be shown for facilities | Facility tables show only non-population indicators until then; coverage columns are hidden with a note |
+| Facility coordinates | Approval to import facility point coordinates from DHIS2 for district maps | District screens report no facility geometry until then |
+| MPDSR cause taxonomy | Approved cause taxonomy (codes, labels, version, reference) for the TRUE_ONLY cause items in `MPDSR_FIELD_CANDIDATES.md` | Cause patterns stay withheld; events store dates and type only |
 | Stale-reporting flag scope | Whether `STALE_REPORTING` should flag every stored raw value older than `DHIS2_STALE_HOURS` (current behaviour; 3,194 open flags on 2026-09-24 because the 2020-2026 history was extracted once), or only the latest expected reporting period as the rule's catalogue text describes | Dominates the alert bell. Not changed without an owner decision |
 | Spike/drop genuine flags | Review of the 332 spike/drop flags raised by the corrected comparable-period rule (D-064); 6,157 flags from the earlier non-comparable comparison were resolved with an audit record each | Data-quality follow-up |
 

@@ -264,3 +264,55 @@ def test_hostile_values_behind_approved_mappings_are_never_stored_and_expire(ses
     assert result.status == "completed" and result.rows_deleted == 1
     assert session.scalar(select(func.count()).select_from(RawEventSnapshot)) == 0
     assert session.scalar(select(func.count()).where(DataQualityFlag.event_uid == "TEST_UID_EVENT_PRIVACY")) == 0
+
+
+def test_event_date_maps_to_review_date_and_identifying_values_stay_out(session):
+    """D-068: a review form's own event date is its review date; nothing identifying is stored."""
+    from app.services.sync import EVENT_DATE_SOURCE
+
+    programme = session.scalar(select(Programme).where(Programme.code == "MPDSR"))
+    facility = session.scalar(select(OrgUnit).where(OrgUnit.code == "PADER_HC_III"))
+    session.add(
+        OrgUnitMapping(
+            org_unit_id=facility.id,
+            external_uid="TEST_UID_OU_REVIEW",
+            source_system="dhis2",
+            valid_from=date(2020, 1, 1),
+        )
+    )
+    mappings = [
+        EventFieldMapping(
+            programme_id=programme.id,
+            program_uid="TEST_UID_REVIEW_PROGRAM",
+            program_stage_uid="TEST_UID_REVIEW_STAGE",
+            source_data_element_uid=source,
+            internal_semantic_field=field_name,
+            event_type="maternal_review",
+            mapping_version="v1",
+            enabled=True,
+        )
+        for field_name, source in (("death_date", "TEST_UID_DE_DEATH"), ("review_date", EVENT_DATE_SOURCE))
+    ]
+    session.add_all(mappings)
+    job = SyncJob(id=uuid4(), job_type="tracker", status="running", programme_id=programme.id, mapping_version="v1")
+    session.add(job)
+    session.commit()
+    observation = EventObservation(
+        event_uid="TEST_UID_EVENT_REVIEW",
+        source_connector="tracker",
+        program_uid="TEST_UID_REVIEW_PROGRAM",
+        program_stage_uid="TEST_UID_REVIEW_STAGE",
+        org_unit_uid="TEST_UID_OU_REVIEW",
+        status="COMPLETED",
+        occurred_at=datetime(2025, 1, 20, 9, 30, tzinfo=UTC),
+        completed_at=None,
+        source_created_at=None,
+        source_updated_at=None,
+        data_values={"TEST_UID_DE_DEATH": "2025-01-04T02:10:00.000", "TEST_UID_DE_NAME": "Jane Doe"},
+    )
+    assert persist_event_observations(session, job, [observation], mappings, datetime.now(UTC))["stored"] == 1
+    row = session.scalar(select(RawEventSnapshot).where(RawEventSnapshot.event_uid == "TEST_UID_EVENT_REVIEW"))
+    assert row.review_date == date(2025, 1, 20)
+    assert row.death_date == date(2025, 1, 4)
+    assert row.data_values["event_type"] == "maternal_review"
+    assert "Jane" not in _encoded(row.data_values)

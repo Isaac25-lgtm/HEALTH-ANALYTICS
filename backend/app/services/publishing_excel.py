@@ -419,4 +419,11 @@ def write_excel(view: ExportView, dashboard: dict, package: dict, destination: P
     meta.append(["indicator_count", len(package["indicators"])])
     meta.append(["generated_at", view.generated_at])
     _style_table(meta, [22, 60])
+    # These exports contain stored values, never executable spreadsheet formulas. Force
+    # user/source-controlled text to text even when openpyxl inferred a leading '=' formula.
+    for sheet in book:
+        for row in sheet:
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
     book.save(destination)

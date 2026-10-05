@@ -40,6 +40,10 @@ class FormulaSpec(_Strict):
     bounded_proportion: bool | None = None
     reconciliation_blue: bool | None = None
     require_all_components: bool = True
+    # "complete_cohort" (default): a parent value needs every child unit to report.
+    # "reporting_units": sum the child units that report; a unit that reports nothing contributes
+    # nothing. Only by owner decision for a named indicator (D-067, malaria vaccine).
+    child_coverage: Literal["complete_cohort", "reporting_units"] = "complete_cohort"
 
 
 class ClassificationSpec(_Strict):

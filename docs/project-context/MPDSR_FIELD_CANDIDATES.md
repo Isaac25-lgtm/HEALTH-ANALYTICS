@@ -1,5 +1,11 @@
 # MPDSR field candidates for owner confirmation (D-063)
 
+Status correction, 2026-10-02: the introductory "nothing is wired" statement below is historical,
+not current. D-068 approved the candidate date mappings and Claude's September 27 handoff reports
+their application. `scripts/apply_mpdsr_event_mappings.py` now enforces operational permission
+checks. This pass did not re-extract live events or change approved field semantics. Missing or
+unusable death dates, an approved cause taxonomy and disclosure policy remain operational gaps.
+
 Discovered read-only (GET only) from `https://hmis.health.go.ug` on 2026-09-25. Nothing below is
 wired into HPIP. Each row needs an owner decision (accept, replace, or reject) before the MPDSR
 event contract is configured. Raw discovery output: `.local/dhis2/mpdsr-programs.json` (gitignored).

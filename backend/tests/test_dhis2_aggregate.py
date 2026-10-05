@@ -16,7 +16,13 @@ def test_mapping_failure_and_persist(session):
     from app.integrations.dhis2.types import AggregateObservation
     from app.models import SyncJob
 
-    job = SyncJob(job_type="aggregate", status=JobStatus.RUNNING.value, mapping_version="v1")
+    job = SyncJob(
+        job_type="aggregate",
+        status=JobStatus.RUNNING.value,
+        mapping_version="v1",
+        programme_id=programme.id,
+        org_unit_id=uganda.id,
+    )
     session.add(job)
     session.flush()
     observations = [
@@ -34,9 +40,7 @@ def test_mapping_failure_and_persist(session):
             value=1,
         ),
     ]
-    counts = persist_aggregate_observations(
-        session, job, observations, {"TEST_UID_ANC1": mapping}, datetime.now(UTC)
-    )
+    counts = persist_aggregate_observations(session, job, observations, {"TEST_UID_ANC1": mapping}, datetime.now(UTC))
     assert counts["stored"] == 1
     assert counts["rejected"] >= 1
     stored = session.scalar(select(RawAggregateValue).where(RawAggregateValue.internal_source_key == "ANC1"))

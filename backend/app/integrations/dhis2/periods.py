@@ -173,9 +173,11 @@ def covering_internal_period(dhis2_period: str, internal_key: str) -> bool:
         month_start = date(int(match.group(1)), int(match.group(2)), 1)
         return spec.start <= month_start <= spec.end
     try:
-        return from_dhis2_period(raw) == spec.key
-    except PeriodBridgeError:
+        returned = parse_period(from_dhis2_period(raw))
+    except (PeriodBridgeError, PeriodError):
         return False
+    # Compare boundaries, not labels: DHIS2's 2025Q3 is exactly HPIP's FY2025/26Q1.
+    return (returned.start, returned.end) == (spec.start, spec.end)
 
 
 def month_end(period: str) -> date:

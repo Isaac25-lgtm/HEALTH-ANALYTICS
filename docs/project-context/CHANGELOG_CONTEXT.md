@@ -1,5 +1,77 @@
 # Context Changelog
 
+## 2026-10-05 - follow-up code fixes; no live activation
+
+The owner instructed "fix them" after review of Claude's October verification. Complete aggregate
+and Tracker refreshes now reconcile scoped withdrawals while retaining historical rows; quality
+uses the analytical MPDSR retention scope; facility history checks carry the requested period;
+sign-in prefetch preserves earlier jobs across later programme failure. Existing durable SyncJob
+records now support bounded conditional dispatch recovery, with maintenance task/CLI and broker
+acknowledgement race guards. No new migration or frontend source change was made this follow-up.
+
+See [CODEX_FIX_HANDOFF_2026-10-05.md](CODEX_FIX_HANDOFF_2026-10-05.md) for exact scope, tests,
+limitations and operator steps. Nothing was migrated, refreshed, purged, committed/pushed or
+restarted; DHIS2 was not contacted. Existing work and approved national populations were preserved.
+Older test totals are historical, not proof of the final combined tree.
+
+Verification: broad isolated backend run 928 passed/35 skipped (33 PostgreSQL, 2 Redis),
+then 182 affected-services/connector tests passed with no skips on the final frozen code,
+including all 29 follow-up cases. The broad run preceded the last CLI import/Tracker timestamp
+corrections; this qualification is recorded in the handoff. Ruff and `git diff --check` passed.
+A fresh disposable PostgreSQL attempt still failed at initdb with restricted-token error 87;
+no cluster started. No final PostgreSQL/Redis or live-operation pass is claimed.
+
+## 2026-10-02 - owner-authorised Codex correction pass (uncommitted; not operational acceptance)
+
+The owner instructed "fix everything" after the independent September audit. Claude's existing
+tracked and untracked work was preserved. This pass changes local code and isolated tests only;
+it does not claim a live deployment, a new DHIS2 extraction, or approval of D-069.
+
+See [CODEX_CORRECTIONS_2026-10-02.md](CODEX_CORRECTIONS_2026-10-02.md) for the complete change list,
+verification evidence, remaining engineering work and Claude's operator checklist. Corrections
+include complete/invalid month handling, explicit extraction coverage, district-level aggregation,
+prepared private dashboard reads with transactional invalidation, durable scoped facility jobs,
+MPDSR freshness and multi-form zero checks, export safety, pinned map lineage, and ready-dashboard
+sign-in with verified identity. Migration `0015_sync_coverage_manifest` must be verified on
+disposable PostgreSQL before it is applied to the real local store. Nothing was committed/pushed,
+no live database was migrated, no live service was restarted, and DHIS2 was not contacted.
+
+Historical verification counts below describe earlier code, not this working tree. The October
+handoff is authoritative for this pass's results and limitations.
+
+## 2026-09-25 (later) - owner decisions D-065 to D-068: KMC, malaria, MPDSR, facility drill-down
+
+- **KMC (D-065).** `KMC_PERCENT` rebound from the 105-MA08 count to the DHIS2 indicator DUFsfDA9YD2
+  (`scripts/apply_direct_indicator.py`, audited; 11,045 count rows retired, not deleted). A DHIS2
+  indicator is a ratio: it is extracted natively for the national, regional and district units and
+  for every month, FY, FY quarter and calendar year since July 2020 (116 jobs), and the roll-up
+  never sums it. National FY2025/26 is 62.1%.
+- **FY quarters.** The native-period check compared labels, so DHIS2 `2025Q3` was rejected for
+  `FY2025/26Q1`; it now compares period boundaries.
+- **Resuscitation (D-066).** Formula unchanged; values above 100% are a source data-entry issue and
+  stay BLUE.
+- **Malaria vaccine (D-067).** Governed revision `v3-malaria-all-districts` (MV1-MV4 coverage and
+  MV1-MV4 dropout) with `child_coverage: reporting_units`: parent values sum the districts that
+  report, policy `children_reporting`, and KPI cards say "Sum of reporting districts". Every other
+  indicator still needs a complete cohort.
+- **MPDSR (D-068).** Eight event bindings over the four DHIS2 forms (004, 020, 019, 017): death date
+  plus each form's event date as the notification or review date (`occurredAt` source). Tracker jobs
+  cover every mapped program. Only dates and the event type are stored; causes wait for an
+  approved taxonomy. FY2025/26: 44,223 events stored after the facility import.
+- **Sub-counties and facilities (D-062, D-068).** 2,206 sub-counties attached directly to their
+  district and 8,789 facilities to their sub-county, with DHIS2 UID mappings and facility level and
+  ownership from single unambiguous DHIS2 groups (`scripts/import_live_subunits.py`).
+- **On-demand facility figures (D-068).** Opening a district queues one `aggregate_facilities` sync
+  job for the months it lacks (the two latest closed months re-checked daily), run in the
+  background after the snapshot commits; the page shows a loading notice, polls
+  `GET /analytics/dashboard/facility-status` and re-runs when ready. A district user's home district
+  is prefetched at sign-in. Nothing is queued when DHIS2 extraction is switched off. Verified live:
+  Kitgum FY2025/26 loaded 12 months and showed 29 facilities in about 85 seconds.
+- **Aggregation.** Parents now sum only the aggregation class nearest to them, so facility rows
+  loaded beneath districts are components, never added and never standing in for a district.
+- **Scale.** Batch subtree lookups use a path index, run fingerprints cache the hierarchy digest,
+  and quality and population queries use path subqueries or skip facilities.
+
 ## 2026-09-25 - reference-screen rebuild, part 2: colour-coded downloads
 
 - Excel, PowerPoint, PDF and Word are rebuilt from one snapshot presentation model

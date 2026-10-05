@@ -6,6 +6,7 @@ import {
   getAnalysisSnapshot,
   getChildren,
   getContext,
+  getPreparedDashboard,
   getSyncJob,
   newRequestKey,
   queryDashboard,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/scope";
 import { compositionFor, SCREEN_TITLES, workspaceSpec } from "@/lib/workspaces";
 import type { CurrentContext, DashboardResponse, Measure, OrgUnitSummary } from "@/lib/types";
+import { readReadyDashboard } from "@/lib/dashboard-ready";
 import { AppShell } from "../shell/AppShell";
 import { ErrorState, LoadingState, PermissionDenied } from "../ui/EmptyStates";
 import { EvidenceDrawer } from "../ui/EvidenceDrawer";
@@ -51,22 +53,27 @@ export function DashboardView({
   snapshot?: string;
 }) {
   const router = useRouter();
-  const [context, setContext] = useState<CurrentContext | null>(null);
-  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
-  const [children, setChildren] = useState<OrgUnitSummary[]>([]);
+  const candidate = readReadyDashboard(snapshot);
+  const ready = candidate && snapshotAnswersRequest(candidate.dashboard, { orgUnitId, period, module, comparison, indicator })
+    ? candidate : null;
+  const [context, setContext] = useState<CurrentContext | null>(ready?.context ?? null);
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(ready?.dashboard ?? null);
+  const [children, setChildren] = useState<OrgUnitSummary[]>(ready?.children ?? []);
   const [error, setError] = useState<string | null>(null);
   const [denied, setDenied] = useState<string | null>(null);
   const [selected, setSelected] = useState<Measure | null>(null);
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshState, setRefreshState] = useState<string | null>(null);
-  const contextRef = useRef<CurrentContext | null>(null);
-  const executedRef = useRef<DashboardResponse | null>(null);
+  const contextRef = useRef<CurrentContext | null>(ready?.context ?? null);
+  const executedRef = useRef<DashboardResponse | null>(ready?.dashboard ?? null);
 
   useEffect(() => {
     let cancelled = false;
     const current: DashboardLink = { screen, orgUnitId, period, comparison, module, indicator, workspace };
 
     async function load() {
+      setError(null);
+      setDenied(null);
       const next = contextRef.current ?? (await getContext());
       if (cancelled) {
         return;
@@ -101,25 +108,21 @@ export function DashboardView({
             }
             throw err;
           }
-          if (!snapshotAnswersRequest(result, { orgUnitId, period, module })) {
-            router.replace(dashboardHref({ ...current, orgUnitId: targetId, request: newRequestKey() }));
-            return;
-          }
         }
-      } else {
-        if (!request) {
-          // One idempotency key per navigation: repeated submissions reuse the same snapshot.
+        if (!snapshotAnswersRequest(result, { orgUnitId, period, module, comparison, indicator })) {
           router.replace(dashboardHref({ ...current, orgUnitId: targetId, request: newRequestKey() }));
           return;
         }
-        result = await queryDashboard({
+      } else {
+        const query = {
           orgUnitId: targetId,
           period,
           comparison,
           module,
           indicator,
-          requestKey: request,
-        });
+          requestKey: request ?? newRequestKey(),
+        };
+        result = (await getPreparedDashboard(query)) ?? (await queryDashboard(query));
         executedRef.current = result;
       }
       if (cancelled) {
@@ -140,7 +143,8 @@ export function DashboardView({
       if (!snapshot) {
         router.replace(dashboardHref(committed));
       }
-      const nextChildren = await getChildren(result.scope.id).catch(() => []);
+      const primed = readReadyDashboard(result.analysis_snapshot_id);
+      const nextChildren = primed?.children ?? (await getChildren(result.scope.id).catch(() => []));
       if (!cancelled) {
         setChildren(nextChildren);
       }

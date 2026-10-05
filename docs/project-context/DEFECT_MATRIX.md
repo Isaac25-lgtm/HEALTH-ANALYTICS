@@ -1,5 +1,35 @@
 # Corrective defect matrix — 2026-09-12
 
+## October 5 follow-up closure scope
+
+Full handoff: [CODEX_FIX_HANDOFF_2026-10-05.md](CODEX_FIX_HANDOFF_2026-10-05.md).
+
+| Confirmed gap | Local fix | Still required |
+|---|---|---|
+| Complete empty aggregate/Tracker refresh leaves old rows current | Exact-scoped complete-only reconciliation; attempt-specific returned IDs; bounded batches; retained history | Supervised live refresh/withdrawal comparison; upstream extraction streaming and long-period validity remain separate work |
+| Quality scans expired MPDSR records | Shared retained, scoped Tracker reader; missing-date checks preserved | New live refresh/purge and audited old-flag cleanup |
+| Later prefetch failure loses earlier jobs; commit-before-publish gap | Per-programme isolation; durable conditional recovery; no overwrite of worker claim after lost broker acknowledgement | Real PostgreSQL race tests, Redis/restart proof and actual maintenance scheduling |
+| Closed facility blocked by current-only queue/status/worker paths | Requested period passed through server access checks and dated UID selection | Real historical browser acceptance; current grant revocation remains mandatory |
+
+No live operational acceptance is claimed. No clinical/denominator/source approval was invented.
+
+## Owner-authorised October corrections
+
+Status: implemented locally, verification in progress; not a production-acceptance claim.
+Full evidence and remaining gaps: [CODEX_CORRECTIONS_2026-10-02.md](CODEX_CORRECTIONS_2026-10-02.md).
+
+| Audit area | Code correction | Acceptance limitation |
+|---|---|---|
+| D2/D3/D4 | Invalid components poison the derived total; withdrawals retire it; native percentages are never summed even for disabled historical bindings | Legacy missing-month absence needs actual extraction manifests, not fabricated backfill; historical SUM/COUNT bindings remain supported |
+| D5/D6/D14 | District/city peers cannot be replaced by facilities; partial reporting requires per-unit/key/month coverage; unconfirmed MPDSR reporting policy defaults off | D-069 still needs explicit owner approval; no new clinical rule was approved |
+| D7/D8/D9 | All configured MPDSR forms must be covered; unusable death dates cannot certify zero; exact retention/freshness expiry; event mapping and calculator identity invalidate reuse | Existing Tracker jobs need a new supervised extraction; upstream date completeness remains unresolved |
+| D13/D23/D25 | Pinned geometry IDs reopen unchanged; closed facilities remain in dated history; sub-county facility comparisons are populated | Boundaries/coordinates and catchment populations cannot be invented |
+| D19/D21/D22 | Facility extraction targets only the authorised subtree; durable queue and duplicate guard; manifests, cohort and retained-row checks determine readiness | Redis/worker/Beat, PostgreSQL concurrent delivery and real restart recovery require operator verification |
+| D24 | Operational mapping scripts enforce action, programme and geography permissions | Historical mapping-governance review is not replaced by tests |
+| D29/D30 | PDF trends preserve gaps; PDF text is escaped; Excel source text cannot become formula cells; PDF/PPT retain polygon holes and point geometry | Final real-repository build, browser and real-data downloads require operator checks |
+| D32 | Cause checks require approved taxonomy and cause mappings; stale reporting is restricted to latest/current operational periods; the bell groups open flags | Old persisted false flags were not deleted/resolved and need an audited cleanup decision |
+| Performance/sign-in | Ready private snapshots bypass calculations; worker prewarm and opt-in schedules; identity shown before navigation to a ready, non-empty view | Cold views still compute synchronously; no production timing claim or scheduler activation |
+
 ## Live-data correction — 2026-09-21
 
 | Area | Defect | Correction | Verification |

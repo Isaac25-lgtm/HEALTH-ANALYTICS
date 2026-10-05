@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.domain.enums import (
     AbsenceReason,
+    ActionPermission,
     ConnectorType,
     JobStatus,
     MappingSourceSystem,
@@ -31,7 +32,7 @@ from app.integrations.dhis2.gates import Dhis2Disabled, ensure_extraction_enable
 from app.integrations.dhis2.http import Dhis2HttpClient
 from app.integrations.dhis2.periods import PeriodTranslation, covering_internal_period
 from app.integrations.dhis2.periods import translate as translate_period
-from app.integrations.dhis2.tracker import TrackerEventsAdapter
+from app.integrations.dhis2.tracker import TrackerEventsAdapter, TrackerFetchResult
 from app.integrations.dhis2.types import AggregateObservation, EventAggregateObservation, EventObservation
 from app.models import (
     EventFieldMapping,
@@ -45,7 +46,13 @@ from app.models import (
     SyncJob,
     User,
 )
-from app.services.authorization import AuthorizationError
+from app.services.authorization import (
+    AuthorizationError,
+    is_descendant_or_self,
+    require_action,
+    require_org_unit_access,
+    require_programme_access,
+)
 from app.services.geography import descendants, resolve_org_unit_by_dhis2_uid, unmapped_dhis2_org_units
 from app.services.hierarchy_authority import DISTRICT_CITY_COHORT
 from app.services.mapping_coverage import evaluate_coverage
@@ -73,6 +80,8 @@ def persist_aggregate_observations(
     observations,
     mappings_by_uid: dict[str | tuple[str, str], SourceMapping],
     extracted_at: datetime,
+    *,
+    seen_row_ids: set[UUID] | None = None,
 ) -> dict[str, int]:
     stored = rejected = flagged = 0
     incoming_uids = [item.org_unit_uid for item in observations]
@@ -95,7 +104,13 @@ def persist_aggregate_observations(
             rejected += 1
             flagged += 1
             continue
-        if mapping is None or org_unit is None:
+        scope = session.get(OrgUnit, job.org_unit_id) if job.org_unit_id else None
+        if (
+            mapping is None
+            or org_unit is None
+            or mapping.programme_id != job.programme_id
+            or (scope is not None and not is_descendant_or_self(org_unit, scope))
+        ):
             rejected += 1
             flagged += 1
             continue
@@ -150,6 +165,8 @@ def persist_aggregate_observations(
         session.flush()
         if existing is not None:
             existing.superseded_by_id = row.id
+        if seen_row_ids is not None:
+            seen_row_ids.add(row.id)
         stored += 1
     job.stored_count = stored
     job.rejected_count = rejected
@@ -160,14 +177,19 @@ def persist_aggregate_observations(
     return {"stored": stored, "rejected": rejected, "flagged": flagged, "unmapped": len(unmapped)}
 
 
+EVENT_DATE_SOURCE = "occurredAt"
+
+
 def persist_event_observations(
     session: Session,
     job: SyncJob,
     observations: list[EventObservation],
     field_mappings: list[EventFieldMapping],
     extracted_at: datetime,
+    *,
+    seen_row_ids: set[UUID] | None = None,
 ) -> dict[str, int]:
-    stored = rejected = dropped_fields = 0
+    stored = rejected = dropped_fields = missing_death_dates = 0
     for observation in observations:
         if job.cancelled:
             break
@@ -180,10 +202,15 @@ def persist_event_observations(
         if org_unit is None or not observation.event_uid:
             rejected += 1
             continue
+        scope = session.get(OrgUnit, job.org_unit_id) if job.org_unit_id else None
+        if scope is not None and not is_descendant_or_self(org_unit, scope):
+            rejected += 1
+            continue
         applicable = [
             row
             for row in field_mappings
-            if not row.program_stage_uid or row.program_stage_uid == observation.program_stage_uid
+            if (not row.program_stage_uid or row.program_stage_uid == observation.program_stage_uid)
+            and (not row.program_uid or row.program_uid == observation.program_uid)
         ]
         event_types = {row.event_type for row in applicable if row.event_type}
         if len(event_types) != 1:
@@ -208,12 +235,19 @@ def persist_event_observations(
             if mapped is None:
                 continue
             mapped_values[mapped.internal_semantic_field] = value
+        # A form's own event date (for example the date of review) is mapped with the reserved
+        # source ``occurredAt``; it is a date, never an identifier.
+        event_date_field = uid_to_field.get(EVENT_DATE_SOURCE)
+        if event_date_field is not None and observation.occurred_at is not None:
+            mapped_values[event_date_field.internal_semantic_field] = observation.occurred_at.isoformat()
         # Whitelist minimisation: only approved, non-identifying scalar facts are persisted.
         minimised = minimise_event_values(mapped_values)
         semantic = minimised.values
         dropped_fields += minimised.dropped_count
         semantic.setdefault("event_type", next(iter(event_types)))
         death = _as_date(semantic.get("death_date"))
+        if death is None:
+            missing_death_dates += 1
         notification = _as_date(semantic.get("notification_date"))
         review = _as_date(semantic.get("review_date"))
         existing = session.scalar(
@@ -252,6 +286,8 @@ def persist_event_observations(
         session.flush()
         if existing is not None:
             existing.superseded_by_id = row.id
+        if seen_row_ids is not None:
+            seen_row_ids.add(row.id)
         stored += 1
     job.stored_count = stored
     job.rejected_count = rejected
@@ -263,7 +299,12 @@ def persist_event_observations(
             job_id=str(job.id),
             records_rejected=dropped_fields,
         )
-    return {"stored": stored, "rejected": rejected, "dropped_fields": dropped_fields}
+    return {
+        "stored": stored,
+        "rejected": rejected,
+        "dropped_fields": dropped_fields,
+        "missing_death_dates": missing_death_dates,
+    }
 
 
 def _as_date(value):
@@ -288,9 +329,7 @@ class OrgScopeError(RuntimeError):
         self.message = message
 
 
-def _mapped_org_unit_uids(
-    session: Session, org_unit: OrgUnit, as_of=None
-) -> list[str]:
+def _mapped_org_unit_uids(session: Session, org_unit: OrgUnit, as_of=None) -> list[str]:
     """Resolve a complete, non-overlapping DHIS2 request cohort or fail closed.
 
     Country and regional requests use district/city peers, never a mixture of parents and
@@ -312,11 +351,7 @@ def _mapped_org_unit_uids(
         OrgUnitLevel.REGION.value,
         OrgUnitLevel.SUB_REGION.value,
     }:
-        units = [
-            unit
-            for unit in subtree
-            if unit.level_type in {OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value}
-        ]
+        units = [unit for unit in subtree if unit.level_type in {OrgUnitLevel.DISTRICT.value, OrgUnitLevel.CITY.value}]
         if org_unit.level_type == OrgUnitLevel.COUNTRY.value and len(units) != DISTRICT_CITY_COHORT:
             raise OrgScopeError(
                 "org_hierarchy_incomplete",
@@ -387,6 +422,38 @@ def _mapped_org_unit_uids(
     return uids
 
 
+def _aggregate_level_uids(session: Session, org_unit: OrgUnit, as_of=None) -> list[str]:
+    """Mapped DHIS2 UIDs of the requested unit and any region-level units beneath it.
+
+    Used only for DHIS2 indicators, whose national and regional values must come from DHIS2
+    itself. District-level and lower requests need nothing extra.
+    """
+    if org_unit.level_type not in {
+        OrgUnitLevel.COUNTRY.value,
+        OrgUnitLevel.REGION.value,
+        OrgUnitLevel.SUB_REGION.value,
+    }:
+        return []
+    units = [
+        unit
+        for unit in descendants(session, org_unit, include_self=True)
+        if unit.level_type in {OrgUnitLevel.COUNTRY.value, OrgUnitLevel.REGION.value, OrgUnitLevel.SUB_REGION.value}
+    ]
+    rows = session.scalars(
+        select(OrgUnitMapping).where(
+            OrgUnitMapping.org_unit_id.in_([unit.id for unit in units]),
+            OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
+        )
+    ).all()
+    uids = [
+        row.external_uid
+        for row in rows
+        if (as_of is None or row.valid_from is None or row.valid_from <= as_of)
+        and (as_of is None or row.valid_to is None or row.valid_to >= as_of)
+    ]
+    return sorted(set(uids))
+
+
 def _period_bounds(periods: list[str]) -> tuple[str | None, str | None]:
     if not periods:
         return None, None
@@ -411,14 +478,10 @@ def _normalise_event_aggregate_periods(
     """Put event-aggregate responses back under the HPIP period key."""
     translation = translate_period(internal_period, aggregation_semantics="COUNT")
     unexpected = [
-        item.period
-        for item in observations
-        if not covering_internal_period(item.period, translation.internal_key)
+        item.period for item in observations if not covering_internal_period(item.period, translation.internal_key)
     ]
     if unexpected:
-        raise Dhis2ValidationError(
-            f"DHIS2 returned {len(unexpected)} event rows outside {translation.internal_key}."
-        )
+        raise Dhis2ValidationError(f"DHIS2 returned {len(unexpected)} event rows outside {translation.internal_key}.")
     return [
         EventAggregateObservation(
             org_unit_uid=item.org_unit_uid,
@@ -508,9 +571,7 @@ def sync_job_execution_lock(session: Session, job_id: UUID) -> Iterator[bool]:
         return
     key = _sync_lock_key(job_id)
     connection = bind.connect()
-    acquired = bool(
-        connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar()
-    )
+    acquired = bool(connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar())
     try:
         yield acquired
     finally:
@@ -620,6 +681,26 @@ def execute_sync_job(
         _finish(job)
         session.flush()
         return job
+    if job.initiated_by_user_id is not None:
+        actor = session.get(User, job.initiated_by_user_id)
+        programme = session.get(Programme, job.programme_id) if job.programme_id else None
+        try:
+            if actor is None or not actor.is_active or programme is None:
+                raise AuthorizationError("forbidden", "Sync initiator is no longer authorised.")
+            require_action(
+                session,
+                actor,
+                ActionPermission.VIEW if job.job_type == "aggregate_facilities" else ActionPermission.MANAGE_SYNC,
+            )
+            require_org_unit_access(session, actor, org_unit.id, period=job.period_from)
+            require_programme_access(session, actor, programme.code)
+        except AuthorizationError:
+            job.status = JobStatus.FAILED.value
+            job.error_code = "initiator_permissions_changed"
+            job.error_message = "Current permissions no longer authorise this sync job."
+            _finish(job)
+            session.flush()
+            return job
     periods = [item for item in [job.period_from, job.period_to] if item]
     if job.period_from and job.period_to and job.period_from == job.period_to:
         periods = [job.period_from]
@@ -634,6 +715,8 @@ def execute_sync_job(
             return _run_event_analytics_aggregate(session, job, org_unit, periods, client)
         if job.job_type == ConnectorType.AGGREGATE.value:
             return _run_aggregate(session, job, org_unit, periods, client)
+        if job.job_type == FACILITY_AGGREGATE_JOB_TYPE:
+            return _run_facility_aggregate(session, job, org_unit, client)
         job.status = JobStatus.FAILED.value
         job.error_code = "invalid_job_type"
         job.error_message = "The stored sync job type is not supported."
@@ -647,6 +730,80 @@ def execute_sync_job(
         _finish(job)
         session.flush()
         return job
+
+
+FACILITY_AGGREGATE_JOB_TYPE = "aggregate_facilities"
+
+
+def _facility_uids(session: Session, target: OrgUnit, as_of: date | None = None) -> list[str]:
+    """Mapped facilities only inside the authorised requested subtree."""
+    period = as_of.strftime("%Y%m") if as_of else None
+    facilities = [
+        unit
+        for unit in descendants(session, target, include_self=True, period=period)
+        if unit.level_type == OrgUnitLevel.FACILITY.value
+    ]
+    if not facilities:
+        return []
+    query = select(OrgUnitMapping).where(
+        OrgUnitMapping.org_unit_id.in_([unit.id for unit in facilities]),
+        OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
+    )
+    if as_of is not None:
+        query = query.where(
+            or_(OrgUnitMapping.valid_from.is_(None), OrgUnitMapping.valid_from <= as_of),
+            or_(OrgUnitMapping.valid_to.is_(None), OrgUnitMapping.valid_to >= as_of),
+        )
+    rows = session.scalars(query).all()
+    by_unit = {}
+    by_uid = {}
+    for row in rows:
+        if row.org_unit_id in by_unit or row.external_uid in by_uid:
+            raise OrgScopeError("mapping_ambiguous", "Facility mappings overlap for the requested date.")
+        by_unit[row.org_unit_id] = row.external_uid
+        by_uid[row.external_uid] = row.org_unit_id
+    return sorted({row.external_uid for row in rows})
+
+
+def _run_facility_aggregate(
+    session: Session, job: SyncJob, org_unit: OrgUnit, client: Dhis2HttpClient | None
+) -> SyncJob:
+    """Every month from ``period_from`` to ``period_to`` for one district's facilities."""
+    if org_unit.level_type not in {
+        OrgUnitLevel.DISTRICT.value,
+        OrgUnitLevel.CITY.value,
+        OrgUnitLevel.SUB_COUNTY.value,
+        OrgUnitLevel.FACILITY.value,
+    }:
+        job.status = JobStatus.FAILED.value
+        job.error_code = "invalid_geography"
+        job.error_message = "Facility loads require a district, city, sub-county or facility subtree."
+        _finish(job)
+        session.flush()
+        return job
+    months: list[str] = []
+    year, month = int(job.period_from[:4]), int(job.period_from[4:6])
+    while f"{year}{month:02d}" <= job.period_to:
+        months.append(f"{year}{month:02d}")
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    try:
+        uids = _facility_uids(session, org_unit, parse_period(months[0]).start)
+    except OrgScopeError as exc:
+        job.status = JobStatus.FAILED.value
+        job.error_code, job.error_message = exc.code, exc.message
+        _finish(job)
+        session.flush()
+        return job
+    if not uids:
+        job.status = JobStatus.FAILED.value
+        job.error_code = "mapping_missing"
+        job.error_message = "No in-force DHIS2 facility mappings exist in the authorised subtree."
+        _finish(job)
+        session.flush()
+        return job
+    return _run_aggregate(session, job, org_unit, months, client, org_unit_uids=uids)
 
 
 def _mapping_semantics(mapping: SourceMapping) -> str:
@@ -680,14 +837,10 @@ def _normalise_period_observations(
     month. Missing components produce an unavailable value rather than a partial calculation.
     """
     unexpected = [
-        item.period
-        for item in observations
-        if not covering_internal_period(item.period, translation.internal_key)
+        item.period for item in observations if not covering_internal_period(item.period, translation.internal_key)
     ]
     if unexpected:
-        raise Dhis2ValidationError(
-            f"DHIS2 returned {len(unexpected)} rows outside {translation.internal_key}."
-        )
+        raise Dhis2ValidationError(f"DHIS2 returned {len(unexpected)} rows outside {translation.internal_key}.")
     if not translation.is_monthly_route:
         return [
             AggregateObservation(
@@ -721,20 +874,16 @@ def _normalise_period_observations(
         value: float | None
         invalid = False
         absence: str | None = None
-        if semantics == "AVERAGE":
+        if semantics in {"SUM", "COUNT", "AVERAGE"}:
             selected = [by_period[period] for period in expected if period in by_period]
             complete = len(selected) == len(expected)
             invalid = any(row.value_invalid for row in selected)
             numeric = [row.value for row in selected if row.value is not None]
             if complete and not invalid and len(numeric) == len(expected):
-                value = sum(numeric) / len(numeric)
+                value = sum(numeric) / len(numeric) if semantics == "AVERAGE" else sum(numeric)
             else:
                 value = None
-                absence = (
-                    AbsenceReason.INVALID_VALUE.value
-                    if invalid
-                    else AbsenceReason.NO_SOURCE_ROW.value
-                )
+                absence = AbsenceReason.INVALID_VALUE.value if invalid else AbsenceReason.NO_SOURCE_ROW.value
         elif semantics == "LAST":
             selected = list(rows)
             last = by_period.get(expected[-1])
@@ -743,15 +892,9 @@ def _normalise_period_observations(
                 value = last.value
             else:
                 value = None
-                absence = (
-                    AbsenceReason.INVALID_VALUE.value
-                    if invalid
-                    else AbsenceReason.NO_SOURCE_ROW.value
-                )
+                absence = AbsenceReason.INVALID_VALUE.value if invalid else AbsenceReason.NO_SOURCE_ROW.value
         else:  # guarded by mapping validation; retained as a fail-closed invariant
-            raise Dhis2ValidationError(
-                f"Monthly retrieval cannot apply aggregation semantics {semantics!r}."
-            )
+            raise Dhis2ValidationError(f"Monthly retrieval cannot apply aggregation semantics {semantics!r}.")
         freshness = [row.source_freshness_at for row in selected if row.source_freshness_at]
         results.append(
             AggregateObservation(
@@ -779,9 +922,7 @@ def _fetch_aggregate_periods(
     """Fetch mappings in compatible groups and return internal-period observations."""
     grouped: dict[tuple[str, bool], list[SourceMapping]] = {}
     for mapping in mappings:
-        grouped.setdefault(
-            (_mapping_semantics(mapping), bool(mapping.category_option_combo_uid)), []
-        ).append(mapping)
+        grouped.setdefault((_mapping_semantics(mapping), bool(mapping.category_option_combo_uid)), []).append(mapping)
 
     normalised: list[AggregateObservation] = []
     upstream_received = 0
@@ -792,11 +933,7 @@ def _fetch_aggregate_periods(
                 aggregation_semantics=semantics,
             )
             dx_uids = [
-                (
-                    f"{row.dhis2_item_uid}.{row.category_option_combo_uid}"
-                    if category_detail
-                    else row.dhis2_item_uid
-                )
+                (f"{row.dhis2_item_uid}.{row.category_option_combo_uid}" if category_detail else row.dhis2_item_uid)
                 for row in rows
                 if row.dhis2_item_uid
             ]
@@ -817,9 +954,7 @@ def _fetch_aggregate_periods(
             upstream_received += len(fetched.observations)
             if category_detail:
                 allowed = {
-                    (row.dhis2_item_uid, row.category_option_combo_uid or "")
-                    for row in rows
-                    if row.dhis2_item_uid
+                    (row.dhis2_item_uid, row.category_option_combo_uid or "") for row in rows if row.dhis2_item_uid
                 }
                 observations = [
                     item
@@ -828,12 +963,8 @@ def _fetch_aggregate_periods(
                 ]
             else:
                 allowed_uids = {row.dhis2_item_uid for row in rows if row.dhis2_item_uid}
-                observations = [
-                    item for item in fetched.observations if item.item_uid in allowed_uids
-                ]
-            normalised.extend(
-                _normalise_period_observations(observations, translation, semantics)
-            )
+                observations = [item for item in fetched.observations if item.item_uid in allowed_uids]
+            normalised.extend(_normalise_period_observations(observations, translation, semantics))
     return normalised, upstream_received
 
 
@@ -843,6 +974,7 @@ def _run_aggregate(
     org_unit: OrgUnit,
     periods: list[str],
     client: Dhis2HttpClient | None,
+    org_unit_uids: list[str] | None = None,
 ) -> SyncJob:
     if job.programme_id is None:
         job.status = JobStatus.FAILED.value
@@ -870,16 +1002,78 @@ def _run_aggregate(
     http = client or Dhis2HttpClient(cancelled=lambda: _cancelled(session, job.id))
     try:
         adapter = AggregateAnalyticsAdapter(http)
-        ou_uids = _mapped_org_unit_uids(session, org_unit, as_of)
-        observations, upstream_received = _fetch_aggregate_periods(
-            adapter, mappings, ou_uids, periods
+        ou_uids = org_unit_uids if org_unit_uids is not None else _mapped_org_unit_uids(session, org_unit, as_of)
+        summed = [row for row in mappings if row.item_kind != "indicator"]
+        direct = [row for row in mappings if row.item_kind == "indicator"]
+        observations, upstream_received = (
+            _fetch_aggregate_periods(adapter, summed, ou_uids, periods) if summed else ([], 0)
         )
-        by_uid = {
-            (row.dhis2_item_uid, row.category_option_combo_uid or ""): row
-            for row in mappings
-            if row.dhis2_item_uid
+        if direct:
+            # A DHIS2 indicator is a ratio: it cannot be summed from districts, so the country and
+            # region units in scope are requested directly as well (D-065).
+            extra = [] if org_unit_uids is not None else _aggregate_level_uids(session, org_unit, as_of)
+            direct_observations, direct_received = _fetch_aggregate_periods(adapter, direct, ou_uids + extra, periods)
+            observations = observations + direct_observations
+            upstream_received += direct_received
+        requested_uids = set(ou_uids + (extra if direct else []))
+        requested_units = list(
+            session.scalars(
+                select(OrgUnitMapping.org_unit_id).where(
+                    OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
+                    OrgUnitMapping.external_uid.in_(requested_uids),
+                    or_(OrgUnitMapping.valid_from.is_(None), OrgUnitMapping.valid_from <= as_of),
+                    or_(OrgUnitMapping.valid_to.is_(None), OrgUnitMapping.valid_to >= as_of),
+                )
+            ).all()
+        )
+        # Record exact request dimensions: native percentages include parent units,
+        # summable counts do not. A union must not certify unrequested parent counts.
+        uid_to_units = {}
+        for uid, unit_id in session.execute(
+            select(OrgUnitMapping.external_uid, OrgUnitMapping.org_unit_id).where(
+                OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
+                OrgUnitMapping.external_uid.in_(requested_uids),
+                or_(OrgUnitMapping.valid_from.is_(None), OrgUnitMapping.valid_from <= as_of),
+                or_(OrgUnitMapping.valid_to.is_(None), OrgUnitMapping.valid_to >= as_of),
+            )
+        ):
+            uid_to_units.setdefault(uid, set()).add(unit_id)
+        scopes = [
+            {
+                "source_key": mapping.internal_source_key,
+                "item_uid": mapping.dhis2_item_uid,
+                "category_option_combo_uid": mapping.category_option_combo_uid,
+                "org_unit_ids": sorted(
+                    {
+                        unit_id
+                        for uid in (ou_uids + (extra if mapping.item_kind == "indicator" else []))
+                        for unit_id in uid_to_units.get(uid, set())
+                    },
+                    key=str,
+                ),
+                "periods": list(periods),
+            }
+            for mapping in mappings
+            if mapping.dhis2_item_uid
+        ]
+        job.coverage_manifest = {
+            "version": 1,
+            "complete": False,
+            "periods": list(periods),
+            "source_keys": sorted({row.internal_source_key for row in mappings}),
+            "org_unit_ids": sorted({str(unit_id) for unit_id in requested_units}),
+            "mapping_ids": sorted(str(row.id) for row in mappings),
+            "requests": [
+                {**scope, "org_unit_ids": [str(unit_id) for unit_id in scope["org_unit_ids"]]} for scope in scopes
+            ],
         }
-        counts = persist_aggregate_observations(session, job, observations, by_uid, datetime.now(UTC))
+        by_uid = {
+            (row.dhis2_item_uid, row.category_option_combo_uid or ""): row for row in mappings if row.dhis2_item_uid
+        }
+        seen_row_ids = set()
+        counts = persist_aggregate_observations(
+            session, job, observations, by_uid, datetime.now(UTC), seen_row_ids=seen_row_ids
+        )
         job.received_count = upstream_received
         job.retry_count = http.last_retry_count
         if _cancelled(session, job.id):
@@ -888,6 +1082,10 @@ def _run_aggregate(
             job.status = JobStatus.PARTIALLY_SUCCEEDED.value
         else:
             job.status = JobStatus.SUCCEEDED.value
+            job.coverage_manifest = {**job.coverage_manifest, "complete": True}
+            from app.services.sync_reconciliation import reconcile_aggregate_withdrawals
+
+            reconcile_aggregate_withdrawals(session, job, seen_row_ids=seen_row_ids, scopes=scopes)
         job.source_freshness_at = _oldest_freshness(observations)
     except OrgScopeError as exc:
         job.status = JobStatus.FAILED.value
@@ -936,15 +1134,15 @@ def _run_tracker(
         mapping_version=job.mapping_version or "v1",
         as_of=as_of,
     )
-    program_uid = resolve_programme_uid(
-        session, job.programme_id, job.mapping_version or "v1", as_of=as_of
-    )
-    if not program_uid:
+    program_uids = sorted({row.program_uid for row in mappings if row.program_uid})
+    if not program_uids:
         return _fail_mapping(session, job)
     occurred_after, occurred_before = _period_bounds(periods)
     if job.window_end is not None and occurred_before is not None:
         # An explicit, validated window end extends retrieval through the extraction date.
         occurred_before = max(job.window_end.isoformat(), occurred_before)
+    if occurred_before:
+        occurred_before = min(occurred_before, datetime.now(UTC).date().isoformat())
     job.window_start = date.fromisoformat(occurred_after) if occurred_after else None
     job.window_end = date.fromisoformat(occurred_before) if occurred_before else None
     owned = client is None
@@ -952,13 +1150,42 @@ def _run_tracker(
     try:
         adapter = TrackerEventsAdapter(http)
         ou_uids = _mapped_org_unit_uids(session, org_unit, as_of)
-        result = adapter.fetch_events_result(
-            program_uid=program_uid,
-            org_unit_uids=ou_uids,
-            occurred_after=occurred_after,
-            occurred_before=occurred_before,
+        observations = []
+        page_limit_reached = False
+        for program_uid in program_uids:
+            result = adapter.fetch_events_result(
+                program_uid=program_uid,
+                org_unit_uids=ou_uids,
+                # D-068 retrieves descendants of each non-overlapping peer. Keep
+                # the actual request aligned with withdrawal-certification scope.
+                ou_mode="DESCENDANTS",
+                occurred_after=occurred_after,
+                occurred_before=occurred_before,
+                allowed_data_element_uids={
+                    row.source_data_element_uid
+                    for row in mappings
+                    if row.program_uid == program_uid
+                    and row.source_data_element_uid
+                    and row.source_data_element_uid != EVENT_DATE_SOURCE
+                },
+            )
+            observations.extend(result.observations)
+            page_limit_reached = page_limit_reached or result.page_limit_reached
+        job.coverage_manifest = {
+            "version": 1,
+            "complete": False,
+            "program_uids": program_uids,
+            "ou_mode": "DESCENDANTS",
+            "mapping_ids": sorted(str(row.id) for row in mappings),
+            "org_unit_uids": sorted(ou_uids),
+            "periods": list(periods),
+        }
+        result = TrackerFetchResult(observations=observations, page_limit_reached=page_limit_reached, pages_fetched=0)
+        seen_row_ids = set()
+        counts = persist_event_observations(
+            session, job, result.observations, mappings, datetime.now(UTC), seen_row_ids=seen_row_ids
         )
-        persist_event_observations(session, job, result.observations, mappings, datetime.now(UTC))
+        job.coverage_manifest = {**job.coverage_manifest, "missing_death_dates": counts["missing_death_dates"]}
         job.retry_count = http.last_retry_count
         job.page_limit_reached = result.page_limit_reached
         if _cancelled(session, job.id):
@@ -971,6 +1198,23 @@ def _run_tracker(
             job.status = JobStatus.PARTIALLY_SUCCEEDED.value
         else:
             job.status = JobStatus.SUCCEEDED.value
+            job.coverage_manifest = {**job.coverage_manifest, "complete": True}
+            from app.services.sync_reconciliation import reconcile_event_withdrawals
+
+            roots = set(
+                session.scalars(
+                    select(OrgUnitMapping.org_unit_id).where(
+                        OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
+                        OrgUnitMapping.external_uid.in_(ou_uids),
+                        or_(OrgUnitMapping.valid_from.is_(None), OrgUnitMapping.valid_from <= as_of),
+                        or_(OrgUnitMapping.valid_to.is_(None), OrgUnitMapping.valid_to >= as_of),
+                    )
+                ).all()
+            )
+            job.coverage_manifest = {**job.coverage_manifest, "org_unit_ids": sorted(str(root) for root in roots)}
+            reconcile_event_withdrawals(
+                session, job, seen_row_ids=seen_row_ids, root_ids=roots, program_uids=program_uids
+            )
     except OrgScopeError as exc:
         job.status = JobStatus.FAILED.value
         job.error_code = exc.code
@@ -1011,9 +1255,7 @@ def _run_event_analytics(
         mapping_version=job.mapping_version or "v1",
         as_of=as_of,
     )
-    program_uid = resolve_programme_uid(
-        session, job.programme_id, job.mapping_version or "v1", as_of=as_of
-    )
+    program_uid = resolve_programme_uid(session, job.programme_id, job.mapping_version or "v1", as_of=as_of)
     if not program_uid:
         return _fail_mapping(session, job)
     owned = client is None
@@ -1084,11 +1326,7 @@ def persist_event_aggregate_observations(
             mapping_version=job.mapping_version or "v1",
             as_of=as_of,
         )
-    by_uid = {
-        (row.dhis2_item_uid, row.category_option_combo_uid or ""): row
-        for row in mappings
-        if row.dhis2_item_uid
-    }
+    by_uid = {(row.dhis2_item_uid, row.category_option_combo_uid or ""): row for row in mappings if row.dhis2_item_uid}
     return persist_aggregate_observations(session, job, converted, by_uid, extracted_at)
 
 
@@ -1102,9 +1340,7 @@ def _run_event_analytics_aggregate(
     if job.programme_id is None:
         return _fail_mapping(session, job)
     as_of = parse_period(periods[0]).start if periods else None
-    program_uid = resolve_programme_uid(
-        session, job.programme_id, job.mapping_version or "v1", as_of=as_of
-    )
+    program_uid = resolve_programme_uid(session, job.programme_id, job.mapping_version or "v1", as_of=as_of)
     if not program_uid:
         return _fail_mapping(session, job)
     owned = client is None
@@ -1120,9 +1356,7 @@ def _run_event_analytics_aggregate(
                 org_unit_uids=ou_uids,
                 periods=list(translation.dhis2_periods),
             )
-            observations.extend(
-                _normalise_event_aggregate_periods(fetched, internal_period)
-            )
+            observations.extend(_normalise_event_aggregate_periods(fetched, internal_period))
         persist_event_aggregate_observations(session, job, observations, datetime.now(UTC))
         job.retry_count = http.last_retry_count
         job.status = JobStatus.SUCCEEDED.value if job.rejected_count == 0 else JobStatus.PARTIALLY_SUCCEEDED.value

@@ -1,4 +1,4 @@
-"""Scheduled DHIS2 aggregate refresh.
+"""Scheduled DHIS2 aggregate and short-retention MPDSR refresh.
 
 The owner's refresh decision is a six-hourly pass over recent, still-open periods, never
 continuous polling and never a repeated sweep of closed historical periods. This command is the
@@ -9,7 +9,9 @@ passed. docs/DEPLOYMENT.md holds the cron definition to add at that point.
 It cannot contact DHIS2 until DHIS2_ENABLED and SYNC_ENABLED are both true, configuration is
 complete, and approved source/org-unit mappings exist. Disabled deployments stay inert. Enabled
 deployments enqueue one bounded aggregate job per programme, mapping version and recent/open
-period; they never sweep closed historical periods.
+period; aggregate jobs never sweep closed historical periods. Tracker jobs explicitly
+cover the latest closed and current FY through today, because those case caches expire.
+The configured Celery Beat schedule is opt-in; no scheduler is started by this script.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from app.config import get_settings, validate_runtime_settings  # noqa: E402
 from app.db.session import get_session_factory  # noqa: E402
 from app.domain.enums import ConnectorType, JobStatus  # noqa: E402
 from app.domain.periods import uganda_fy_key  # noqa: E402
-from app.models import OrgUnit, OrgUnitMapping, Programme, SourceMapping, SyncJob  # noqa: E402
+from app.models import EventFieldMapping, OrgUnit, OrgUnitMapping, Programme, SourceMapping, SyncJob  # noqa: E402
 from app.services.mapping_coverage import evaluate_coverage  # noqa: E402
 from app.services.sync import (  # noqa: E402
     SyncDispatchError,
@@ -63,7 +65,7 @@ def _mapping_sets(session) -> list[tuple[Programme, str]]:
     rows = session.execute(
         select(Programme, SourceMapping.mapping_version)
         .join(SourceMapping, SourceMapping.programme_id == Programme.id)
-        .where(SourceMapping.enabled.is_(True), SourceMapping.dhis2_item_uid.is_not(None))
+        .where(Programme.active.is_(True), SourceMapping.enabled.is_(True), SourceMapping.dhis2_item_uid.is_not(None))
         .distinct()
         .order_by(Programme.code, SourceMapping.mapping_version)
     ).all()
@@ -84,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         "cadence": "every six hours for recent, still-open periods",
         "periods_that_would_refresh": _recent_periods(today),
         "closed_periods_refreshed": False,
+        "closed_periods_refreshed_applies_to": "aggregate history only",
         "continuous_polling": False,
         "dhis2_enabled": settings.dhis2_enabled,
         "sync_enabled": settings.sync_enabled,
@@ -96,8 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     plan["blocked_reasons"].extend(error for error in validate_runtime_settings(settings) if "DHIS2" in error)
 
     if plan["blocked_reasons"]:
-        print(json.dumps(plan, indent=2) if args.json else
-              "DHIS2 refresh is not enabled; nothing was contacted. " + "; ".join(plan["blocked_reasons"]))
+        print(
+            json.dumps(plan, indent=2)
+            if args.json
+            else "DHIS2 refresh is not enabled; nothing was contacted. " + "; ".join(plan["blocked_reasons"])
+        )
         return 0
 
     session = get_session_factory()()
@@ -130,19 +136,15 @@ def main(argv: list[str] | None = None) -> int:
         covered_sets = []
         uncovered = []
         for programme, mapping_version in mapping_sets:
-            report = evaluate_coverage(
-                session, programme_id=programme.id, mapping_version=mapping_version
-            )
-            if report.complete:
+            report = evaluate_coverage(session, programme_id=programme.id, mapping_version=mapping_version)
+            if report.resolved:
                 covered_sets.append((programme, mapping_version))
             else:
                 uncovered.append(report.as_dict())
         if not covered_sets:
             plan["mode"] = "blocked"
             plan["coverage"] = uncovered
-            plan["blocked_reasons"] = [
-                "No mapping set covers all source keys required by its programme's formulas."
-            ]
+            plan["blocked_reasons"] = ["No mapping set covers all source keys required by its programme's formulas."]
             print(json.dumps(plan, indent=2) if args.json else plan["blocked_reasons"][0])
             return 3
         mapping_sets = covered_sets
@@ -171,6 +173,42 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 jobs.append(created)
                 new_jobs.append(created)
+        # MPDSR's short-lived cache also needs supervised recurring refresh. Request only
+        # the current and most recent closed FY, through today, using approved mappings.
+        mpdsr_sets = session.execute(
+            select(Programme, EventFieldMapping.mapping_version)
+            .join(EventFieldMapping, EventFieldMapping.programme_id == Programme.id)
+            .where(
+                Programme.code == "MPDSR",
+                Programme.active.is_(True),
+                EventFieldMapping.enabled.is_(True),
+                EventFieldMapping.program_uid.is_not(None),
+            )
+            .distinct()
+        ).all()
+        current_fy = today.year if today.month >= 7 else today.year - 1
+        first = f"FY{current_fy - 1}/{str(current_fy)[2:]}"
+        current = uganda_fy_key(today)
+        for programme, mapping_version in mpdsr_sets:
+            key = f"scheduled:tracker:{_bucket(now)}:{programme.code}:{mapping_version}"
+            existing = session.scalar(select(SyncJob).where(SyncJob.idempotency_key == key))
+            if existing is not None:
+                jobs.append(existing)
+                reused += 1
+                continue
+            created = enqueue_sync_job(
+                session,
+                org_unit=root,
+                periods=[first, current],
+                user=None,
+                job_type=ConnectorType.TRACKER.value,
+                programme_id=programme.id,
+                mapping_version=mapping_version,
+                idempotency_key=key,
+                window_end=today,
+            )
+            jobs.append(created)
+            new_jobs.append(created)
         session.commit()
 
         dispatched = 0
@@ -198,8 +236,7 @@ def main(argv: list[str] | None = None) -> int:
                 "mode": "executed" if failed == 0 else "failed",
                 "coverage_incomplete_sets": uncovered,
                 "mapping_sets": [
-                    {"programme": programme.code, "mapping_version": version}
-                    for programme, version in mapping_sets
+                    {"programme": programme.code, "mapping_version": version} for programme, version in mapping_sets
                 ],
                 "job_count": len(jobs),
                 "reused_count": reused,

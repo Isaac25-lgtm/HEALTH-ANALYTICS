@@ -178,7 +178,10 @@ def test_tracker_window_through_extraction_date_verifies_an_empty_cohort(session
     execute_sync_job(session, job.id, client=_tracker_client(seen))
     assert job.status == "succeeded"
     assert (job.window_start, job.window_end) == (date(2024, 7, 1), today)
-    assert (seen["occurredAfter"], seen["occurredBefore"]) == ("2024-07-01", today.isoformat())
+    assert (seen["occurredAfter"], seen["occurredBefore"]) == (
+        "2024-07-01T00:00:00.000",
+        today.isoformat() + "T23:59:59.999",
+    )
     tracker = _freshness(session, "tracker")
     assert _aware(tracker.source_freshness_at) == _aware(job.finished_at)
     coverage = evaluate_event_coverage(session, org_unit=acholi, period="FY2024/25", required_end=None)

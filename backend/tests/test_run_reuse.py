@@ -1,6 +1,7 @@
 """Dashboard calculation runs are reused only when every input is identical, and national and
 regional screens evaluate the district/city cohort for the map and ranking."""
 
+from datetime import date
 from uuid import UUID
 
 from sqlalchemy import select
@@ -10,7 +11,7 @@ from app.models import CalculationRun, OrgUnit, User
 from app.services.calculation import RUN_REUSE_PREFIX, run_calculation
 from app.services.geography import descendants, top_units_of_class
 from app.services.modules import evaluate_module
-from tests.helpers import put_population, put_raw
+from tests.helpers import put_event, put_population, put_raw
 
 
 def _unit(session, code):
@@ -77,15 +78,30 @@ def test_runs_outside_a_dashboard_batch_are_never_reused(session):
     assert first.idempotency_key is None
 
 
-def test_mpdsr_event_runs_are_never_reused(session):
+def test_event_calculation_reuse_cannot_outlive_an_exact_coverage_cutoff(session):
     uganda = _unit(session, "UG")
-    first = evaluate_module(
-        session, user=_admin(session), org_unit_id=uganda.id, period="FY2024/25", module="mpdsr", include_children=False
-    )
-    second = evaluate_module(
-        session, user=_admin(session), org_unit_id=uganda.id, period="FY2024/25", module="mpdsr", include_children=False
-    )
+
+    def evaluate():
+        return evaluate_module(
+            session,
+            user=_admin(session),
+            org_unit_id=uganda.id,
+            period="FY2024/25",
+            module="mpdsr",
+            include_children=False,
+        )
+
+    first = evaluate()
+    second = evaluate()
     assert first["current_run_id"] != second["current_run_id"]
+    put_event(
+        session,
+        _unit(session, "PADER"),
+        death_date=date(2024, 8, 1),
+        data_values={"event_type": "maternal_review"},
+    )
+    third = evaluate()
+    assert third["current_run_id"] != first["current_run_id"]
 
 
 def test_national_evaluation_includes_the_district_cohort(session):

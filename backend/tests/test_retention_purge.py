@@ -386,7 +386,12 @@ def test_expired_snapshots_take_their_runs_and_values_but_spare_referenced_ones(
     session.commit()
     headers = auth_header(login(client, "pader.focal"))
     keep_dash, keep_job = _export(client, session, headers, org, tmp_path, monkeypatch)
+    # An unchanged request now correctly reuses the prepared snapshot. Change the source
+    # so this test still exercises two distinct products with different retention references.
+    put_raw(session, org, "FY2024/25", "ANC1", 41_000)
+    session.commit()
     drop_dash = query_dashboard(client, headers, org.id, request_key=str(uuid4())).json()
+    assert drop_dash["analysis_snapshot_id"] != keep_dash["analysis_snapshot_id"]
     old = datetime.now(UTC) - timedelta(days=40 * 30)
     for snapshot_id in (keep_dash["analysis_snapshot_id"], drop_dash["analysis_snapshot_id"]):
         session.execute(update(AnalysisSnapshot).where(AnalysisSnapshot.id == UUID(snapshot_id)).values(created_at=old))

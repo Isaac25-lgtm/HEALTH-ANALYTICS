@@ -35,12 +35,17 @@ def test_regional_and_district_facility_screens(client, session):
     regional = query_dashboard(client, auth_header(csrf), acholi.id)
     assert regional.status_code == 201
     assert regional.json()["screen"] == "regional"
+    # D-068: only facilities with stored figures for the period are calculated.
+    put_raw(session, _unit(session, "PADER_HC_III"), "FY2024/25", "ANC1", 120)
+    session.commit()
     district = query_dashboard(client, auth_header(csrf), pader.id)
     assert district.status_code == 201
     body = district.json()
     assert body["screen"] == "district"
     assert body["module_result"]["comparison_grain"] == "facility"
-    assert any(row["org_unit_code"] == "PADER_HC_III" for row in body["facility_scorecard"])
+    codes = {row["org_unit_code"] for row in body["facility_scorecard"]}
+    assert "PADER_HC_III" in codes
+    assert body["facility_data"]["status"] in {"ready", "unavailable"}
 
 
 def test_facility_missing_population_and_service_values(client, session):

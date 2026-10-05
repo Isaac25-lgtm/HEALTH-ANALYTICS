@@ -1190,6 +1190,24 @@ EPI_VACCINE_COVERAGE_CODES = (
     "HPV_COVERAGE",
 )
 EPI_DROPOUT_CODES = ("PENTA_DROPOUT", "MV1_MV4_DROPOUT")
+# D-067: malaria vaccine values consider every district; units that report nothing add nothing.
+MALARIA_ALL_DISTRICTS_VERSION = "v3-malaria-all-districts"
+MALARIA_VACCINE_CODES = ("MV1_COVERAGE", "MV2_COVERAGE", "MV3_COVERAGE", "MV4_COVERAGE", "MV1_MV4_DROPOUT")
+# D-069: DHIS2 returns no row for a district that reports no deaths, so national and regional
+# reported-death figures sum the districts that report, as DHIS2's own totals do.
+MPDSR_REPORTING_VERSION = "v2-mpdsr-reporting-districts"
+MPDSR_REPORTING_CODES = (
+    "PERINATAL_REPORTED_DEATHS",
+    "PERINATAL_NOTIFICATION_COVERAGE",
+    "PERINATAL_REVIEW_COVERAGE",
+    "PERINATAL_TIMELY_NOTIFICATION",
+    "PERINATAL_TIMELY_REVIEW",
+    "MATERNAL_REPORTED_DEATHS",
+    "MATERNAL_NOTIFICATION_COVERAGE",
+    "MATERNAL_REVIEW_COVERAGE",
+    "MATERNAL_TIMELY_NOTIFICATION",
+    "MATERNAL_TIMELY_REVIEW",
+)
 
 
 def indicator_revisions() -> list[dict]:
@@ -1226,6 +1244,27 @@ def indicator_revisions() -> list[dict]:
                     # One decimal place: 9.9 or less is green, 10.0 or more is red.
                     "classification_spec": _lower_max(9.9, 9.9),
                 },
+            }
+        )
+    for code in MALARIA_VACCINE_CODES:
+        base_spec = dict(INDICATOR_BY_CODE[code]["formula_spec"])
+        band = next(item for item in revisions if item["code"] == code)["overrides"]
+        revisions.append(
+            {
+                "code": code,
+                "formula_version": MALARIA_ALL_DISTRICTS_VERSION,
+                "decision": "D-067",
+                "overrides": {**band, "formula_spec": {**base_spec, "child_coverage": "reporting_units"}},
+            }
+        )
+    for code in MPDSR_REPORTING_CODES:
+        base_spec = dict(INDICATOR_BY_CODE[code]["formula_spec"])
+        revisions.append(
+            {
+                "code": code,
+                "formula_version": MPDSR_REPORTING_VERSION,
+                "decision": "D-069",
+                "overrides": {"formula_spec": {**base_spec, "child_coverage": "reporting_units"}},
             }
         )
     return revisions

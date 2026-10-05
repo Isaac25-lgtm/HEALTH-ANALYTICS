@@ -1,5 +1,42 @@
 # Local development and tests
 
+## October correction rollout (operator verification required)
+
+October 5 follow-up is documented in `docs/project-context/CODEX_FIX_HANDOFF_2026-10-05.md`.
+Durable sync publication recovery uses the existing job table and maintenance queue. With DHIS2
+and sync enabled and `SYNC_EXECUTION=queue`, one operator-started Celery Beat schedules recovery
+every 60 seconds; a worker must consume the maintenance and sync queues. The bounded manual
+alternative from `backend/` is `python -m scripts.recover_sync_dispatch --limit 100`, using approved
+private runtime configuration. It publishes existing jobs but does not itself extract data.
+Review queued work first. Recovery is inert with extraction disabled or eager/test execution;
+it does not retry extraction failures, cancellations or already-running jobs. At-least-once
+publication relies on the worker claim and PostgreSQL execution lock for safe duplicate delivery.
+Real Redis/restart tests are still required; no scheduler was started by this code pass.
+
+Read `docs/project-context/CODEX_CORRECTIONS_2026-10-02.md` before rollout. This batch is uncommitted.
+Migration 0015 adds explicit sync coverage, an active facility-job guard, an analytical revision
+counter/transactional triggers, and a prepared-snapshot lookup index. First prove upgrade,
+downgrade/re-upgrade, triggers and concurrent queue behavior against a disposable PostgreSQL
+instance. Back up the existing live-UAT control store before an approved live upgrade.
+
+After verified migration and a real governed source refresh, prepare authorised default views
+from `backend/` using `python -m scripts.prepare_dashboards` (optional `--programme MNCH`, `EPI`, or
+`MPDSR`). It uses the configured store and may queue authorised facility loads; it is not a demo
+seeder. It is intentionally NOT run by the API at startup. A prepared read checks current source,
+software/configuration and permissions, preserves the snapshot ID and never runs calculations.
+An expired/missing product takes the existing CSRF POST path, which can still be slow on a cold
+view. Scheduler/worker flags default off until tested and activated by the operator.
+
+Sign-in now shows the verified account name, role and landing geography while preparing the
+screen, keeps its cookie-only session, and navigates to a ready snapshot. An all-unavailable
+landing view stays at sign-in with an actionable error; no fabricated values are substituted.
+Populations/boundaries intentionally missing for a particular measure still remain unavailable.
+
+Do not build or run the synthetic E2E API as the owner's live system. Do not stop an unrelated
+service on port 3000. The September 27 handoff recorded HPIP on 3100/API 8010; earlier September 22
+notes used 3000. Check actual listeners and configured origin before restart instead of assuming
+either historical note describes the current machine. This Codex pass did not restart localhost.
+
 ## Persistent live-DHIS2 local UAT
 
 Do not use `scripts/run_e2e_api.py` for live work; it deliberately recreates SQLite and seeds

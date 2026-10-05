@@ -6,6 +6,7 @@ import calendar
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import lru_cache
 
 
 class PeriodError(ValueError):
@@ -53,6 +54,7 @@ def range_key(start: date, end: date) -> str:
     return f"{start.year}{start.month:02d}..{end.year}{end.month:02d}"
 
 
+@lru_cache(maxsize=8192)
 def parse_period(key: str) -> PeriodSpec:
     raw = key.strip()
     match = _RANGE_RE.match(raw)

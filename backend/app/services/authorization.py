@@ -41,14 +41,8 @@ def user_actions(session: Session, user: User) -> set[str]:
         .join(Role, Role.id == UserRole.role_id)
         .where(UserRole.user_id == user.id, Role.is_active.is_(True))
     ).all()
-    actions = set(
-        session.scalars(
-            select(RolePermission.action).where(RolePermission.role_id.in_(role_ids))
-        ).all()
-    )
-    extras = session.scalars(
-        select(UserPermission.action).where(UserPermission.user_id == user.id)
-    ).all()
+    actions = set(session.scalars(select(RolePermission.action).where(RolePermission.role_id.in_(role_ids))).all())
+    extras = session.scalars(select(UserPermission.action).where(UserPermission.user_id == user.id)).all()
     actions.update(extras)
     return actions
 
@@ -80,14 +74,12 @@ def programme_scope_codes(session: Session, user: User) -> set[str]:
     from app.models import Programme
 
     if user.is_system_admin:
-        return set(
-            session.scalars(select(Programme.code).where(Programme.active.is_(True))).all()
-        )
+        return set(session.scalars(select(Programme.code).where(Programme.active.is_(True))).all())
 
     rows = session.execute(
         select(Programme.code, UserProgrammeScope.is_active, UserProgrammeScope.valid_from, UserProgrammeScope.valid_to)
         .join(UserProgrammeScope, UserProgrammeScope.programme_id == Programme.id)
-        .where(UserProgrammeScope.user_id == user.id)
+        .where(UserProgrammeScope.user_id == user.id, Programme.active.is_(True))
     ).all()
     codes: set[str] = set()
     for code, active, valid_from, valid_to in rows:
@@ -124,9 +116,11 @@ def can_access_org_unit(session: Session, user: User, org_unit: OrgUnit) -> bool
     return any(is_descendant_or_self(org_unit, scope) for scope in scopes)
 
 
-def require_org_unit_access(session: Session, user: User, org_unit_id: UUID) -> OrgUnit:
+def require_org_unit_access(session: Session, user: User, org_unit_id: UUID, *, period: str | None = None) -> OrgUnit:
     org_unit = session.get(OrgUnit, org_unit_id)
-    if org_unit is None or not org_unit.active:
+    from app.services.geography import unit_in_period
+
+    if org_unit is None or not (unit_in_period(org_unit, period) if period else org_unit.active):
         raise AuthorizationError("not_found", "Organisation unit not found.")
     if not can_access_org_unit(session, user, org_unit):
         raise AuthorizationError(
@@ -155,10 +149,7 @@ def authorised_programme_ids(session: Session, user: User) -> set[UUID]:
 
     codes = programme_scope_codes(session, user)
     if user.is_system_admin:
-        return {
-            row.id
-            for row in session.scalars(select(Programme).where(Programme.active.is_(True))).all()
-        }
+        return {row.id for row in session.scalars(select(Programme).where(Programme.active.is_(True))).all()}
     rows = session.scalars(select(Programme).where(Programme.code.in_(codes))).all()
     return {row.id for row in rows}
 
@@ -220,8 +211,6 @@ def primary_landing_org_unit(session: Session, user: User) -> OrgUnit | None:
 def child_org_units(session: Session, parent: OrgUnit) -> list[OrgUnit]:
     return list(
         session.scalars(
-            select(OrgUnit)
-            .where(OrgUnit.parent_id == parent.id, OrgUnit.active.is_(True))
-            .order_by(OrgUnit.name)
+            select(OrgUnit).where(OrgUnit.parent_id == parent.id, OrgUnit.active.is_(True)).order_by(OrgUnit.name)
         ).all()
     )

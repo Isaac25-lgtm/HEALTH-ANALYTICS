@@ -392,8 +392,9 @@ def test_tracker_queries_are_period_bounded():
         occurred_before="2024-09-30",
     )
     client.close()
-    assert seen["occurredAfter"] == "2024-07-01"
-    assert seen["occurredBefore"] == "2024-09-30"
+    # The approved date window covers whole days, not an ambiguous end-date midnight.
+    assert seen["occurredAfter"] == "2024-07-01T00:00:00.000"
+    assert seen["occurredBefore"] == "2024-09-30T23:59:59.999"
 
 
 def test_unknown_sync_job_type_returns_422(client, session):
@@ -473,7 +474,13 @@ def test_nonnumeric_dhis2_value_is_rejected_and_flagged(session):
     from app.domain.enums import JobStatus
     from app.models import SyncJob
 
-    job = SyncJob(job_type="aggregate", status=JobStatus.RUNNING.value, mapping_version="v1")
+    job = SyncJob(
+        job_type="aggregate",
+        status=JobStatus.RUNNING.value,
+        mapping_version="v1",
+        programme_id=programme.id,
+        org_unit_id=uganda.id,
+    )
     session.add(job)
     session.flush()
     persist_aggregate_observations(session, job, rows, {"TEST_UID_ANC1": mapping}, datetime.now(UTC))

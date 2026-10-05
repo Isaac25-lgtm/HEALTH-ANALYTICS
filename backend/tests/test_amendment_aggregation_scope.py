@@ -62,7 +62,9 @@ def test_child_numerator_with_parent_denominator_is_unavailable(session):
     assert measure.reason_code == "incompatible_aggregation_scope"
 
 
-def test_district_numerator_with_mixed_district_facility_denominator_is_unavailable(session):
+def test_facility_rows_below_complete_districts_are_components_not_added(session):
+    # D-068: facility figures load on demand beneath districts that already hold their own rows.
+    # The region sums its complete district cohort only; the facility row is never added to it.
     acholi, pader, kitgum = _unit(session, "ACHOLI"), _unit(session, "PADER"), _unit(session, "KITGUM")
     facility = _unit(session, "PADER_HC_III")
     put_raw(session, pader, "FY2024/25", "ANC1_FT", 20)
@@ -71,11 +73,8 @@ def test_district_numerator_with_mixed_district_facility_denominator_is_unavaila
     put_raw(session, kitgum, "FY2024/25", "ANC1", 40)
     put_raw(session, facility, "FY2024/25", "ANC1", 55)
     measure = _eval(session, "ANC1_FIRST_TRIMESTER", acholi)
-    assert measure.raw_value is None
-    assert measure.reason_code == "mixed_levels"
-    value, rules = _flags_for(session, acholi, "ANC1_FIRST_TRIMESTER")
-    assert value.raw_value is None
-    assert "INCOMPATIBLE_AGGREGATION_SCOPE" in rules
+    assert measure.denominator == 100  # 60 + 40, never 60 + 40 + 55
+    assert measure.numerator == 40
 
 
 def test_incompatible_mapping_versions_are_unavailable(session):
@@ -164,13 +163,14 @@ def test_missing_city_child_is_incomplete_not_partial_sum(session):
     assert measure.reason_code == "incomplete_children"
 
 
-def test_district_plus_facility_rows_are_rejected(session):
+def test_a_facility_row_never_stands_in_for_a_missing_district(session):
     acholi, pader, kitgum = _unit(session, "ACHOLI"), _unit(session, "PADER"), _unit(session, "KITGUM")
     facility = _unit(session, "PADER_HC_III")
     put_raw(session, kitgum, "FY2024/25", "ANC1", 100)
     put_raw(session, facility, "FY2024/25", "ANC1", 100)
     resolved = resolve_source_key(session, acholi, "FY2024/25", "ANC1")
-    assert resolved.status == "mixed_levels"
+    # Pader has no district row; its facility row does not fill the gap, so the cohort is incomplete.
+    assert resolved.status == "incomplete"
     assert resolved.value is None
     del pader
 

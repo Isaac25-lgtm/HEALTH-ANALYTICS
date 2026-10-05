@@ -38,6 +38,13 @@ export function PeriodPicker({
   );
   const [rangeTo, setRangeTo] = useState(periodKind(value) === "range" ? value.slice(8, 14) : months[0]);
   const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setKind(periodKind(value));
+    if (periodKind(value) === "range") {
+      setRangeFrom(value.slice(0, 6));
+      setRangeTo(value.slice(8, 14));
+    }
+  }, [value]);
 
   useEffect(() => {
     if (!open) return;

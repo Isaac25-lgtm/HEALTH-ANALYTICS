@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -31,20 +31,21 @@ from app.services.authorization import (
     require_org_unit_access,
     require_programme_access,
 )
-from app.services.calculation import clear_calculation_batch, prepare_calculation_batch, run_calculation
+from app.services.calculation import (
+    clear_calculation_batch,
+    prepare_calculation_batch,
+    run_calculation,
+)
 from app.services.geography import descendants, top_units_of_class
 from app.services.mpdsr import is_completed
 from app.services.mpdsr_events import scoped_mpdsr_events
 from app.services.quality import scan_quality
 
 
-def _children(session: Session, org_unit: OrgUnit) -> list[OrgUnit]:
-    return list(
-        session.scalars(
-            select(OrgUnit)
-            .where(OrgUnit.parent_id == org_unit.id, OrgUnit.active.is_(True))
-            .order_by(OrgUnit.name)
-        ).all()
+def _children(session: Session, org_unit: OrgUnit, period: str | None = None) -> list[OrgUnit]:
+    return sorted(
+        (unit for unit in descendants(session, org_unit, period=period) if unit.parent_id == org_unit.id),
+        key=lambda unit: unit.name,
     )
 
 
@@ -202,7 +203,7 @@ def _change(current: CalculatedValue | None, previous: CalculatedValue | None) -
 
 
 def _freshness(session: Session, org_unit: OrgUnit, period: str, programme_id: UUID) -> dict:
-    units = [unit.id for unit in descendants(session, org_unit, include_self=True)]
+    units = [unit.id for unit in descendants(session, org_unit, include_self=True, period=period)]
     rows = session.scalars(
         select(RawAggregateValue).where(
             RawAggregateValue.org_unit_id.in_(units),
@@ -213,28 +214,51 @@ def _freshness(session: Session, org_unit: OrgUnit, period: str, programme_id: U
     ).all()
     extracted = [row.extracted_at for row in rows if row.extracted_at]
     source = [row.source_freshness_at for row in rows if row.source_freshness_at]
+    event_count = 0
+    programme = session.get(Programme, programme_id)
+    if programme is not None and programme.code == ProgrammeCode.MPDSR.value:
+        from app.models import RawEventSnapshot
+
+        events = session.scalars(
+            select(RawEventSnapshot).where(
+                RawEventSnapshot.org_unit_id.in_(units),
+                RawEventSnapshot.programme_id == programme_id,
+                RawEventSnapshot.is_current.is_(True),
+                RawEventSnapshot.source_connector == "tracker",
+                RawEventSnapshot.extracted_at
+                > datetime.now(UTC) - timedelta(hours=get_settings().mpdsr_event_retention_hours),
+            )
+        ).all()
+        event_count = len(events)
+        extracted.extend(event.extracted_at for event in events)
     return {
-        "raw_row_count": len(rows),
+        "raw_row_count": len(rows) + event_count,
+        "aggregate_row_count": len(rows),
+        "event_row_count": event_count,
         "latest_extracted_at": max(extracted).isoformat() if extracted else None,
         "latest_source_freshness_at": max(source).isoformat() if source else None,
-        "availability": "available" if rows else "no_source_rows",
+        "availability": "available" if rows or event_count else "no_source_rows",
     }
 
 
 def _quality_flags(session: Session, run: CalculationRun) -> list[dict]:
-    rows = session.scalars(
-        select(DataQualityFlag).where(DataQualityFlag.calculation_run_id == run.id)
-    ).all()
-    return [
-        {
-            "id": str(row.id),
-            "rule_id": row.rule_id,
-            "severity": row.severity,
-            "status": row.status,
-            "explanation": row.explanation,
-        }
-        for row in rows
-    ]
+    rows = session.scalars(select(DataQualityFlag).where(DataQualityFlag.calculation_run_id == run.id)).all()
+    groups = {}
+    for row in rows:
+        if row.status not in {"open", "acknowledged"}:
+            continue
+        key = (row.rule_id, row.severity, row.status)
+        if key not in groups:
+            groups[key] = {
+                "id": str(row.id),
+                "rule_id": row.rule_id,
+                "severity": row.severity,
+                "status": row.status,
+                "explanation": row.explanation,
+                "occurrences": 0,
+            }
+        groups[key]["occurrences"] += 1
+    return list(groups.values())
 
 
 _BANDED_STATUSES = {"green", "yellow", "red"}
@@ -386,7 +410,7 @@ def evaluate_module(
         raise AuthorizationError("invalid_input", "Analytical module is not recognised.")
     programme_code = MODULE_PROGRAMME[module]
     require_action(session, user, ActionPermission.VIEW)
-    org_unit = require_org_unit_access(session, user, org_unit_id)
+    org_unit = require_org_unit_access(session, user, org_unit_id, period=period)
     require_programme_access(session, user, programme_code)
     parse_period(period)
     compare_key = comparison_period or previous_period(period)
@@ -432,6 +456,9 @@ def _evaluate_module_body(
         programme_codes=[programme_code],
         indicator_codes=codes,
     )
+    # A reused run has identical inputs to one already scanned, so its flags are already recorded.
+    # Quality/freshness is clock-sensitive even when the numerical inputs did not change.
+    # A prepared-product hit bypasses this entire body; a rebuild must refresh its quality.
     scan_quality(session, org_unit=org_unit, period=period, calculation_run=current_run)
     compare_run = run_calculation(
         session,
@@ -508,20 +535,20 @@ def _evaluate_module_body(
     comparisons = []
     children: list[OrgUnit] = []
     if include_children:
-        children = [child for child in _children(session, org_unit) if can_access_org_unit(session, user, child)]
+        children = [
+            child for child in _children(session, org_unit, period) if can_access_org_unit(session, user, child)
+        ]
         comparisons = [unit_row(child) for child in children]
 
     district_rows: list[dict] = []
     if district_cohort:
         cohort = sorted(
-            top_units_of_class(descendants(session, org_unit), AggregationClass.DISTRICT_EQUIVALENT),
+            top_units_of_class(descendants(session, org_unit, period=period), AggregationClass.DISTRICT_EQUIVALENT),
             key=lambda unit: unit.name,
         )
         by_id = {row["org_unit_id"]: row for row in comparisons}
         district_rows = [
-            by_id.get(str(unit.id)) or unit_row(unit)
-            for unit in cohort
-            if can_access_org_unit(session, user, unit)
+            by_id.get(str(unit.id)) or unit_row(unit) for unit in cohort if can_access_org_unit(session, user, unit)
         ]
 
     result = {

@@ -305,9 +305,9 @@ def _rings(geometry: dict) -> list[list]:
     kind = (geometry or {}).get("type")
     coordinates = (geometry or {}).get("coordinates") or []
     if kind == "Polygon":
-        return [coordinates[0]] if coordinates else []
+        return coordinates
     if kind == "MultiPolygon":
-        return [polygon[0] for polygon in coordinates if polygon]
+        return [ring for polygon in coordinates for ring in polygon]
     return []
 
 
@@ -334,13 +334,49 @@ def _map_slide(deck, view: ExportView) -> None:
     for feature in view.map_features:
         properties = feature.get("properties") or {}
         status = resolve_status(properties)
-        for ring in _rings(feature.get("geometry") or {}):
-            vertices = [to_emu(point) for point in ring if len(point) >= 2]
-            if len(vertices) < 3:
-                continue
-            builder = slide.shapes.build_freeform(vertices[0][0], vertices[0][1], scale=1.0)
-            builder.add_line_segments(vertices[1:], close=True)
-            shape = builder.convert_to_shape()
+        geometry = feature.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
+        polygons = (
+            [coordinates]
+            if geometry.get("type") == "Polygon"
+            else coordinates
+            if geometry.get("type") == "MultiPolygon"
+            else []
+        )
+        shapes = []
+        for polygon in polygons:
+            builder = None
+            for index, ring in enumerate(polygon):
+                vertices = [to_emu(point) for point in ring if len(point) >= 2]
+                if len(vertices) < 3:
+                    continue
+                # PowerPoint uses non-zero winding: holes must run opposite to shells,
+                # irrespective of the winding convention in the supplied GeoJSON.
+                area = sum(
+                    x * y2 - x2 * y for (x, y), (x2, y2) in zip(vertices, vertices[1:] + vertices[:1], strict=True)
+                )
+                if (area > 0) != (index == 0):
+                    vertices.reverse()
+                if builder is None:
+                    builder = slide.shapes.build_freeform(*vertices[0], scale=1.0)
+                else:
+                    builder.move_to(*vertices[0])
+                builder.add_line_segments(vertices[1:], close=True)
+            if builder is not None:
+                shapes.append(builder.convert_to_shape())
+        markers = (
+            [coordinates]
+            if geometry.get("type") == "Point"
+            else coordinates
+            if geometry.get("type") == "MultiPoint"
+            else []
+        )
+        for point in markers:
+            x, y = to_emu(point)
+            shapes.append(
+                slide.shapes.add_shape(MSO_SHAPE.OVAL, x - Inches(0.04), y - Inches(0.04), Inches(0.08), Inches(0.08))
+            )
+        for shape in shapes:
             shape.name = f"{properties.get('name')}: {format_measure(properties)}"
             shape.fill.solid()
             shape.fill.fore_color.rgb = _rgb(STATUS_FILL.get(status, STATUS_FILL["missing"]))

@@ -18,7 +18,7 @@ from app.domain.enums import ConnectorType, EventCoverageStatus, JobStatus, Prog
 from app.domain.periods import parse_period
 from app.models import OrgUnit, Programme, SyncJob
 from app.services.geography import ancestors
-from app.services.mappings import MappingSelectionError, resolve_programme_uid
+from app.services.mappings import MappingSelectionError, select_event_mappings
 
 CACHE_KEY = "event_coverage_cache"
 
@@ -67,7 +67,7 @@ def _evaluate(
 ) -> dict:
     cohort = parse_period(period)
     moment = _as_aware(now or datetime.now(UTC))
-    stale_after = timedelta(hours=get_settings().dhis2_stale_hours)
+    stale_after = timedelta(hours=min(get_settings().dhis2_stale_hours, get_settings().mpdsr_event_retention_hours))
     requirement = {
         "cohort_start": cohort.start.isoformat(),
         "cohort_end": cohort.end.isoformat(),
@@ -118,14 +118,30 @@ def _evaluate(
             failures.append("stale")
             continue
         try:
-            program_uid = resolve_programme_uid(
-                session, programme.id, job.mapping_version or "v1", as_of=cohort.end
+            mappings = select_event_mappings(
+                session,
+                programme_id=programme.id,
+                mapping_version=job.mapping_version or "v1",
+                as_of=cohort.end,
             )
         except MappingSelectionError:
-            program_uid = None
-        if not program_uid:
+            mappings = []
+        program_uids = {row.program_uid for row in mappings if row.program_uid}
+        if not program_uids:
             failures.append("mapping")
             continue
+        manifest = job.coverage_manifest or {}
+        if manifest.get("missing_death_dates", 0):
+            failures.append("missing_dates")
+            continue
+        if len(program_uids) > 1 or manifest:
+            if (
+                not manifest.get("complete")
+                or not program_uids <= set(manifest.get("program_uids", []))
+                or not {str(row.id) for row in mappings} <= set(manifest.get("mapping_ids", []))
+            ):
+                failures.append("mapping")
+                continue
         return _result(
             EventCoverageStatus.VERIFIED,
             None,
@@ -136,8 +152,13 @@ def _evaluate(
             window_end=job.window_end.isoformat(),
             finished_at=finished.isoformat(),
             mapping_version=job.mapping_version,
+            program_uids=sorted(program_uids),
         )
     messages = {
+        "missing_dates": (
+            "the MPDSR extraction includes events without a usable death date; "
+            "an empty cohort cannot be certified as zero."
+        ),
         "incomplete": (
             "the only MPDSR synchronisations for this geography were partial, truncated, cancelled or failed."
         ),
@@ -145,7 +166,7 @@ def _evaluate(
         "stale": "the covering MPDSR synchronisation is older than the configured freshness window.",
         "mapping": "the MPDSR event mapping is unavailable or ambiguous for this cohort.",
     }
-    for key in ("mapping", "stale", "window", "incomplete"):
+    for key in ("missing_dates", "mapping", "stale", "window", "incomplete"):
         if key in failures:
             return _result(
                 EventCoverageStatus.UNVERIFIED,

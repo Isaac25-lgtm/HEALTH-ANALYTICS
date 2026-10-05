@@ -2,6 +2,25 @@
 
 All values below are placeholders. Do not commit real secrets. Copy `.env.example` to `.env`.
 
+October 2026 controls (migration 0015 must be verified/applied first):
+
+October 5 dispatch recovery adds no new secret/environment variable. When `DHIS2_ENABLED=true`,
+`SYNC_ENABLED=true` and `SYNC_EXECUTION=queue`, the existing Beat configuration registers a
+60-second recovery task on `MAINTENANCE_QUEUE_NAME`. Registration does not start a scheduler or
+worker. Run one approved scheduler and prove recovery against real Redis; do not assume the
+refresh/precompute flags alone activate it. Recovery is disabled in eager/test execution.
+
+| Variable | Purpose |
+|---|---|
+| `DASHBOARD_PRECOMPUTE_ENABLED` | Default false. A successful durable sync asks the maintenance worker to prepare active users' authorised default views. It does not create or start a worker. |
+| `DHIS2_REFRESH_SCHEDULE_ENABLED` | Default false. With DHIS2/sync enabled, opts Celery Beat into a six-hour refresh. Run exactly one approved scheduler; do not also enable a duplicate Render cron. |
+| `MPDSR_REPORTING_UNITS_APPROVED` | Default false. Gate for unconfirmed D-069 only. Set true solely after recording explicit owner approval; D-067 malaria approval does not approve MPDSR. |
+
+With `PURGE_ENABLED` and `PURGE_SCHEDULE_ENABLED`, the existing maintenance worker has an hourly
+purge schedule. Code/configuration is not proof of actual schedule operation. Test refresh and
+purge together, including the approved 24-hour MPDSR retention. Preserve the local operator's
+D-057 aggregate retention settings; do not overwrite `.env` with these placeholders.
+
 | Variable | Purpose |
 |---|---|
 | `APP_ENV` | `development`, `test`, `staging`, or `production` |

@@ -230,18 +230,10 @@ def build_export_view(dashboard: dict, package: dict, map_features: dict | None 
     kpi_codes = [row.get("indicator_code") for row in dashboard.get("kpis") or []]
     kpis = [row for row in indicators if row.get("indicator_code") in kpi_codes][:6] or indicators[:6]
 
-    # The unit grid matches the screen: districts on national/regional views, facilities on
-    # district views, otherwise the direct children.
-    units = list(
-        module_result.get("district_comparison")
-        or dashboard.get("facility_scorecard")
-        or module_result.get("org_unit_comparison")
-        or []
-    )
-    if module_result.get("district_comparison"):
-        unit_label = "Districts and cities"
-    else:
-        unit_label = LEVEL_UNIT_LABELS.get(level_type, "Units")
+    # Match the visible unit scorecard. The map/ranking may deliberately use districts
+    # while the national grid shows regions; those are distinct snapshot cohorts.
+    units = list(dashboard.get("facility_scorecard") or module_result.get("org_unit_comparison") or [])
+    unit_label = LEVEL_UNIT_LABELS.get(level_type, "Units")
     units.sort(key=lambda row: str(row.get("org_unit_name") or ""))
 
     ranking = dashboard.get("ranking") or {}

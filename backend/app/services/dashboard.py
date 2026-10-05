@@ -22,12 +22,16 @@ from app.services.authorization import (
 )
 from app.services.calculation import clear_calculation_batch, prepare_calculation_batch, run_calculation
 from app.services.evidence import evidence_package
+from app.services.facility_data import queue_facility_load
 from app.services.geography import ancestors, descendants
 from app.services.geometry import build_map_block, map_feature_collection
 from app.services.modules import _indicator_payload, _selection_map, _value_map, evaluate_module
 from app.services.population import resolve_population
 
 _CATALOG = {row["code"]: row for row in INDICATOR_CATALOG}
+
+# Facility loads queued while building a dashboard; the route starts them after commit.
+FACILITY_JOBS_KEY = "facility_jobs_to_start"
 
 SCREEN_BY_LEVEL = {
     OrgUnitLevel.COUNTRY.value: "national",
@@ -184,8 +188,14 @@ def _facility_comparisons(
     prepare_calculation_batch(session, org_unit=org_unit, periods=[period], programme_codes=[programme])
     rows = []
     try:
-        for child in descendants(session, org_unit, include_self=False):
+        batch = session.info.get("calc_batch") or {}
+        reporting = {unit_id for (unit_id, row_period, _key) in batch.get("raw_index", {}) if row_period == period}
+        for child in descendants(session, org_unit, include_self=False, period=period):
             if child.level_type != OrgUnitLevel.FACILITY.value:
+                continue
+            # Facilities without any stored figure for the period (not yet loaded, or not reporting)
+            # are not calculated one by one; the facility-data status tells the reader which.
+            if child.id not in reporting:
                 continue
             if not can_access_org_unit(session, user, child):
                 continue
@@ -312,19 +322,28 @@ def _export_surface(actions: set[str], *, has_verified_values: bool) -> dict:
     }
 
 
-def _resolve_selected_indicator(module: str, module_payload: dict, selected_indicator: str | None) -> str:
+def _resolve_selected_indicator(
+    module: str, module_payload: dict, selected_indicator: str | None, unit_rows: list[dict] | None = None
+) -> str:
     codes = MODULE_INDICATORS[module]
     if selected_indicator:
         if selected_indicator not in codes:
             raise AuthorizationError("invalid_input", "The selected indicator does not belong to this module.")
         return selected_indicator
-    for code in codes[:6]:
-        if code in UNSAFE_RANK_CODES:
-            continue
-        mode = _indicator_semantics(module_payload, code)["classification_mode"]
-        if mode not in {"unclassified", "neutral_count"}:
+    candidates = [
+        code
+        for code in codes[:6]
+        if code not in UNSAFE_RANK_CODES
+        and _indicator_semantics(module_payload, code)["classification_mode"] not in {"unclassified", "neutral_count"}
+    ]
+    # Prefer an indicator the compared units actually have values for: facilities have no approved
+    # catchment populations, so population coverage is unavailable for them while ratios are not.
+    for code in candidates:
+        if unit_rows and any(
+            ((row.get("values") or {}).get(code) or {}).get("raw_value") is not None for row in unit_rows
+        ):
             return code
-    return codes[0]
+    return candidates[0] if candidates else codes[0]
 
 
 def build_dashboard(
@@ -338,8 +357,9 @@ def build_dashboard(
     selected_indicator: str | None = None,
     request_key: str | None = None,
 ) -> dict:
+    session.info.pop("product_input_revision", None)
     require_action(session, user, ActionPermission.VIEW)
-    org_unit = require_org_unit_access(session, user, org_unit_id)
+    org_unit = require_org_unit_access(session, user, org_unit_id, period=period)
     if user.is_system_admin:
         programmes = {item.value for item in ProgrammeCode}
     else:
@@ -353,6 +373,14 @@ def build_dashboard(
     if selected_indicator and selected_indicator not in MODULE_INDICATORS[chosen]:
         raise AuthorizationError("invalid_input", "The selected indicator does not belong to this module.")
     screen = SCREEN_BY_LEVEL.get(org_unit.level_type, "national")
+    facility_data = None
+    if screen in {"district", "sub_county", "facility"}:
+        # D-068: facility figures are loaded on demand. A needed load is queued here and started
+        # by the route after the snapshot commits (see FACILITY_JOBS_KEY).
+        status = queue_facility_load(session, user=user, org_unit=org_unit, period=period, module=chosen)
+        facility_data = status.payload()
+        if status.start_job and status.job_id:
+            session.info.setdefault(FACILITY_JOBS_KEY, []).append(status.job_id)
     include_children = screen in {"national", "regional", "sub_county"}
     payload = evaluate_module(
         session,
@@ -368,7 +396,7 @@ def build_dashboard(
     # National and regional screens map and rank districts/cities (the reference layout); the
     # scorecard keeps the direct children.
     district_rows = payload.get("district_comparison") or []
-    if screen == "district":
+    if screen in {"district", "sub_county"}:
         comparisons = _facility_comparisons(
             session,
             user=user,
@@ -385,7 +413,7 @@ def build_dashboard(
 
     kpi_codes = MODULE_INDICATORS[chosen][:6]
     kpis = [row for row in payload["indicators"] if row.get("indicator_code") in kpi_codes]
-    rank_code = _resolve_selected_indicator(chosen, payload, selected_indicator)
+    rank_code = _resolve_selected_indicator(chosen, payload, selected_indicator, district_rows or comparisons)
     population = _population_payload(session, org_unit, period)
     effective_date = parse_period(period).end
     geometry = map_feature_collection(session, user, org_unit, as_of=effective_date, include_features=False)
@@ -470,7 +498,8 @@ def build_dashboard(
         "population": population,
         "kpis": kpis,
         "module_result": payload,
-        "facility_scorecard": comparisons if screen == "district" else [],
+        "facility_scorecard": comparisons if screen in {"district", "sub_county"} else [],
+        "facility_data": facility_data,
         "ranking": _rank_rows(district_rows or comparisons, rank_code, payload),
         "selected_indicator": rank_code,
         "insights": _insights(payload, population),

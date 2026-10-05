@@ -5,12 +5,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, defer
 from sqlalchemy.orm.util import identity_key
 
 from app.config import get_settings
 from app.domain.enums import (
+    AGGREGATION_CLASS_RANK,
     AbsenceReason,
     AggregationClass,
     EventCoverageStatus,
@@ -26,8 +27,10 @@ from app.domain.formula_spec import FormulaValidationError, validate_classificat
 from app.domain.indicator_catalog import INDICATOR_BY_CODE
 from app.domain.periods import parse_period
 from app.models import (
+    AnalyticsRevision,
     CalculatedValue,
     CalculationRun,
+    EventFieldMapping,
     FacilityPopulationEntry,
     Indicator,
     IndicatorVersion,
@@ -44,7 +47,7 @@ from app.models import (
 )
 from app.services.classification import classify, display_value
 from app.services.event_coverage import evaluate_event_coverage
-from app.services.geography import descendants, top_units_of_class
+from app.services.geography import descendants, escape_like, top_units_of_class
 from app.services.mpdsr import (
     chronology_valid_notification,
     chronology_valid_review,
@@ -53,7 +56,7 @@ from app.services.mpdsr import (
     notification_timely,
     review_timely,
 )
-from app.services.mpdsr_events import event_in_mpdsr_scope, scoped_mpdsr_events
+from app.services.mpdsr_events import mpdsr_scope, scoped_mpdsr_events
 from app.services.population import TargetDenominator, resolve_target_denominator
 from app.version import SOFTWARE_VERSION
 
@@ -183,8 +186,20 @@ def prepare_calculation_batch(
             ensure_period_rollups(session, periods)
     except IntegrityError:
         pass
-    units = descendants(session, org_unit, include_self=True)
-    unit_ids = [unit.id for unit in units]
+    # Optimistic guard for prepared products: never stamp a calculation made from an
+    # older batch with a newer concurrent source revision.
+    session.info.setdefault(
+        "product_input_revision",
+        session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global")),
+    )
+    units = descendants(session, org_unit, include_self=True, active_only=False)
+    # Rows are selected by subtree path: an 11,000-item ID list is far slower to send and plan.
+    subtree_query = select(OrgUnit.id).where(
+        or_(
+            OrgUnit.id == org_unit.id,
+            OrgUnit.path.like(escape_like(org_unit.path.rstrip("/") + "/") + "%", escape="\\"),
+        ),
+    )
     # Formulas read source rows of their own programme only, so a module's batch loads that
     # programme's rows. Provenance JSON is not needed to calculate; lineage fetches the mapping IDs
     # it needs in one light query (see _batch_mapping_ids).
@@ -192,7 +207,7 @@ def prepare_calculation_batch(
         select(RawAggregateValue)
         .options(defer(RawAggregateValue.provenance))
         .where(
-            RawAggregateValue.org_unit_id.in_(unit_ids),
+            RawAggregateValue.org_unit_id.in_(subtree_query),
             RawAggregateValue.period.in_(periods),
             RawAggregateValue.is_current.is_(True),
         )
@@ -202,14 +217,21 @@ def prepare_calculation_batch(
             RawAggregateValue.programme_id.in_(select(Programme.id).where(Programme.code.in_(programme_codes)))
         )
     raw_rows = list(session.scalars(raw_query).all())
-    events = list(
-        session.scalars(
-            select(RawEventSnapshot).where(
-                RawEventSnapshot.org_unit_id.in_(unit_ids),
-                RawEventSnapshot.is_current.is_(True),
-                RawEventSnapshot.source_connector == "tracker",
-            )
-        ).all()
+    # Routine modules must not deserialize the national sensitive event cache.
+    events = (
+        list(
+            session.scalars(
+                select(RawEventSnapshot).where(
+                    RawEventSnapshot.org_unit_id.in_(subtree_query),
+                    RawEventSnapshot.is_current.is_(True),
+                    RawEventSnapshot.source_connector == "tracker",
+                    RawEventSnapshot.extracted_at
+                    > datetime.now(UTC) - timedelta(hours=get_settings().mpdsr_event_retention_hours),
+                )
+            ).all()
+        )
+        if not programme_codes or "MPDSR" in programme_codes
+        else []
     )
     raw_index: dict[tuple, list[RawAggregateValue]] = {}
     for row in raw_rows:
@@ -242,11 +264,14 @@ def prepare_calculation_batch(
 # programme and indicator set, selected formula versions, current source rows (identity, checksum
 # and value), and reference tables (content-hashed, not timestamped). Event-based formulas depend
 # on the clock through event coverage and are never reused.
-RUN_REUSE_PREFIX = "inputs-v1:"
+RUN_REUSE_PREFIX = "inputs-v2:"
+# Runs returned by reuse in this session; their quality flags were scanned when first calculated.
+REUSED_RUNS_KEY = "reused_calculation_runs"
 _REFERENCE_MODELS = (
     Indicator,
     IndicatorVersion,
     SourceMapping,
+    EventFieldMapping,
     PeriodPopulationRule,
     PopulationVersion,
     PopulationValue,
@@ -286,6 +311,7 @@ def _input_fingerprint(
         return None
     indicators = batch.get("indicators") or {}
     programmes = batch.get("programmes") or {}
+    uses_events = False
     for version in versions:
         indicator = indicators.get(version.indicator_id)
         programme = programmes.get(indicator.programme_id) if indicator is not None else None
@@ -298,9 +324,22 @@ def _input_fingerprint(
             isinstance(part, dict) and part.get("mode") == "event_count"
             for part in (spec.get("numerator"), spec.get("denominator"))
         ):
-            return None
-    units = descendants(session, org_unit, include_self=True)
-    unit_ids = {unit.id for unit in units}
+            uses_events = True
+    # Coverage changes at exact freshness/retention cutoffs, not hourly buckets. Until a
+    # clock-aware prepared product exists, do not reuse event calculations across requests.
+    if uses_events:
+        return None
+    hierarchy = batch.setdefault("hierarchy_digest", {})
+    hierarchy_key = (org_unit.id, period)
+    if hierarchy_key not in hierarchy:
+        units = descendants(session, org_unit, include_self=True, period=period)
+        unit_digest = hashlib.sha256()
+        for line in sorted(
+            f"{unit.id}|{unit.path}|{unit.level_type}|{unit.active}|{unit.valid_from}|{unit.valid_to}" for unit in units
+        ):
+            unit_digest.update(line.encode())
+        hierarchy[hierarchy_key] = ({unit.id for unit in units}, unit_digest.hexdigest())
+    unit_ids, hierarchy_hash = hierarchy[hierarchy_key]
     digest = hashlib.sha256()
     material = [
         SOFTWARE_VERSION,
@@ -311,7 +350,10 @@ def _input_fingerprint(
         get_settings().undated_formula_policy,
         _reference_state(session, batch),
     ]
-    material.extend(sorted(f"{unit.id}|{unit.path}|{unit.level_type}|{unit.active}" for unit in units))
+    from app.services.prepared_dashboard import calculation_build_signature
+
+    material.extend([calculation_build_signature(), str(get_settings().mpdsr_reporting_units_approved)])
+    material.append(hierarchy_hash)
     material.extend(
         sorted(
             f"{decision.indicator_id}|{decision.version.id if decision.version else '-'}|{decision.rule}"
@@ -327,7 +369,9 @@ def _input_fingerprint(
     rows = [row for unit_id in unit_ids for row in by_unit_period.get((unit_id, period), [])]
     material.extend(
         sorted(
-            f"{row.id}|{row.checksum}|{row.value}|{row.programme_id}|{row.value_invalid}|{row.absence_reason}"
+            f"{row.id}|{row.checksum}|{row.value}|{row.programme_id}|{row.value_invalid}|{row.absence_reason}|"
+            f"{row.internal_source_key}|{row.mapping_version}|{row.dhis2_item_uid}|{row.category_option_combo_uid}|"
+            f"{row.extracted_at}|{row.source_freshness_at}"
             for row in rows
         )
     )
@@ -513,6 +557,8 @@ class _ChildCohort:
     cls: AggregationClass | None
     rows: list[tuple[OrgUnit, RawAggregateValue]]
     reason: str | None = None
+    expected_count: int = 0
+    partial: bool = False
 
 
 def _child_cohort(
@@ -521,14 +567,32 @@ def _child_cohort(
     period: str,
     source_key: str,
     programme_id: UUID | None,
+    allow_partial: bool = False,
 ) -> _ChildCohort:
     """Resolve one source key from descendants at a single, complete aggregation class.
+
+    With ``allow_partial`` (an owner-approved ``reporting_units`` indicator) the units that report
+    are summed and the cohort records how many of the expected units that is.
 
     Districts and cities are peers (one class). Genuinely different classes, such as
     district plus facility rows, are rejected rather than combined.
     """
     grouped: dict[AggregationClass | None, list[tuple[OrgUnit, RawAggregateValue]]] = {}
-    for unit in children:
+    batch = _batch(session)
+    if batch is not None:
+        # Only units holding a row can contribute; visit those instead of every descendant.
+        index = batch.setdefault("rows_by_period_key", {})
+        if (period, source_key) not in index:
+            by_unit: dict[UUID, list[RawAggregateValue]] = {}
+            for (unit_id, row_period, key), group in batch["raw_index"].items():
+                if row_period == period and key == source_key:
+                    by_unit[unit_id] = group
+            index[(period, source_key)] = by_unit
+        with_rows = index[(period, source_key)]
+        candidates = [unit for unit in children if unit.id in with_rows]
+    else:
+        candidates = children
+    for unit in candidates:
         rows = _current_raw_rows(session, unit.id, period, source_key, programme_id)
         if len(rows) > 1:
             return _ChildCohort(
@@ -542,16 +606,42 @@ def _child_cohort(
             grouped.setdefault(aggregation_class(unit.level_type), []).append((unit, row))
     if not grouped:
         return _ChildCohort("missing", None, [], "No source row.")
-    if len(grouped) > 1:
+    # District/city peers are an expected reporting level, even when none reported.
+    # On-demand facility data must never make an empty district cohort look complete.
+    structural_districts = top_units_of_class(children, AggregationClass.DISTRICT_EQUIVALENT)
+    if structural_districts and all(
+        cls is not None
+        and AGGREGATION_CLASS_RANK.get(cls, 99) > AGGREGATION_CLASS_RANK[AggregationClass.DISTRICT_EQUIVALENT]
+        for cls in grouped
+    ):
         return _ChildCohort(
-            "mixed_levels",
-            None,
-            [item for rows in grouped.values() for item in rows],
-            "Parent and descendant rows cannot be mixed.",
+            "incomplete",
+            AggregationClass.DISTRICT_EQUIVALENT,
+            [],
+            "District/city source rows are missing; lower-level rows cannot substitute for them.",
+            expected_count=len(structural_districts),
         )
-    cls, rows = next(iter(grouped.items()))
-    expected = top_units_of_class(children, cls)
-    expected_ids = {unit.id for unit in expected}
+    if len(grouped) > 1:
+        if None in grouped:
+            return _ChildCohort(
+                "mixed_levels",
+                None,
+                [item for rows in grouped.values() for item in rows],
+                "Parent and descendant rows cannot be mixed.",
+            )
+        # Facility rows loaded on demand (D-068) sit below districts that hold their own rows.
+        # Only the class nearest the parent is summed; deeper rows are its components and are
+        # never added to it, so nothing is double counted and no class stands in for another.
+        cls = min(grouped, key=lambda item: AGGREGATION_CLASS_RANK.get(item, 99))
+        rows = grouped[cls]
+    else:
+        cls, rows = next(iter(grouped.items()))
+    batch = _batch(session)
+    expected_cache = batch.setdefault("expected_cohorts", {}) if batch is not None else {}
+    cohort_key = (len(children), children[0].id if children else None, children[-1].id if children else None, cls)
+    if cohort_key not in expected_cache:
+        expected_cache[cohort_key] = frozenset(unit.id for unit in top_units_of_class(children, cls))
+    expected_ids = expected_cache[cohort_key]
     present_ids = {unit.id for unit, _ in rows}
     if not present_ids <= expected_ids:
         return _ChildCohort(
@@ -561,8 +651,55 @@ def _child_cohort(
             "Overlapping units of one aggregation class cannot be summed without double counting.",
         )
     if present_ids != expected_ids:
+        if allow_partial:
+            for unit in children:
+                if unit.id not in expected_ids - present_ids:
+                    continue
+                if any(
+                    row.value_invalid for row in _current_raw_rows(session, unit.id, period, source_key, programme_id)
+                ):
+                    return _ChildCohort(
+                        "incomplete",
+                        cls,
+                        rows,
+                        "An invalid peer source is not non-reporting and cannot contribute zero.",
+                        expected_count=len(expected_ids),
+                    )
+            # An approved non-reporting policy is not permission to interpret a failed or
+            # unrequested extraction as no doses/deaths. Certify every absent peer first.
+            from app.integrations.dhis2.periods import months_in
+            from app.services.period_rollup import _coverage_jobs, _missing_month_coverage
+
+            months = months_in(parse_period(period))
+            coverage_cache = batch.setdefault("source_coverage_jobs", {}) if batch is not None else {}
+            jobs = coverage_cache.get(months)
+            if jobs is None:
+                jobs = _coverage_jobs(session, months)
+                coverage_cache[months] = jobs
+            version_set = {row.mapping_version for _, row in rows}
+            complete = len(version_set) == 1 and all(
+                _missing_month_coverage(jobs, programme_id, unit_id, source_key, next(iter(version_set)), set(months))
+                is not None
+                for unit_id in expected_ids - present_ids
+            )
+            if not complete:
+                return _ChildCohort(
+                    "incomplete",
+                    cls,
+                    rows,
+                    "Non-reporting peers lack successful extraction coverage; missing is not zero.",
+                    expected_count=len(expected_ids),
+                )
+            return _ChildCohort(
+                "ok",
+                cls,
+                rows,
+                f"{len(present_ids)} of {len(expected_ids)} units reported; the others contribute nothing.",
+                expected_count=len(expected_ids),
+                partial=True,
+            )
         return _ChildCohort("incomplete", cls, rows, "Incomplete child coverage at a consistent aggregation level.")
-    return _ChildCohort("ok", cls, rows)
+    return _ChildCohort("ok", cls, rows, expected_count=len(expected_ids))
 
 
 def resolve_source_key(
@@ -604,7 +741,7 @@ def resolve_source_key(
             org_unit.level_type,
             reason="No direct percentage exists for the requested geography.",
         )
-    children = descendants(session, org_unit, include_self=False)
+    children = descendants(session, org_unit, include_self=False, period=period)
     cohort = _child_cohort(session, children, period, source_key, programme_id)
     level = cohort.cls.value if cohort.cls else None
     if cohort.status != "ok":
@@ -647,9 +784,7 @@ def sum_source_key(
     source_key: str,
     programme_id: UUID | None = None,
 ) -> float | None:
-    resolved = resolve_source_key(
-        session, org_unit, period, source_key, programme_id=programme_id
-    )
+    resolved = resolve_source_key(session, org_unit, period, source_key, programme_id=programme_id)
     return resolved.value
 
 
@@ -674,6 +809,7 @@ def resolve_common_scope(
     *,
     programme_id: UUID | None,
     required: set[str] | None = None,
+    allow_partial: bool = False,
 ) -> ScopeResolution:
     """Resolve every aggregate component of a formula at one shared scope.
 
@@ -712,8 +848,10 @@ def resolve_common_scope(
     if len(direct) == len(keys):
         return _direct_scope(org_unit, direct, missing=[])
 
-    children = descendants(session, org_unit, include_self=False)
-    cohorts = {key: _child_cohort(session, children, period, key, programme_id) for key in keys}
+    children = descendants(session, org_unit, include_self=False, period=period)
+    cohorts = {
+        key: _child_cohort(session, children, period, key, programme_id, allow_partial=allow_partial) for key in keys
+    }
     for key, cohort in cohorts.items():
         if cohort.status == "ambiguous_source":
             return ScopeResolution(
@@ -803,10 +941,12 @@ def resolve_common_scope(
             reason="Components use incompatible mapping versions.",
             reason_code=UnavailableReason.MIXED_MAPPING_VERSIONS.value,
         )
+    partial = [cohorts[key] for key in considered if cohorts[key].partial]
     return ScopeResolution(
         "ok",
-        "children",
+        "children_reporting" if partial else "children",
         cls.value if cls else None,
+        reason=partial[0].reason if partial else None,
         values={key: sum(float(row.value) for _, row in cohorts[key].rows) for key in considered},
         row_ids=[row.id for row in rows],
         unit_ids=sorted({unit.id for key in considered for unit, _ in cohorts[key].rows}, key=str),
@@ -873,12 +1013,31 @@ def _event_count(session: Session, org_unit: OrgUnit, period: str, spec: dict) -
     event_type = spec.get("event_type")
     completed_only = spec.get("completed_only", True)
     timely = spec.get("timely")
-    units = {unit.id for unit in descendants(session, org_unit, include_self=True)}
     batch = _batch(session)
     if batch is not None:
-        rows = [event for event in batch["events"] if event.org_unit_id in units]
-        rows = [event for event in rows if event_in_mpdsr_scope(session, event, as_of=parse_period(period).end)]
-        rows = [event for event in rows if in_death_cohort(event, period)]
+        subtree_ids = batch.setdefault("subtree_ids", {})
+        subtree_key = (org_unit.id, period)
+        if subtree_key not in subtree_ids:
+            subtree_ids[subtree_key] = frozenset(
+                unit.id for unit in descendants(session, org_unit, include_self=True, period=period)
+            )
+        units = subtree_ids[subtree_key]
+    else:
+        units = {unit.id for unit in descendants(session, org_unit, include_self=True, period=period)}
+    batch = _batch(session)
+    if batch is not None:
+        # Events are indexed by unit and each period's in-scope death cohort is resolved once per
+        # request; a national screen otherwise rescans every event for every indicator and unit.
+        cohorts = batch.setdefault("mpdsr_cohorts", {})
+        if period not in cohorts:
+            in_scope = mpdsr_scope(session, as_of=parse_period(period).end)
+            by_unit: dict = {}
+            for event in batch["events"]:
+                if in_scope(event) and in_death_cohort(event, period):
+                    by_unit.setdefault(event.org_unit_id, []).append(event)
+            cohorts[period] = by_unit
+        by_unit = cohorts[period]
+        rows = [event for unit_id in units for event in by_unit.get(unit_id, ())]
     else:
         rows = scoped_mpdsr_events(session, org_unit, period, unit_ids=units)
     matched: list[RawEventSnapshot] = []
@@ -944,9 +1103,9 @@ def evaluate_formula(
     version: IndicatorVersion,
     programme_id: UUID | None,
 ) -> Measure:
-    raw_spec = version.formula_spec or INDICATOR_BY_CODE.get(
-        session.get(Indicator, version.indicator_id).code, {}
-    ).get("formula_spec")
+    raw_spec = version.formula_spec or INDICATOR_BY_CODE.get(session.get(Indicator, version.indicator_id).code, {}).get(
+        "formula_spec"
+    )
     if not raw_spec:
         return Measure(
             None,
@@ -976,6 +1135,10 @@ def evaluate_formula(
 
     kind = spec.get("kind")
     require_all = spec.get("require_all_components", True)
+    allow_reporting = spec.get("child_coverage") == "reporting_units"
+    programme = session.get(Programme, programme_id) if programme_id is not None else None
+    if programme is not None and programme.code == "MPDSR" and not get_settings().mpdsr_reporting_units_approved:
+        allow_reporting = False
 
     classification = dict(version.classification_spec or {})
     classification.setdefault("precision", version.display_precision)
@@ -1006,6 +1169,7 @@ def evaluate_formula(
             keys,
             programme_id=programme_id,
             required=set(keys) if require_all else set(),
+            allow_partial=allow_reporting,
         )
         if not scope.ok:
             return _scope_unavailable(scope)
@@ -1072,6 +1236,7 @@ def evaluate_formula(
             period,
             [spec["first_key"], spec["final_key"]],
             programme_id=programme_id,
+            allow_partial=allow_reporting,
         )
         if not scope.ok:
             return _scope_unavailable(scope)
@@ -1122,6 +1287,7 @@ def evaluate_formula(
             numerator_keys + denominator_keys,
             programme_id=programme_id,
             required=required,
+            allow_partial=allow_reporting,
         )
 
     event_result: EventCountResult | None = None
@@ -1441,6 +1607,7 @@ def run_calculation(
     if fingerprint is not None:
         reused = _reusable_run(session, org_unit, period, fingerprint)
         if reused is not None:
+            session.info.setdefault(REUSED_RUNS_KEY, set()).add(reused.id)
             return reused
     run = CalculationRun(
         id=uuid4(),
@@ -1521,13 +1688,17 @@ def run_calculation(
                     "programme_id": str(row.programme_id) if row.programme_id else None,
                     "source_system": row.source_system,
                     "source_key": row.internal_source_key,
+                    "org_unit_id": str(row.org_unit_id),
+                    "period": row.period,
+                    "value": float(row.value) if row.value is not None else None,
                     "mapping_version": row.mapping_version,
                     "mapping_id": str(source_mapping.id) if source_mapping else None,
                     "checksum": row.checksum,
                     "extracted_at": row.extracted_at.isoformat() if row.extracted_at else None,
-                    "source_freshness_at": (
-                        row.source_freshness_at.isoformat() if row.source_freshness_at else None
-                    ),
+                    "source_freshness_at": (row.source_freshness_at.isoformat() if row.source_freshness_at else None),
+                    "derivation": (row.provenance or {}).get("derivation"),
+                    "components": (row.provenance or {}).get("components"),
+                    "coverage_job_ids": (row.provenance or {}).get("coverage_job_ids"),
                 }
             if measure.population_version_id:
                 population_version_ids.add(str(measure.population_version_id))
@@ -1601,9 +1772,7 @@ def run_calculation(
                         str(measure.population_version_id) if measure.population_version_id else None
                     ),
                     "facility_population_entry_id": (
-                        str(measure.facility_population_entry_id)
-                        if measure.facility_population_entry_id
-                        else None
+                        str(measure.facility_population_entry_id) if measure.facility_population_entry_id else None
                     ),
                     "source_freshness_at": source_freshness.isoformat() if source_freshness else None,
                 }
@@ -1613,9 +1782,7 @@ def run_calculation(
         run.duration_ms = int((run.finished_at - started).total_seconds() * 1000)
         indicator_version_ids = sorted(item["indicator_version_id"] for item in snapshot_versions)
         run.indicator_set_version = hashlib.sha256("|".join(indicator_version_ids).encode()).hexdigest()[:16]
-        run_mapping_versions = {
-            item["mapping_version"] for item in snapshot_versions if item.get("mapping_version")
-        }
+        run_mapping_versions = {item["mapping_version"] for item in snapshot_versions if item.get("mapping_version")}
         run.mapping_version = (
             next(iter(run_mapping_versions))
             if len(run_mapping_versions) == 1
@@ -1639,9 +1806,7 @@ def run_calculation(
             "source_rows": [source_lineage[key] for key in sorted(source_lineage)],
             "population_version_ids": sorted(population_version_ids),
             "facility_population_entry_ids": sorted(facility_population_entry_ids),
-            "source_freshness_at": (
-                min(source_freshness_values).isoformat() if source_freshness_values else None
-            ),
+            "source_freshness_at": (min(source_freshness_values).isoformat() if source_freshness_values else None),
             "event_snapshot_ids": sorted(event_snapshot_ids),
             "formula_version_policy": {
                 "effective_date": parse_period(period).end.isoformat(),

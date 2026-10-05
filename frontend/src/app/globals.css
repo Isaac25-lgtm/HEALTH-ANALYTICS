@@ -1847,3 +1847,24 @@ td.cell {
   border-radius: 4px;
   box-shadow: 0 1px 4px rgba(6, 52, 90, 0.25);
 }
+
+.kpi-note {
+  font-size: 11px;
+  color: var(--text-mid);
+  margin: 2px 0 0;
+}
+
+/* D-068: on-demand facility figures. */
+.facility-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.facility-loading { background: var(--blue-50); color: var(--blue-700); }
+.facility-failed { background: var(--heat-red); color: var(--heat-red-ink); }
+.facility-unavailable { background: var(--neutral-bg); color: var(--neutral); }

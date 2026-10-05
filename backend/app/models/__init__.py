@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -18,12 +19,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    event,
     false,
     func,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.db.analytics_revision import install_revision_triggers
 from app.db.base import Base, TimestampMixin
 from app.domain.enums import (
     AggregationMethod,
@@ -49,14 +52,10 @@ class User(Base, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_system_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    identity_provider: Mapped[str] = mapped_column(
-        String(50), default="local_dev", nullable=False
-    )
+    identity_provider: Mapped[str] = mapped_column(String(50), default="local_dev", nullable=False)
     external_subject: Mapped[str | None] = mapped_column(String(255))
 
-    roles: Mapped[list["Role"]] = relationship(
-        secondary="user_roles", back_populates="users"
-    )
+    roles: Mapped[list["Role"]] = relationship(secondary="user_roles", back_populates="users")
     geography_scopes: Mapped[list["UserGeographyScope"]] = relationship(back_populates="user")
     programme_scopes: Mapped[list["UserProgrammeScope"]] = relationship(back_populates="user")
     extra_permissions: Mapped[list["UserPermission"]] = relationship(back_populates="user")
@@ -156,9 +155,7 @@ class LoginAttempt(Base):
     username: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     succeeded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class OrgUnit(Base, TimestampMixin):
@@ -191,10 +188,7 @@ class OrgUnitMapping(Base, TimestampMixin):
     external_uid: Mapped[str] = mapped_column(
         String(80),
         nullable=False,
-        comment=(
-            "External identifier such as a DHIS2 organisation-unit UID. "
-            "Never hard-code production UIDs."
-        ),
+        comment=("External identifier such as a DHIS2 organisation-unit UID. Never hard-code production UIDs."),
     )
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
@@ -241,9 +235,7 @@ class Geometry(Base, TimestampMixin):
     org_unit_id: Mapped[UUID] = mapped_column(ForeignKey("org_units.id"), nullable=False)
     geojson: Mapped[dict | None] = mapped_column(
         JSON,
-        comment=(
-            "GeoJSON polygon or point. A PostGIS column can be added when the extension is enabled."
-        ),
+        comment=("GeoJSON polygon or point. A PostGIS column can be added when the extension is enabled."),
     )
     geometry_kind: Mapped[str] = mapped_column(String(20), default="polygon", nullable=False)
     source: Mapped[str | None] = mapped_column(String(200))
@@ -308,9 +300,7 @@ class IndicatorVersion(Base, TimestampMixin):
     numerator_definition: Mapped[str] = mapped_column(Text, nullable=False)
     denominator_type: Mapped[str] = mapped_column(String(40), nullable=False)
     denominator_coefficient: Mapped[float | None] = mapped_column(Float)
-    denominator_reference_indicator_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("indicators.id")
-    )
+    denominator_reference_indicator_id: Mapped[UUID | None] = mapped_column(ForeignKey("indicators.id"))
     multiplier: Mapped[float] = mapped_column(Float, default=100, nullable=False)
     unit: Mapped[str] = mapped_column(String(80), nullable=False)
     display_precision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -347,9 +337,7 @@ class IndicatorSourceMapping(Base, TimestampMixin):
     __tablename__ = "indicator_source_mappings"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    indicator_version_id: Mapped[UUID] = mapped_column(
-        ForeignKey("indicator_versions.id"), nullable=False
-    )
+    indicator_version_id: Mapped[UUID] = mapped_column(ForeignKey("indicator_versions.id"), nullable=False)
     source_system: Mapped[str] = mapped_column(String(40), default=MappingSourceSystem.DHIS2.value)
     semantic_field: Mapped[str] = mapped_column(String(120), nullable=False)
     data_element_uid: Mapped[str | None] = mapped_column(
@@ -385,15 +373,11 @@ class PeriodPopulationRule(Base, TimestampMixin):
     population_year: Mapped[int] = mapped_column(Integer, nullable=False)
     programme_id: Mapped[UUID | None] = mapped_column(ForeignKey("programmes.id"))
     notes: Mapped[str | None] = mapped_column(Text)
-    scope_kind: Mapped[str] = mapped_column(
-        String(20), default=PeriodRuleScope.FINANCIAL_YEAR.value, nullable=False
-    )
+    scope_kind: Mapped[str] = mapped_column(String(20), default=PeriodRuleScope.FINANCIAL_YEAR.value, nullable=False)
     applies_to_period_kinds: Mapped[list | None] = mapped_column(
         JSON, comment="Period kinds this rule governs, e.g. ['fy']. Other kinds stay unresolved."
     )
-    approval_status: Mapped[str] = mapped_column(
-        String(40), default=ApprovalStatus.DRAFT.value, nullable=False
-    )
+    approval_status: Mapped[str] = mapped_column(String(40), default=ApprovalStatus.DRAFT.value, nullable=False)
 
 
 class PopulationVersion(Base, TimestampMixin):
@@ -406,9 +390,7 @@ class PopulationVersion(Base, TimestampMixin):
     source_name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_document: Mapped[str | None] = mapped_column(String(500))
     population_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    approval_status: Mapped[str] = mapped_column(
-        String(40), default=ApprovalStatus.DRAFT.value, nullable=False
-    )
+    approval_status: Mapped[str] = mapped_column(String(40), default=ApprovalStatus.DRAFT.value, nullable=False)
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
@@ -455,9 +437,7 @@ class PopulationSourceAlias(Base, TimestampMixin):
     target_name: Mapped[str | None] = mapped_column(
         String(255), comment="Internal or boundary name the source name was reviewed against."
     )
-    decision_status: Mapped[str] = mapped_column(
-        String(20), default=AliasDecisionStatus.PROPOSED.value, nullable=False
-    )
+    decision_status: Mapped[str] = mapped_column(String(20), default=AliasDecisionStatus.PROPOSED.value, nullable=False)
     decision_note: Mapped[str | None] = mapped_column(Text)
     proposed_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     decided_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
@@ -484,16 +464,12 @@ class FacilityPopulationEntry(Base, TimestampMixin):
     population: Mapped[float] = mapped_column(Numeric(18, 2), nullable=False)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False)
     population_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    approval_status: Mapped[str] = mapped_column(
-        String(40), default=ApprovalStatus.DRAFT.value, nullable=False
-    )
+    approval_status: Mapped[str] = mapped_column(String(40), default=ApprovalStatus.DRAFT.value, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     entered_by_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     approved_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
-    superseded_by_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("facility_population_entries.id")
-    )
+    superseded_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("facility_population_entries.id"))
     is_current_approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -548,6 +524,19 @@ class EventFieldMapping(Base, TimestampMixin):
 
 class SyncJob(Base, TimestampMixin):
     __tablename__ = "sync_jobs"
+    __table_args__ = (
+        Index(
+            "uq_active_facility_sync_key",
+            "idempotency_key",
+            unique=True,
+            sqlite_where=text(
+                "job_type = 'aggregate_facilities' AND status IN ('queued', 'running') AND idempotency_key IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "job_type = 'aggregate_facilities' AND status IN ('queued', 'running') AND idempotency_key IS NOT NULL"
+            ),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     job_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
@@ -574,6 +563,9 @@ class SyncJob(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str | None] = mapped_column(String(80))
     page_limit_reached: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    coverage_manifest: Mapped[dict | None] = mapped_column(
+        JSON, comment="Non-identifying record of the actual source keys, units and periods requested."
+    )
     window_start: Mapped[date | None] = mapped_column(
         Date, comment="First event date actually requested from the source (inclusive)."
     )
@@ -647,9 +639,7 @@ class RawEventSnapshot(Base, TimestampMixin):
     program_uid: Mapped[str | None] = mapped_column(String(80))
     program_stage_uid: Mapped[str | None] = mapped_column(String(80))
     org_unit_id: Mapped[UUID] = mapped_column(ForeignKey("org_units.id"), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(20), default=EventStatus.ACTIVE.value, nullable=False
-    )
+    status: Mapped[str] = mapped_column(String(20), default=EventStatus.ACTIVE.value, nullable=False)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -660,8 +650,7 @@ class RawEventSnapshot(Base, TimestampMixin):
     data_values: Mapped[dict | None] = mapped_column(
         JSON,
         comment=(
-            "Approved semantic event fields only. Do not store names, narratives, "
-            "or clinician identifiers by default."
+            "Approved semantic event fields only. Do not store names, narratives, or clinician identifiers by default."
         ),
     )
     extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -670,9 +659,7 @@ class RawEventSnapshot(Base, TimestampMixin):
     snapshot_hash: Mapped[str | None] = mapped_column(String(128))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     superseded_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("raw_event_snapshots.id"))
-    privacy_class: Mapped[str] = mapped_column(
-        String(40), default=PrivacyClass.RESTRICTED_EVENT.value, nullable=False
-    )
+    privacy_class: Mapped[str] = mapped_column(String(40), default=PrivacyClass.RESTRICTED_EVENT.value, nullable=False)
 
 
 class CalculationRun(Base, TimestampMixin):
@@ -705,17 +692,11 @@ class CalculationRun(Base, TimestampMixin):
 
 class CalculatedValue(Base, TimestampMixin):
     __tablename__ = "calculated_values"
-    __table_args__ = (
-        UniqueConstraint("calculation_run_id", "indicator_version_id", "org_unit_id", "period"),
-    )
+    __table_args__ = (UniqueConstraint("calculation_run_id", "indicator_version_id", "org_unit_id", "period"),)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    calculation_run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("calculation_runs.id"), nullable=False
-    )
-    indicator_version_id: Mapped[UUID] = mapped_column(
-        ForeignKey("indicator_versions.id"), nullable=False
-    )
+    calculation_run_id: Mapped[UUID] = mapped_column(ForeignKey("calculation_runs.id"), nullable=False)
+    indicator_version_id: Mapped[UUID] = mapped_column(ForeignKey("indicator_versions.id"), nullable=False)
     org_unit_id: Mapped[UUID] = mapped_column(ForeignKey("org_units.id"), nullable=False)
     period: Mapped[str] = mapped_column(String(40), nullable=False)
     numerator: Mapped[float | None] = mapped_column(Numeric(20, 6))
@@ -736,9 +717,7 @@ class CalculatedValue(Base, TimestampMixin):
     blue_reason: Mapped[str | None] = mapped_column(Text)
     quality_flag_ids: Mapped[list | None] = mapped_column(JSON)
     population_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("population_versions.id"))
-    facility_population_entry_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("facility_population_entries.id")
-    )
+    facility_population_entry_id: Mapped[UUID | None] = mapped_column(ForeignKey("facility_population_entries.id"))
     aggregation_policy: Mapped[str | None] = mapped_column(String(80))
     aggregation_level: Mapped[str | None] = mapped_column(String(40))
     source_row_ids: Mapped[list | None] = mapped_column(JSON)
@@ -769,6 +748,12 @@ class QualityRule(Base, TimestampMixin):
     rule_version: Mapped[str] = mapped_column(String(40), default="v1", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSON)
+
+
+class AnalyticsRevision(Base):
+    __tablename__ = "analytics_revisions"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
 
 class DataQualityFlag(Base, TimestampMixin):
@@ -824,6 +809,15 @@ class AnalysisSnapshot(Base, TimestampMixin):
 
     __tablename__ = "analysis_snapshots"
     __table_args__ = (
+        Index(
+            "ix_analysis_snapshots_prepared_lookup",
+            "user_id",
+            "org_unit_id",
+            "period",
+            "module",
+            "status",
+            "created_at",
+        ),
         Index(
             "uq_analysis_snapshots_user_request",
             "user_id",
@@ -951,9 +945,7 @@ class AuditLog(Base):
     after_json: Mapped[dict | None] = mapped_column(JSON)
     reason: Mapped[str | None] = mapped_column(Text)
     ip_address: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class FreshnessSnapshot(Base, TimestampMixin):
@@ -983,9 +975,7 @@ class OperationalEvent(Base):
     records_stored: Mapped[int | None] = mapped_column(Integer)
     records_rejected: Mapped[int | None] = mapped_column(Integer)
     payload: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ExportArtifact(Base, TimestampMixin):
@@ -1036,9 +1026,7 @@ class MaintenanceRun(Base):
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_summary: Mapped[str | None] = mapped_column(String(500))
     software_version: Mapped[str | None] = mapped_column(String(40))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class MaintenanceLock(Base):
@@ -1120,3 +1108,6 @@ class PopulationImportRow(Base, TimestampMixin):
     alias_id: Mapped[UUID | None] = mapped_column(ForeignKey("population_source_aliases.id"))
     review_state: Mapped[str] = mapped_column(String(20), nullable=False)
     validation_error: Mapped[str | None] = mapped_column(String(255))
+
+
+event.listen(Base.metadata, "after_create", install_revision_triggers)

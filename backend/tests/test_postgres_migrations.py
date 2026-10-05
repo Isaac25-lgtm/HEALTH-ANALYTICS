@@ -20,7 +20,7 @@ from app.services.sync import sync_job_execution_lock
 # HPIP_POSTGRES_TEST_URL, so the suite never attempts to log in to a workstation instance.
 DEFAULT_ADMIN_URL = ""
 VERIFY_DB = "hpip_p18_alembic_verify"
-HEAD_REVISION = "0014_calculation_run_reuse"
+HEAD_REVISION = "0015_sync_coverage_manifest"
 
 
 def _admin_url() -> str:
@@ -65,9 +65,7 @@ def _prepare_verify_db(admin_url: str) -> tuple:
             {"name": VERIFY_DB},
         ).scalar()
         if exists:
-            raise RuntimeError(
-                f"Refusing to create {VERIFY_DB}: the disposable verification database already exists."
-            )
+            raise RuntimeError(f"Refusing to create {VERIFY_DB}: the disposable verification database already exists.")
         conn.execute(text(f"CREATE DATABASE {VERIFY_DB}"))
     test_url = admin_url.rsplit("/", 1)[0] + f"/{VERIFY_DB}"
     return admin, test_url
@@ -106,10 +104,7 @@ def test_postgres_upgrade_empty_database_to_head(monkeypatch):
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             overlap_guard = conn.execute(
-                text(
-                    "SELECT 1 FROM pg_constraint "
-                    "WHERE conname = 'ex_org_mapping_no_overlap' AND contype = 'x'"
-                )
+                text("SELECT 1 FROM pg_constraint WHERE conname = 'ex_org_mapping_no_overlap' AND contype = 'x'")
             ).scalar()
         first_unit, second_unit = str(uuid4()), str(uuid4())
         with engine.begin() as conn:
@@ -282,7 +277,9 @@ def test_postgres_0004_backfills_historical_raw_programme(monkeypatch):
         raw_id = uuid4()
         with engine.begin() as conn:
             conn.execute(
-                metadata.tables["programmes"].insert().values(
+                metadata.tables["programmes"]
+                .insert()
+                .values(
                     id=programme_id,
                     code="TEST_PROGRAMME",
                     name="Synthetic migration programme",
@@ -292,7 +289,9 @@ def test_postgres_0004_backfills_historical_raw_programme(monkeypatch):
                 )
             )
             conn.execute(
-                metadata.tables["org_units"].insert().values(
+                metadata.tables["org_units"]
+                .insert()
+                .values(
                     id=org_unit_id,
                     code="TEST_OU",
                     name="Synthetic migration unit",
@@ -302,7 +301,9 @@ def test_postgres_0004_backfills_historical_raw_programme(monkeypatch):
                 )
             )
             conn.execute(
-                metadata.tables["source_mappings"].insert().values(
+                metadata.tables["source_mappings"]
+                .insert()
+                .values(
                     id=mapping_id,
                     internal_source_key="TEST_KEY",
                     programme_id=programme_id,
@@ -314,7 +315,9 @@ def test_postgres_0004_backfills_historical_raw_programme(monkeypatch):
                 )
             )
             conn.execute(
-                metadata.tables["raw_aggregate_values"].insert().values(
+                metadata.tables["raw_aggregate_values"]
+                .insert()
+                .values(
                     id=raw_id,
                     source_system="dhis2",
                     org_unit_id=org_unit_id,
@@ -440,7 +443,9 @@ def test_postgres_0004_ambiguous_backfill_fails(monkeypatch):
         with engine.begin() as conn:
             for programme_id, code in ((programme_a, "TEST_A"), (programme_b, "TEST_B")):
                 conn.execute(
-                    metadata.tables["programmes"].insert().values(
+                    metadata.tables["programmes"]
+                    .insert()
+                    .values(
                         id=programme_id,
                         code=code,
                         name=f"Synthetic {code}",
@@ -450,7 +455,9 @@ def test_postgres_0004_ambiguous_backfill_fails(monkeypatch):
                     )
                 )
             conn.execute(
-                metadata.tables["org_units"].insert().values(
+                metadata.tables["org_units"]
+                .insert()
+                .values(
                     id=org_unit_id,
                     code="TEST_OU_AMBIG",
                     name="Synthetic ambiguous unit",
@@ -461,7 +468,9 @@ def test_postgres_0004_ambiguous_backfill_fails(monkeypatch):
             )
             for programme_id in (programme_a, programme_b):
                 conn.execute(
-                    metadata.tables["source_mappings"].insert().values(
+                    metadata.tables["source_mappings"]
+                    .insert()
+                    .values(
                         id=uuid4(),
                         internal_source_key="TEST_KEY",
                         programme_id=programme_id,
@@ -473,7 +482,9 @@ def test_postgres_0004_ambiguous_backfill_fails(monkeypatch):
                     )
                 )
             conn.execute(
-                metadata.tables["raw_aggregate_values"].insert().values(
+                metadata.tables["raw_aggregate_values"]
+                .insert()
+                .values(
                     id=uuid4(),
                     source_system="dhis2",
                     org_unit_id=org_unit_id,
@@ -681,6 +692,42 @@ def test_postgres_model_migration_parity(monkeypatch):
             db_cols = {column["name"] for column in inspect(engine).get_columns(table)}
             model_cols = set(Base.metadata.tables[table].c.keys())
             assert model_cols <= db_cols, f"{table} missing columns {sorted(model_cols - db_cols)}"
+        engine.dispose()
+    finally:
+        _cleanup(admin, monkeypatch)
+
+
+@requires_postgres
+def test_postgres_prepared_revision_and_active_facility_guard(monkeypatch):
+    """Exercise the frozen 0015 triggers/index, not create_all's test hook."""
+    from app.models import AnalyticsRevision, Programme, SyncJob
+
+    admin, test_url = _prepare_verify_db(_admin_url())
+    _point_alembic(monkeypatch, test_url)
+    try:
+        command.upgrade(_alembic_cfg(), "head")
+        engine = create_engine(test_url, future=True)
+        with Session(engine) as session:
+            revision = lambda: session.scalar(select(AnalyticsRevision.revision))  # noqa: E731
+            baseline = revision()
+            programme = Programme(code="TEST_OCTOBER", name="Isolated verification programme", active=True)
+            session.add(programme)
+            session.flush()
+            assert revision() == baseline + 1
+            job = SyncJob(job_type="aggregate_facilities", status="queued", idempotency_key="TEST_OCTOBER_KEY")
+            session.add(job)
+            session.flush()
+            assert revision() == baseline + 1  # progress is not analytical input
+            with pytest.raises(IntegrityError), session.begin_nested():
+                session.add(
+                    SyncJob(job_type="aggregate_facilities", status="running", idempotency_key=job.idempotency_key)
+                )
+                session.flush()
+            job.status = "succeeded"
+            session.flush()
+            assert revision() == baseline + 2
+            session.add(SyncJob(job_type="aggregate_facilities", status="queued", idempotency_key=job.idempotency_key))
+            session.flush()  # a completed attempt does not block a later refresh
         engine.dispose()
     finally:
         _cleanup(admin, monkeypatch)

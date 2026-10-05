@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from app.integrations.dhis2.http import Dhis2HttpClient
 from app.models import User
 from app.schemas.api import LoginRequest, SessionLoginResponse
 from app.services.audit import write_audit
+from app.services.facility_data import prefetch_home_district, run_facility_job
 from app.services.passwords import verify_password
 from app.services.sessions import (
     create_session,
@@ -90,6 +91,7 @@ def login(
     body: LoginRequest,
     request: Request,
     response: Response,
+    background: BackgroundTasks,
     session: Session = Depends(require_write),
     settings: Settings = Depends(get_settings),
 ) -> SessionLoginResponse:
@@ -118,6 +120,9 @@ def login(
         # never written to the database or audit log.
         if user.external_subject is None:
             user.external_subject = str(profile["id"])
+        display_name = profile.get("displayName") or profile.get("name")
+        if isinstance(display_name, str) and display_name.strip():
+            user.display_name = display_name.strip()[:200]
     elif not verify_password(body.password, user.password_hash):
         _invalid_credentials(session, body.username, ip)
     auth_session = create_session(session, user.id, settings, ip)
@@ -156,6 +161,12 @@ def login(
         ip_address=ip,
         commit=True,
     )
+    # D-068: a district-scoped user's home district facility figures load in the background.
+    jobs = prefetch_home_district(session, user)
+    if jobs:
+        session.commit()
+        for job_id in jobs:
+            background.add_task(run_facility_job, job_id)
     return SessionLoginResponse(ok=True, csrf_token=auth_session.csrf_token)
 
 

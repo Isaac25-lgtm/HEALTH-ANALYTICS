@@ -3,6 +3,7 @@ import type {
   CurrentContext,
   DashboardQuery,
   DashboardResponse,
+  FacilityData,
   MapFeatureCollection,
   OpsStatus,
   OrgUnitSummary,
@@ -10,6 +11,7 @@ import type {
 } from "./types";
 
 export type { CurrentContext, OrgUnitSummary };
+import { clearReadyDashboard } from "./dashboard-ready";
 
 /**
  * Always same-origin: the browser calls `/api/...` on the frontend host and the server-side
@@ -73,7 +75,19 @@ export async function login(username: string, password: string): Promise<{ ok: b
 }
 
 export async function logout(): Promise<void> {
-  await api("/auth/logout", { method: "POST" });
+  clearReadyDashboard();
+    await api("/auth/logout", { method: "POST" });
+}
+
+export async function getPreparedDashboard(params: DashboardQuery): Promise<DashboardResponse | null> {
+  const query = new URLSearchParams({ org_unit_id: params.orgUnitId, period: params.period });
+  if (params.module) query.set("module", params.module);
+  if (params.comparison) query.set("comparison_period", params.comparison);
+  if (params.indicator) query.set("selected_indicator", params.indicator);
+  const result = await api<{ ready: boolean; dashboard: DashboardResponse | null }>(
+    `/analytics/dashboard/prepared?${query.toString()}`,
+  );
+  return result.ready ? result.dashboard : null;
 }
 
 export async function getContext(): Promise<CurrentContext> {
@@ -279,4 +293,9 @@ export async function getSyncJob(jobId: string): Promise<SyncJob> {
 
 export async function getOpsStatus(): Promise<OpsStatus> {
   return api<OpsStatus>("/ops/status");
+}
+
+export async function getFacilityStatus(orgUnitId: string, period: string, module: string): Promise<FacilityData> {
+  const params = new URLSearchParams({ org_unit_id: orgUnitId, period, module });
+  return api<FacilityData>(`/analytics/dashboard/facility-status?${params.toString()}`);
 }

@@ -98,6 +98,8 @@ def test_district_screen_maps_facility_points_not_the_district_polygon(client, s
     _district_geometries(session)
     facility = _unit(session, "PADER_HC_III")
     _geometry(session, facility, kind="point", geojson={"type": "Point", "coordinates": [32.05, 3.05]})
+    # D-068: facilities are mapped once their figures are stored.
+    put_raw(session, facility, "FY2024/25", "ANC1", 80)
     session.commit()
     headers = auth_header(login(client, "pader.focal"))
     body = query_dashboard(client, headers, _unit(session, "PADER").id).json()

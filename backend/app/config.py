@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     population_year_min: int = 2000
     population_year_max: int = 2100
     sync_execution: str = "queue"
+    dashboard_precompute_enabled: bool = False
+    dhis2_refresh_schedule_enabled: bool = False
 
     seed_dev_data: bool = False
     seed_password: str = "dev-only-change-me"
@@ -143,6 +145,7 @@ class Settings(BaseSettings):
     formula_undated_fallback: bool | None = None
     # MPDSR cause patterns stay withheld until an owner-approved minimum cell size is set.
     mpdsr_cause_min_cell_count: int | None = None
+    mpdsr_reporting_units_approved: bool = False
 
     # ---------------------------------------------------------------------
     # Retention (owner decision 2026-09-14). HPIP is a control and results

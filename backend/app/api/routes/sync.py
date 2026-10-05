@@ -1,7 +1,7 @@
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import false, select
+from sqlalchemy import false, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, parse_uuid, raise_authz
@@ -150,14 +150,23 @@ def _dispatch_created_job(session: Session, job: SyncJob) -> SyncJob:
     try:
         dispatch_sync_job(job.id)
     except SyncDispatchError as exc:
-        job.status = JobStatus.FAILED.value
-        job.error_code = "sync_enqueue_failed"
-        job.error_message = str(exc)
-        job.finished_at = datetime.now(UTC)
+        # Broker uncertainty may coexist with a successful delivery. Never overwrite
+        # a job the worker already claimed/completed, or a concurrent cancellation.
+        session.execute(
+            update(SyncJob)
+            .where(SyncJob.id == job.id, SyncJob.status == JobStatus.QUEUED.value, SyncJob.cancelled.is_(False))
+            .values(
+                status=JobStatus.FAILED.value,
+                error_code="sync_enqueue_failed",
+                error_message="Worker publication failed; durable dispatch recovery will retry.",
+                finished_at=datetime.now(UTC),
+            )
+        )
         session.commit()
+        session.refresh(job)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": job.error_code, "message": job.error_message},
+            detail={"code": "sync_enqueue_failed", "message": "Worker publication could not be confirmed."},
         ) from exc
     session.refresh(job)
     return job
@@ -211,13 +220,9 @@ def cancel_job(
             raise AuthorizationError("not_found", "Sync job not found.")
         if not user.is_system_admin:
             if row.org_unit_id not in authorised_org_unit_ids(session, user):
-                raise AuthorizationError(
-                    "forbidden_geography", "Sync job is outside authorised geography."
-                )
+                raise AuthorizationError("forbidden_geography", "Sync job is outside authorised geography.")
             if row.programme_id not in authorised_programme_ids(session, user):
-                raise AuthorizationError(
-                    "forbidden_programme", "Sync job is outside authorised programme scope."
-                )
+                raise AuthorizationError("forbidden_programme", "Sync job is outside authorised programme scope.")
     except AuthorizationError as error:
         raise_authz(error)
     if row.status in {JobStatus.QUEUED.value, JobStatus.RUNNING.value}:
@@ -337,9 +342,7 @@ def refresh_dashboard_source(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": code, "message": message},
         )
-    programme = session.scalar(
-        select(Programme).where(Programme.code == programme_code, Programme.active.is_(True))
-    )
+    programme = session.scalar(select(Programme).where(Programme.code == programme_code, Programme.active.is_(True)))
     if programme is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

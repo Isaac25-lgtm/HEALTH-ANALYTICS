@@ -15,11 +15,34 @@ SYNC_TASK_NAME = "app.workers.tasks.execute_sync_job"
 # Echoes a nonce. Used by scripts/queue_smoke.py to prove dispatch, consumption and results.
 PROBE_TASK_NAME = "app.workers.tasks.queue_health_probe"
 PURGE_TASK_NAME = "app.workers.tasks.purge_expired_data"
+PREPARE_TASK_NAME = "app.workers.tasks.prepare_default_dashboards"
+REFRESH_TASK_NAME = "app.workers.tasks.scheduled_dhis2_refresh"
+RECOVER_SYNC_TASK_NAME = "app.workers.tasks.recover_sync_dispatch"
 
 
 def celery_config() -> dict:
     settings = get_settings()
+    schedules = {}
+    if settings.dhis2_enabled and settings.sync_enabled and settings.sync_execution == "queue":
+        schedules["hpip-recover-sync-dispatch"] = {
+            "task": RECOVER_SYNC_TASK_NAME,
+            "schedule": 60.0,
+            "options": {"queue": settings.maintenance_queue_name},
+        }
+    if settings.purge_enabled and settings.purge_schedule_enabled:
+        schedules["hpip-short-retention-purge"] = {
+            "task": PURGE_TASK_NAME,
+            "schedule": 3600.0,
+            "options": {"queue": settings.maintenance_queue_name},
+        }
+    if settings.dhis2_refresh_schedule_enabled and settings.dhis2_enabled and settings.sync_enabled:
+        schedules["hpip-six-hour-refresh"] = {
+            "task": REFRESH_TASK_NAME,
+            "schedule": 21600.0,
+            "options": {"queue": settings.maintenance_queue_name},
+        }
     return {
+        "beat_schedule": schedules,
         "broker_url": settings.celery_broker_url or None,
         "result_backend": settings.celery_result_backend or None,
         "task_always_eager": False,
@@ -32,6 +55,9 @@ def celery_config() -> dict:
             EXPORT_TASK_NAME: {"queue": settings.export_queue_name},
             SYNC_TASK_NAME: {"queue": settings.sync_queue_name},
             PURGE_TASK_NAME: {"queue": settings.maintenance_queue_name},
+            PREPARE_TASK_NAME: {"queue": settings.maintenance_queue_name},
+            REFRESH_TASK_NAME: {"queue": settings.maintenance_queue_name},
+            RECOVER_SYNC_TASK_NAME: {"queue": settings.maintenance_queue_name},
         },
         "task_publish_retry": True,
         "task_publish_retry_policy": {

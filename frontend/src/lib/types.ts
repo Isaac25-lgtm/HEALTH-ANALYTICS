@@ -161,6 +161,14 @@ export type MpdsrExtras = {
   active_events: { label?: string; count?: number } | null;
 };
 
+export type FacilityData = {
+  status: "ready" | "loading" | "failed" | "unavailable" | "not_applicable";
+  job_id: string | null;
+  months_requested: number;
+  months_loaded: number;
+  message: string | null;
+};
+
 export type DashboardResponse = {
   screen: "national" | "regional" | "district" | "sub_county" | "facility";
   scope: OrgUnitSummary & {
@@ -223,6 +231,8 @@ export type DashboardResponse = {
     continuum?: Record<string, unknown> | null;
     mpdsr?: MpdsrExtras | null;
   };
+  /** D-068: on-demand facility figures for district-level screens. */
+  facility_data?: FacilityData | null;
   facility_scorecard: Array<{
     org_unit_id: string;
     org_unit_code: string;

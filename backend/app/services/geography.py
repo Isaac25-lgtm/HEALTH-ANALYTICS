@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from datetime import date
 from uuid import UUID
 
@@ -140,33 +141,58 @@ def escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def unit_in_period(unit: OrgUnit, period: str) -> bool:
+    from app.domain.periods import parse_period
+
+    spec = parse_period(period)
+    return (
+        (unit.active or unit.valid_to is not None)
+        and (unit.valid_from is None or unit.valid_from <= spec.end)
+        and (unit.valid_to is None or unit.valid_to >= spec.start)
+    )
+
+
 def descendants(
     session: Session,
     unit: OrgUnit,
     *,
     include_self: bool = False,
     active_only: bool = True,
+    period: str | None = None,
 ) -> list[OrgUnit]:
     prefix = unit.path.rstrip("/") + "/"
     batch = session.info.get("calc_batch")
     if batch and batch.get("units") is not None:
-        rows = [
-            item
-            for item in batch["units"]
-            if item.id != unit.id and item.path.startswith(prefix)
-        ]
-        if active_only:
+        cache = batch.setdefault("descendants_cache", {})
+        cache_key = (unit.id, include_self, active_only, period)
+        if cache_key in cache:
+            return list(cache[cache_key])
+        # Units sorted by path once per batch; a subtree is then one contiguous slice.
+        index = batch.get("units_by_path")
+        if index is None:
+            ordered = sorted(batch["units"], key=lambda item: item.path)
+            index = ([item.path for item in ordered], ordered)
+            batch["units_by_path"] = index
+        paths, ordered = index
+        start = bisect_left(paths, prefix)
+        end = bisect_left(paths, prefix + "￿")
+        rows = [item for item in ordered[start:end] if item.id != unit.id]
+        if period is not None:
+            rows = [item for item in rows if unit_in_period(item, period)]
+        elif active_only:
             rows = [item for item in rows if item.active]
-        rows.sort(key=lambda item: item.path)
         self_unit = batch.get("unit_by_id", {}).get(unit.id, unit)
-        if include_self and (self_unit.active or not active_only):
-            return [self_unit, *rows]
+        if include_self and (unit_in_period(self_unit, period) if period else self_unit.active or not active_only):
+            rows = [self_unit, *rows]
+        cache[cache_key] = tuple(rows)
         return rows
     query = select(OrgUnit).where(OrgUnit.path.like(escape_like(prefix) + "%", escape="\\"))
-    if active_only:
+    if active_only and period is None:
         query = query.where(OrgUnit.active.is_(True))
     rows = list(session.scalars(query.order_by(OrgUnit.path)).all())
-    if include_self and (unit.active or not active_only):
+    if period is not None:
+        rows = [item for item in rows if unit_in_period(item, period)]
+    if include_self and (unit_in_period(unit, period) if period else unit.active or not active_only):
         return [unit, *rows]
     return rows
 

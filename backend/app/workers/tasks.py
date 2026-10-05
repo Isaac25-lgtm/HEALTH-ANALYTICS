@@ -4,6 +4,7 @@ from app.config import get_settings
 from app.db.session import get_session_factory
 from app.models import SyncJob
 from app.services.export_jobs import ExportAttempt, process_export_job
+from app.services.observability import record_operational_event
 from app.services.purge import PurgeFailed, purge_expired, raise_for_failures
 from app.services.sync import (
     claim_sync_job,
@@ -13,11 +14,27 @@ from app.services.sync import (
 )
 from app.workers.celery_app import (
     EXPORT_TASK_NAME,
+    PREPARE_TASK_NAME,
     PROBE_TASK_NAME,
     PURGE_TASK_NAME,
+    RECOVER_SYNC_TASK_NAME,
+    REFRESH_TASK_NAME,
     SYNC_TASK_NAME,
     celery_app,
 )
+
+
+def _dispatch_preparation(session, job) -> None:
+    if job is None or job.status != "succeeded" or not get_settings().dashboard_precompute_enabled:
+        return
+    if celery_app is None:
+        raise RuntimeError("Dashboard preparation requires the worker extra and a reachable queue.")
+    try:
+        celery_app.send_task(PREPARE_TASK_NAME, queue=get_settings().maintenance_queue_name)
+    except Exception:
+        record_operational_event("dashboard_preparation_enqueue_failed", job_id=str(job.id), session=session)
+        session.commit()
+        raise
 
 
 def run_execute_sync_job(job_id: str) -> str:
@@ -30,9 +47,12 @@ def run_execute_sync_job(job_id: str) -> str:
                 return job.status if job is not None else "not_found"
             if not claim_sync_job(session, parsed, reclaim_running=True):
                 job = session.get(SyncJob, parsed)
+                # A task retried after a broker failure must still prepare the already committed extraction.
+                _dispatch_preparation(session, job)
                 return job.status if job is not None else "not_found"
             job = execute_sync_job(session, parsed, already_claimed=True)
             session.commit()
+            _dispatch_preparation(session, job)
             return job.status
     except Exception:
         session.rollback()
@@ -72,6 +92,31 @@ def run_purge_expired_data(
 
 if celery_app is not None:
 
+    @celery_app.task(name=RECOVER_SYNC_TASK_NAME)
+    def recover_sync_dispatch_task() -> dict:
+        from app.services.sync_recovery import recover_sync_dispatch
+
+        with get_session_factory()() as session:
+            return recover_sync_dispatch(session)
+
+    @celery_app.task(name=PREPARE_TASK_NAME, bind=True, max_retries=2, acks_late=True)
+    def prepare_default_dashboards_task(self) -> dict:
+        from app.services.dashboard_precompute import prepare_default_dashboards
+
+        try:
+            return prepare_default_dashboards()
+        except Exception as exc:
+            raise self.retry(exc=exc, countdown=60) from exc
+
+    @celery_app.task(name=REFRESH_TASK_NAME, bind=True, max_retries=2)
+    def scheduled_dhis2_refresh_task(self) -> int:
+        from scripts.dhis2_refresh import main
+
+        code = main(["--scheduled", "--json"])
+        if code:
+            raise self.retry(exc=RuntimeError("Scheduled refresh did not dispatch successfully."), countdown=60)
+        return code
+
     @celery_app.task(
         name=SYNC_TASK_NAME,
         bind=True,
@@ -83,7 +128,7 @@ if celery_app is not None:
         try:
             return run_execute_sync_job(job_id)
         except Exception as exc:  # noqa: BLE001
-            raise self.retry(exc=exc, countdown=min(2 ** self.request.retries, 30)) from exc
+            raise self.retry(exc=exc, countdown=min(2**self.request.retries, 30)) from exc
 
     @celery_app.task(name=EXPORT_TASK_NAME, bind=True, acks_late=True, reject_on_worker_lost=True)
     def generate_export_job_task(self, job_id: str) -> dict:

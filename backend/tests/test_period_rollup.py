@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.domain.periods import PeriodError, parse_period, previous_period
 from app.integrations.dhis2.periods import PeriodBridgeError, to_native_period, translate
-from app.models import OrgUnit, Programme, RawAggregateValue
+from app.models import OrgUnit, Programme, RawAggregateValue, SyncJob
 from app.services.period_rollup import DERIVATION, ensure_period_rollups
 from app.services.population import resolve_target_denominator
 from tests.helpers import map_source, put_population
@@ -98,6 +98,24 @@ def test_a_unit_silent_in_an_extracted_month_contributes_nothing_like_dhis2(sess
         _month_row(session, kitgum, programme, month, 5)
     for month in FY_MONTHS[:6]:
         _month_row(session, pader, programme, month, 10)
+    session.add(
+        SyncJob(
+            job_type="aggregate",
+            status="succeeded",
+            programme_id=programme.id,
+            org_unit_id=_unit(session, "UG").id,
+            mapping_version="v1",
+            period_from=FY_MONTHS[0],
+            period_to=FY_MONTHS[-1],
+            coverage_manifest={
+                "complete": True,
+                "periods": FY_MONTHS,
+                "source_keys": ["ANC1"],
+                "org_unit_ids": [str(pader.id), str(kitgum.id)],
+            },
+        )
+    )
+    session.flush()
 
     ensure_period_rollups(session, ["FY2025/26"])
 
@@ -197,16 +215,11 @@ def test_range_denominator_blends_population_by_month(session):
     put_population(session, pader, 2024, 120_000)
     put_population(session, pader, 2025, 240_000)
 
-    target = resolve_target_denominator(
-        session, pader, period_key="202411..202512", coefficient=0.05
-    )
+    target = resolve_target_denominator(session, pader, period_key="202411..202512", coefficient=0.05)
 
     if not target.ok:
         pytest.skip(f"No approved monthly population rule in the test seed: {target.reason_code}")
     months_by_year = {item["population_year"]: item["months"] for item in target.blend}
     assert sum(months_by_year.values()) == 14
-    expected = sum(
-        (120_000 if year == 2024 else 240_000) * 0.05 / 12 * count
-        for year, count in months_by_year.items()
-    )
+    expected = sum((120_000 if year == 2024 else 240_000) * 0.05 / 12 * count for year, count in months_by_year.items())
     assert target.value == pytest.approx(expected)

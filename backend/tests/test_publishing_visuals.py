@@ -75,8 +75,8 @@ def test_excel_scorecard_and_unit_grid_are_colour_coded(client, session, tmp_pat
     assert value_cell.number_format.endswith('"%"')
     units = book["Units"]
     names = [row[0].value for row in units.iter_rows(min_row=6)]
-    districts = {row["org_unit_name"] for row in dash["module_result"]["district_comparison"]}
-    assert districts <= set(names)
+    visible_units = {row["org_unit_name"] for row in dash["module_result"]["org_unit_comparison"]}
+    assert visible_units == {name for name in names if name}
 
 
 def test_powerpoint_is_widescreen_with_map_charts_and_coloured_tables(client, session, tmp_path, monkeypatch):

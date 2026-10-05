@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
 from app.integrations.dhis2.errors import Dhis2CancelledError, Dhis2ValidationError
 from app.integrations.dhis2.http import Dhis2HttpClient
@@ -12,6 +13,17 @@ class TrackerFetchResult:
     observations: list[EventObservation] = field(default_factory=list)
     page_limit_reached: bool = False
     pages_fetched: int = 0
+
+
+def _occurred_bound(value: str, *, end: bool = False) -> str:
+    """Make an approved date window explicit; preserve timestamp callers verbatim."""
+    if len(value) != 10:
+        return value
+    try:
+        day = date.fromisoformat(value)
+    except ValueError as exc:
+        raise Dhis2ValidationError("Tracker date boundary is invalid.") from exc
+    return day.isoformat() + ("T23:59:59.999" if end else "T00:00:00.000")
 
 
 class TrackerEventsAdapter:
@@ -51,6 +63,7 @@ class TrackerEventsAdapter:
         occurred_before: str | None = None,
         page_size: int | None = None,
         ou_mode: str | None = None,
+        allowed_data_element_uids: set[str] | None = None,
     ) -> TrackerFetchResult:
         prefix = self.client.settings.dhis2_api_path_prefix.rstrip("/")
         size = page_size or self.client.settings.dhis2_page_size
@@ -80,11 +93,11 @@ class TrackerEventsAdapter:
                 if program_stage_uid:
                     params["programStage"] = program_stage_uid
                 if occurred_after:
-                    params["occurredAfter"] = occurred_after
+                    params["occurredAfter"] = _occurred_bound(occurred_after)
                 if occurred_before:
-                    params["occurredBefore"] = occurred_before
+                    params["occurredBefore"] = _occurred_bound(occurred_before, end=True)
                 payload = self.client.get_json(f"{prefix}/tracker/events", params=params)
-                rows = parse_tracker_events(payload)
+                rows = parse_tracker_events(payload, allowed_data_element_uids=allowed_data_element_uids)
                 collected.extend(rows)
                 pages += 1
                 pager = payload.get("pager") or {}
@@ -103,7 +116,9 @@ class TrackerEventsAdapter:
         return self.last_result
 
 
-def parse_tracker_events(payload: dict | list) -> list[EventObservation]:
+def parse_tracker_events(
+    payload: dict | list, *, allowed_data_element_uids: set[str] | None = None
+) -> list[EventObservation]:
     if isinstance(payload, list):
         instances = payload
     elif isinstance(payload, dict):
@@ -121,11 +136,11 @@ def parse_tracker_events(payload: dict | list) -> list[EventObservation]:
     for item in instances:
         if not isinstance(item, dict):
             continue
-        observations.append(_map_tracker_event(item))
+        observations.append(_map_tracker_event(item, allowed_data_element_uids))
     return observations
 
 
-def _map_tracker_event(item: dict) -> EventObservation:
+def _map_tracker_event(item: dict, allowed_data_element_uids: set[str] | None = None) -> EventObservation:
     data_values = {}
     raw_values = item.get("dataValues") or []
     if isinstance(raw_values, list):
@@ -133,7 +148,7 @@ def _map_tracker_event(item: dict) -> EventObservation:
             if not isinstance(entry, dict):
                 continue
             de = entry.get("dataElement")
-            if de:
+            if de and (allowed_data_element_uids is None or str(de) in allowed_data_element_uids):
                 data_values[str(de)] = entry.get("value")
     status = str(item.get("status") or "ACTIVE")
     return EventObservation(

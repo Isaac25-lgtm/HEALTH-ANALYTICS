@@ -476,6 +476,15 @@ def _export_map_features(db: Session, user: User, dashboard: dict) -> dict | Non
         return None
     module_result = dashboard.get("module_result") or {}
     value_rows = module_result.get("district_comparison") or module_result.get("org_unit_comparison") or []
+    if dashboard.get("screen") == "facility":
+        scope = dashboard.get("scope") or {}
+        value_rows = [
+            {
+                "org_unit_id": scope.get("id"),
+                "calculation_run_id": module_result.get("current_run_id"),
+                "values": {row.get("indicator_code"): row for row in module_result.get("indicators") or []},
+            }
+        ]
     try:
         return snapshot_map_features(db, user, map_block=map_block, value_rows=value_rows, simplify=True)
     except (ValueError, KeyError):

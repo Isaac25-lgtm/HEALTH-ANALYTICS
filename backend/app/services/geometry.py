@@ -617,13 +617,11 @@ def _geometries_in_force(
         # Only which geometry is in force is needed; the shapes are large and are not read.
         query = query.options(defer(Geometry.geojson))
     rows = session.scalars(
-        query
-        .where(
+        query.where(
             Geometry.org_unit_id.in_(unit_ids),
             or_(Geometry.valid_from.is_(None), Geometry.valid_from <= effective_date),
             or_(Geometry.valid_to.is_(None), Geometry.valid_to >= effective_date),
-        )
-        .order_by(Geometry.valid_from.desc().nulls_last(), Geometry.created_at.desc().nulls_last())
+        ).order_by(Geometry.valid_from.desc().nulls_last(), Geometry.created_at.desc().nulls_last())
     ).all()
     current: dict[UUID, Geometry] = {}
     for row in rows:
@@ -659,7 +657,7 @@ def build_map_block(
     rows_by_id: dict[str, dict] = {}
     for row in value_rows:
         unit = session.get(OrgUnit, UUID(str(row["org_unit_id"])))
-        if unit is None or not unit.active or not can_access_org_unit(session, user, unit):
+        if unit is None or not can_access_org_unit(session, user, unit):
             continue
         rows_by_id[str(unit.id)] = {**row, "_unit": unit}
     units = [row["_unit"] for row in rows_by_id.values()]
@@ -724,13 +722,21 @@ def snapshot_map_features(
     authorised: list[OrgUnit] = []
     for unit_id in wanted:
         unit = session.get(OrgUnit, unit_id)
-        if unit is not None and unit.active and can_access_org_unit(session, user, unit):
+        if unit is not None and can_access_org_unit(session, user, unit):
             authorised.append(unit)
-    geometries = (
-        _geometries_in_force(session, [unit.id for unit in authorised], effective_date, with_geojson=not simplify)
-        if authorised
-        else {}
-    )
+    pinned = map_block.get("geometry_versions") or {}
+    geometries = {}
+    for unit in authorised:
+        version = pinned.get(str(unit.id)) or {}
+        geometry_id = version.get("geometry_id")
+        if geometry_id:
+            geometry = session.get(Geometry, UUID(geometry_id))
+            if geometry is not None and geometry.org_unit_id == unit.id:
+                geometries[unit.id] = geometry
+        elif not pinned:
+            # Legacy snapshots had no geometry IDs. Keep their explicitly dated fallback;
+            # never replace a missing pinned version with today's boundary.
+            geometries.update(_geometries_in_force(session, [unit.id], effective_date, with_geojson=not simplify))
     features = []
     for unit in authorised:
         geometry = geometries.get(unit.id)
@@ -795,13 +801,11 @@ def map_feature_collection(
     if not include_features or simplify:
         geometry_query = geometry_query.options(defer(Geometry.geojson))
     geometry_rows = session.scalars(
-        geometry_query
-        .where(
+        geometry_query.where(
             Geometry.org_unit_id.in_(ids),
             or_(Geometry.valid_from.is_(None), Geometry.valid_from <= effective_date),
             or_(Geometry.valid_to.is_(None), Geometry.valid_to >= effective_date),
-        )
-        .order_by(Geometry.valid_from.desc().nulls_last(), Geometry.created_at.desc().nulls_last())
+        ).order_by(Geometry.valid_from.desc().nulls_last(), Geometry.created_at.desc().nulls_last())
     ).all()
     current_by_unit: dict[UUID, Geometry] = {}
     for row in geometry_rows:

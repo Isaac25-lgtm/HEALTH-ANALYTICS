@@ -107,8 +107,8 @@ export function dashboardHref(options: DashboardLink): string {
 
 /** A committed snapshot is only reused when it answers the geography, period and module in the URL. */
 export function snapshotAnswersRequest(
-  result: { scope: { id: string }; period: string; module: string },
-  request: { orgUnitId?: string; period: string; module?: string },
+  result: { scope: { id: string }; period: string; module: string; comparison_period?: string | null; selected_indicator?: string | null },
+  request: { orgUnitId?: string; period: string; module?: string; comparison?: string; indicator?: string },
 ): boolean {
   if (request.orgUnitId && result.scope.id !== request.orgUnitId) {
     return false;
@@ -116,6 +116,8 @@ export function snapshotAnswersRequest(
   if (result.period !== request.period) {
     return false;
   }
+  if (request.comparison && request.comparison !== result.comparison_period) return false;
+  if (request.indicator && request.indicator !== result.selected_indicator) return false;
   return !request.module || result.module === request.module;
 }
 

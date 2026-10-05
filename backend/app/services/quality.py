@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -25,6 +25,7 @@ from app.models import (
     CalculatedValue,
     CalculationRun,
     DataQualityFlag,
+    EventFieldMapping,
     FacilityPopulationEntry,
     FreshnessSnapshot,
     Indicator,
@@ -36,7 +37,7 @@ from app.models import (
     RawEventSnapshot,
     SourceMapping,
 )
-from app.services.geography import descendants, has_overlapping_units
+from app.services.geography import descendants, escape_like, has_overlapping_units
 from app.services.mpdsr import (
     chronology_valid_notification,
     chronology_valid_review,
@@ -51,6 +52,7 @@ REOPEN_FROM_RESOLVED = True
 # Session-scoped cache of flags by fingerprint, held only for the duration of one scan so a
 # scan touching thousands of values reads existing flags in bulk rather than one at a time.
 _FLAG_CACHE_KEY = "quality_flag_cache"
+_FLAG_PERIODS_KEY = "quality_flag_cache_periods"
 _FINGERPRINT_CHUNK = 1000
 EVENT_RULES = {
     "ACTIVE_MPDSR_WORKFLOW",
@@ -99,11 +101,27 @@ def _prime_flag_cache(session: Session, fingerprints: list[str]) -> None:
             cache[flag.fingerprint].append(flag)
 
 
-def _cached_flags(session: Session, fingerprint: str) -> list[DataQualityFlag] | None:
+def _cached_flags(session: Session, fingerprint: str, period: str | None = None) -> list[DataQualityFlag] | None:
     cache = session.info.get(_FLAG_CACHE_KEY)
-    if cache is None or fingerprint not in cache:
+    if cache is None:
         return None
+    if fingerprint not in cache:
+        if period is not None and period in session.info.get(_FLAG_PERIODS_KEY, set()):
+            # Every flag of this period was loaded at the start of the scan: none exists yet.
+            cache[fingerprint] = []
+        else:
+            return None
     return cache[fingerprint]
+
+
+def _prime_period_flags(session: Session, period: str) -> None:
+    """Load every flag recorded for ``period`` into the scan cache in one query."""
+    cache = session.info.get(_FLAG_CACHE_KEY)
+    if cache is None:
+        return
+    for flag in session.scalars(select(DataQualityFlag).where(DataQualityFlag.period == period)):
+        cache.setdefault(flag.fingerprint, []).append(flag)
+    session.info.setdefault(_FLAG_PERIODS_KEY, set()).add(period)
 
 
 def _enabled_rules(session: Session) -> dict[str, QualityRule]:
@@ -135,6 +153,7 @@ def _upsert_flag(
         return None
     catalog = RULES.get(rule, {})
     now = datetime.now(UTC)
+
     fingerprint = _fingerprint(
         rule=rule,
         org_unit_id=org_unit_id,
@@ -143,7 +162,7 @@ def _upsert_flag(
         indicator_id=indicator_id,
         extra=extra,
     )
-    cached = _cached_flags(session, fingerprint)
+    cached = _cached_flags(session, fingerprint, period)
     if cached is not None:
         live = (QualityStatus.OPEN.value, QualityStatus.ACKNOWLEDGED.value)
         active = [flag for flag in cached if flag.status in live]
@@ -239,10 +258,13 @@ def scan_quality(
     enabled = _enabled_rules(session)
     created: list[DataQualityFlag] = []
     session.info[_FLAG_CACHE_KEY] = {}
+    session.info[_FLAG_PERIODS_KEY] = set()
     try:
+        _prime_period_flags(session, period)
         _run_scanners(session, org_unit, period, calculation_run, enabled, created)
     finally:
         session.info.pop(_FLAG_CACHE_KEY, None)
+        session.info.pop(_FLAG_PERIODS_KEY, None)
     session.flush()
     if calculation_run is not None:
         open_count = session.scalars(
@@ -579,13 +601,26 @@ def _scan_events(session, org_unit, period, run, enabled) -> list[DataQualityFla
         return flags
     if run is not None and run.programme_id is not None and run.programme_id != mpdsr.id:
         return flags
-    units = {unit.id for unit in descendants(session, org_unit, include_self=True)}
-    events = session.scalars(
-        select(RawEventSnapshot).where(
-            RawEventSnapshot.org_unit_id.in_(units),
-            RawEventSnapshot.is_current.is_(True),
+    from app.domain.periods import parse_period
+    from app.services.mpdsr_events import retained_mpdsr_events
+
+    # Keep undated-but-associated events for quality checks, but never read expired,
+    # other-programme or other-connector records into the quality scan.
+    events = retained_mpdsr_events(session, org_unit, period)
+
+    as_of = parse_period(period).end
+    cause_mappings = session.scalars(
+        select(EventFieldMapping).where(
+            EventFieldMapping.programme_id == mpdsr.id,
+            EventFieldMapping.enabled.is_(True),
+            EventFieldMapping.internal_semantic_field == "cause",
+            or_(EventFieldMapping.valid_from.is_(None), EventFieldMapping.valid_from <= as_of),
+            or_(EventFieldMapping.valid_to.is_(None), EventFieldMapping.valid_to >= as_of),
         )
     ).all()
+    from app.domain.mpdsr_cause_taxonomy import current_cause_taxonomy
+
+    cause_scope = {(row.program_uid, row.event_type) for row in cause_mappings} if current_cause_taxonomy() else set()
     signatures: dict[tuple, list[RawEventSnapshot]] = {}
     for event in events:
         payload = event.data_values or {}
@@ -614,8 +649,10 @@ def _scan_events(session, org_unit, period, run, enabled) -> list[DataQualityFla
                     **common,
                 )
             )
-        if event.notification_date and event.death_date and not chronology_valid_notification(
-            event.death_date, event.notification_date
+        if (
+            event.notification_date
+            and event.death_date
+            and not chronology_valid_notification(event.death_date, event.notification_date)
         ):
             flags.append(
                 _upsert_flag(
@@ -661,7 +698,12 @@ def _scan_events(session, org_unit, period, run, enabled) -> list[DataQualityFla
                     **common,
                 )
             )
-        if is_completed(event) and str(payload.get("event_type", "")).endswith("review") and not payload.get("cause"):
+        if (
+            is_completed(event)
+            and str(payload.get("event_type", "")).endswith("review")
+            and (event.program_uid, payload.get("event_type")) in cause_scope
+            and not payload.get("cause")
+        ):
             flags.append(
                 _upsert_flag(
                     session,
@@ -870,8 +912,7 @@ def _scan_parent_child(session, org_unit, period, run, enabled) -> list[DataQual
         # are peers. Overlapping units (one inside another) are also a parent/child mix.
         grouped_units = [unit_by_id[row.org_unit_id] for row in group if row.org_unit_id in unit_by_id]
         levels = {
-            (cls.value if (cls := aggregation_class(unit.level_type)) else unit.level_type)
-            for unit in grouped_units
+            (cls.value if (cls := aggregation_class(unit.level_type)) else unit.level_type) for unit in grouped_units
         }
         if len(levels) > 1 or has_overlapping_units(grouped_units):
             flags.append(
@@ -896,13 +937,17 @@ def _scan_stale_and_spike(session, org_unit, period, run, enabled) -> list[DataQ
     settings = get_settings()
     stale_rule = enabled.get("STALE_REPORTING")
     spike_rule = enabled.get("ANOMALOUS_SPIKE_DROP")
-    units = descendants(session, org_unit, include_self=True)
-    ids = [unit.id for unit in units]
+    subtree = select(OrgUnit.id).where(
+        or_(
+            OrgUnit.id == org_unit.id,
+            OrgUnit.path.like(escape_like(org_unit.path.rstrip("/") + "/") + "%", escape="\\"),
+        )
+    )
     programme_id = run.programme_id if run is not None else None
 
     def current_rows(period_key: str) -> list[RawAggregateValue]:
         query = select(RawAggregateValue).where(
-            RawAggregateValue.org_unit_id.in_(ids),
+            RawAggregateValue.org_unit_id.in_(subtree),
             RawAggregateValue.period == period_key,
             RawAggregateValue.is_current.is_(True),
         )
@@ -929,11 +974,18 @@ def _scan_stale_and_spike(session, org_unit, period, run, enabled) -> list[DataQ
                 reference[key] = float(previous.value)
     ratio = float(((spike_rule.config if spike_rule else None) or {}).get("ratio") or 3.0)
     now = datetime.now(UTC)
+    from app.domain.periods import parse_period
+
+    today = now.date()
+    closed_month_end = today.replace(day=1) - timedelta(days=1)
+    latest_window = closed_month_end.replace(day=1)
+    selected_window = parse_period(period)
+    operational_window = selected_window.end >= latest_window and selected_window.start <= today
 
     stale: list[tuple[RawAggregateValue, float]] = []
     spikes: list[tuple[RawAggregateValue, float]] = []
     for row in rows:
-        if stale_rule and row.extracted_at:
+        if stale_rule and operational_window and row.extracted_at:
             age_hours = (now - _aware(row.extracted_at)).total_seconds() / 3600
             if age_hours > settings.dhis2_stale_hours:
                 stale.append((row, age_hours))

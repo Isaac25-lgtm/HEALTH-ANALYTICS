@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { sameWindowLastYear } from "@/lib/periods";
 import { DEFAULT_COMPARISON, MODULE_LABELS } from "@/lib/scope";
 import type { CurrentContext, DashboardResponse, OrgUnitSummary } from "@/lib/types";
 import { Icon } from "../ui/Icon";
+import { FacilityDataBanner } from "./FacilityDataBanner";
 import { PeriodPicker } from "./PeriodPicker";
 import { SearchBox } from "./SearchBox";
 
@@ -27,8 +28,7 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 export function roleLabel(context: CurrentContext): string {
-  const code = context.role_codes[0];
-  return code ? ROLE_LABELS[code] ?? code.replaceAll("_", " ") : "No role";
+  return context.role_codes.length ? context.role_codes.map((code) => ROLE_LABELS[code] ?? code.replaceAll("_", " ")).join(", ") : "No role";
 }
 
 /**
@@ -53,6 +53,10 @@ export function FilterStrip({
   const [comparisonPeriod, setComparisonPeriod] = useState(
     dashboard.comparison_period ?? comparison ?? DEFAULT_COMPARISON,
   );
+  useEffect(() => {
+    setPeriod(dashboard.period);
+    setComparisonPeriod(dashboard.comparison_period ?? comparison ?? DEFAULT_COMPARISON);
+  }, [dashboard.period, dashboard.comparison_period, comparison]);
   return (
     <form
       className="filter-strip"
@@ -101,7 +105,7 @@ export function FilterStrip({
       <label className="filter-field">
         <span>Geography</span>
         <Icon name="pin" size={16} className="field-icon" />
-        <select name="orgUnitId" defaultValue={dashboard.scope.id} aria-label="Geography">
+        <select key={dashboard.scope.id} name="orgUnitId" defaultValue={dashboard.scope.id} aria-label="Geography">
           {geographyOptions.map((unit) => (
             <option key={unit.id} value={unit.id}>
               {unit.name} ({unit.level_type.replaceAll("_", " ")})
@@ -112,7 +116,7 @@ export function FilterStrip({
       <label className="filter-field">
         <span>Programme</span>
         <Icon name="programme" size={16} className="field-icon" />
-        <select name="module" defaultValue={dashboard.module} aria-label="Programme module">
+        <select key={dashboard.module} name="module" defaultValue={dashboard.module} aria-label="Programme module">
           {dashboard.available_modules.map((code) => (
             <option key={code} value={code}>
               {MODULE_LABELS[code] ?? code}
@@ -123,7 +127,7 @@ export function FilterStrip({
       <label className="filter-field">
         <span>Indicator</span>
         <Icon name="indicator" size={16} className="field-icon" />
-        <select name="indicator" defaultValue={selectedCode} aria-label="Selected indicator">
+        <select key={selectedCode} name="indicator" defaultValue={selectedCode} aria-label="Selected indicator">
           {dashboard.module_result.indicators.map((row) => (
             <option key={row.indicator_code ?? row.name} value={row.indicator_code ?? ""}>
               {row.name ?? row.indicator_code}
@@ -193,6 +197,7 @@ export function StatusLine({
           {refreshState}
         </p>
       ) : null}
+      <FacilityDataBanner dashboard={dashboard} onReady={onRecalculate} />
       {population.status === "unavailable" ? (
         <p className="population-notice" role="status" title={population.reason ?? undefined}>
           Approved population is unavailable: population-derived indicators are non-assessable and missing population is

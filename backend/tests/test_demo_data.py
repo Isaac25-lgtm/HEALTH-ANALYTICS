@@ -96,8 +96,15 @@ def test_demo_seed_is_complete_deterministic_idempotent_and_source_isolated(sess
 
 def test_demo_catalogue_values_resolve_in_epi_and_mpdsr(session):
     from app.services.modules import evaluate_module
+    from tests.helpers import put_raw
 
     seed_demo_analytics(session)
+    # Isolated test fixture only: national analytics require district/city source rows.
+    # The facility demonstration fixture must no longer stand in for absent districts.
+    for unit in session.scalars(select(OrgUnit).where(OrgUnit.level_type.in_(["district", "city"]))).all():
+        for key, programme in [("MR", "EPI"), ("YF", "EPI"), ("MATERNAL_DEATHS", "MPDSR")]:
+            row = put_raw(session, unit, "FY2026/27", key, 100, programme_code=programme)
+            row.mapping_version = "demo"
     session.commit()
     uganda = session.scalar(select(OrgUnit).where(OrgUnit.code == "UG"))
     admin = session.scalar(select(User).where(User.username == "admin.user"))

@@ -86,19 +86,16 @@ const ORDER_RULE_LABELS: Record<string, string> = {
  * (percentages against 100%, or the largest value shown when above 100%); the fill is the
  * server's status colour.
  */
-function RankingBars({ rows, tone }: { rows: RankingEntry[]; tone: "best" | "worst" }) {
+function RankingBars({ rows, tone, scale }: { rows: RankingEntry[]; tone: "best" | "worst"; scale: number }) {
   if (!rows.length) {
     return <p className="panel-empty">No ranked units.</p>;
   }
-  const values = rows.map((row) => row.raw_value).filter((value): value is number => value != null);
-  const percent = rows.some((row) => row.unit === "%");
-  const scale = Math.max(percent ? 100 : 0, ...values, 0) || 1;
   // Bar length is a fraction of the widest bar, drawn with a CSS scale; no value is derived.
   return (
     <ol className={`rank-list rank-${tone}`}>
       {rows.map((row) => {
         const status = resolveStatus(row);
-        const fraction = row.raw_value == null ? 0 : Math.max(0.02, Math.max(row.raw_value, 0) / scale);
+        const fraction = row.raw_value == null ? 0 : Math.max(row.raw_value, 0) / scale;
         return (
           <li key={row.org_unit_id}>
             <span className="rank-name" title={row.org_unit_name ?? row.org_unit_code ?? undefined}>
@@ -120,6 +117,9 @@ function RankingBars({ rows, tone }: { rows: RankingEntry[]; tone: "best" | "wor
 /** Best and needs-attention units exactly as ranked by the server's approved ordering rule. */
 export function RankingPanel({ dashboard, className }: { dashboard: DashboardResponse; className?: string }) {
   const ranking = dashboard.ranking;
+  const entries = [...ranking.best, ...ranking.worst];
+  const values = entries.map((row) => row.raw_value).filter((value): value is number => value != null);
+  const scale = Math.max(entries.some((row) => row.unit === "%") ? 100 : 0, ...values, 0) || 1;
   const excluded = ranking.excluded ?? { blue: [], missing: [], non_assessable: [] };
   const notRanked = excluded.blue.length + excluded.missing.length + excluded.non_assessable.length;
   return (
@@ -141,11 +141,11 @@ export function RankingPanel({ dashboard, className }: { dashboard: DashboardRes
         <div className="rank-columns">
           <div>
             <h3 className="panel-subhead">Best performing</h3>
-            <RankingBars rows={ranking.best} tone="best" />
+            <RankingBars rows={ranking.best} tone="best" scale={scale} />
           </div>
           <div>
             <h3 className="panel-subhead">Needs attention</h3>
-            <RankingBars rows={ranking.worst} tone="worst" />
+            <RankingBars rows={ranking.worst} tone="worst" scale={scale} />
           </div>
         </div>
       ) : (

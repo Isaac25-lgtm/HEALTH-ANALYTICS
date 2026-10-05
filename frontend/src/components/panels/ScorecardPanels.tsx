@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { periodLabel } from "@/lib/periods";
 import { screenForLevel } from "@/lib/scope";
 import { formatMeasure, resolveStatus } from "@/lib/status";
@@ -150,8 +150,22 @@ export function ScorecardPanel({
     : dashboard.module_result.org_unit_comparison;
   const hasUnits = unitRows.length > 0;
   const [view, setView] = useState<"units" | "indicators">(defaultView ?? (hasUnits ? "units" : "indicators"));
+  // Facility figures can arrive after the first render (D-068); show them once they do.
+  useEffect(() => {
+    if (!defaultView && hasUnits) {
+      setView("units");
+    }
+  }, [dashboard.analysis_snapshot_id, defaultView, hasUnits]);
   const [filter, setFilter] = useState("");
-  const columns = dashboard.kpis.slice(0, 6);
+  const allColumns = dashboard.kpis.slice(0, 6);
+  // Facilities have no approved catchment populations yet, so population coverage is empty for all
+  // of them; those columns are left out of the facility table rather than shown as rows of "No data".
+  const columns = facilityView
+    ? allColumns.filter((column) =>
+        unitRows.some((row) => row.values[column.indicator_code ?? ""]?.raw_value != null),
+      )
+    : allColumns;
+  const hiddenColumns = allColumns.length - columns.length;
   const heading =
     title ?? (facilityView ? "Facility performance scorecard" : hasUnits ? "Unit scorecard" : "Indicator scorecard");
   return (
@@ -183,6 +197,12 @@ export function ScorecardPanel({
         </>
       }
     >
+      {view === "units" && hasUnits && hiddenColumns > 0 ? (
+        <p className="panel-note">
+          {hiddenColumns} population-based indicator{hiddenColumns === 1 ? "" : "s"} not shown: facilities have no
+          approved catchment population yet.
+        </p>
+      ) : null}
       {view === "units" && hasUnits ? (
         <UnitMatrix
           rows={unitRows}
