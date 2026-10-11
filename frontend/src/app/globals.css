@@ -1868,3 +1868,304 @@ td.cell {
 .facility-loading { background: var(--blue-50); color: var(--blue-700); }
 .facility-failed { background: var(--heat-red); color: var(--heat-red-ink); }
 .facility-unavailable { background: var(--neutral-bg); color: var(--neutral); }
+
+/* ------------------------------------------------------------ roomy desktop dashboards
+ * Owner instruction 2026-10-10: give every panel room and let the page scroll, as a DHIS2
+ * dashboard does, instead of fitting all panels into one 16:9 screen. Colours, type and panel
+ * anatomy are unchanged; only spacing, panel sizes and the order of rows differ. Tablet and phone
+ * widths keep the rules above. */
+@media (min-width: 1101px) {
+  :root {
+    --gap: 18px;
+    --row: 36px;
+    --radius: 12px;
+  }
+
+  .workspace-main {
+    padding: 18px 28px 48px;
+    gap: 14px;
+  }
+
+  .topbar {
+    padding: 14px 28px;
+    background: rgba(255, 255, 255, 0.82);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    backdrop-filter: blur(6px);
+  }
+
+  .filter-strip {
+    padding: 14px 18px;
+    gap: 14px;
+    box-shadow: 0 1px 3px rgba(6, 26, 49, 0.06);
+  }
+
+  .status-line,
+  .freshness {
+    font-size: 12.5px;
+  }
+
+  .kpi-card {
+    padding: 16px 18px 14px;
+    min-height: 132px;
+    gap: 5px;
+    box-shadow: 0 1px 3px rgba(6, 26, 49, 0.07);
+    transition: box-shadow 140ms ease, transform 140ms ease;
+  }
+
+  .kpi-card:hover {
+    box-shadow: 0 6px 18px rgba(6, 26, 49, 0.1);
+    transform: translateY(-1px);
+  }
+
+  .kpi-label {
+    font-size: 13.5px;
+  }
+
+  .kpi-value {
+    font-size: 32px;
+  }
+
+  .kpi-delta,
+  .kpi-unavailable {
+    font-size: 12.5px;
+  }
+
+  .panel {
+    box-shadow: 0 1px 3px rgba(6, 26, 49, 0.07);
+  }
+
+  .panel-head {
+    padding: 18px 22px 10px;
+  }
+
+  .panel-head h2 {
+    font-size: 17px;
+  }
+
+  .panel-subtitle {
+    font-size: 13px;
+  }
+
+  .panel-body {
+    padding: 6px 22px 20px;
+  }
+
+  .panel-foot {
+    padding: 12px 22px;
+    font-size: 13px;
+  }
+
+  .data-table {
+    font-size: 13.5px;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 8px 14px;
+  }
+
+  .data-table thead th {
+    font-size: 12.5px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .insight-list {
+    gap: 14px;
+  }
+
+  .insight-title {
+    font-size: 14px;
+  }
+
+  .insight-detail {
+    font-size: 13px;
+  }
+
+  .rank-columns {
+    gap: 22px;
+  }
+
+  .rank-list {
+    gap: 2px;
+  }
+
+  .rank-list li {
+    padding: 8px 0;
+    font-size: 13.5px;
+    gap: 10px;
+  }
+
+  .rank-bar {
+    height: 14px;
+  }
+
+  .trend-chart {
+    max-height: 400px;
+  }
+
+  .map-canvas {
+    min-height: 420px;
+  }
+
+  /* A long table scrolls inside its panel under a fixed header instead of stretching the page. */
+  .layout > .panel {
+    max-height: 760px;
+  }
+
+  .layout-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto 600px minmax(300px, auto) 540px auto auto;
+    grid-template-areas:
+      "kpi kpi kpi"
+      "map map insights"
+      "scorecard scorecard scorecard"
+      "trend trend ranking"
+      "ask ask ask"
+      "downloads downloads downloads";
+  }
+
+  .layout-facilities {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto minmax(320px, auto) 540px minmax(300px, auto) auto;
+    grid-template-areas:
+      "kpi kpi kpi"
+      "primary primary primary"
+      "trend trend ranking"
+      "insights ask ask"
+      "downloads downloads downloads";
+  }
+
+  .layout-facility {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto auto minmax(300px, auto) 540px minmax(280px, auto) auto;
+    grid-template-areas:
+      "identity identity identity"
+      "kpi kpi kpi"
+      "scorecard scorecard scorecard"
+      "trend trend quality"
+      "catchment ask ask"
+      "downloads downloads downloads";
+  }
+
+  .layout-programme {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto minmax(300px, auto) minmax(420px, auto) 540px auto;
+    grid-template-areas:
+      "kpi kpi kpi"
+      "a a a"
+      "b b c"
+      "d d e"
+      "downloads downloads downloads";
+  }
+
+  .layout-mpdsr {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto minmax(300px, auto) 540px minmax(320px, auto) auto;
+    grid-template-areas:
+      "kpi kpi kpi"
+      "a a a"
+      "c c b"
+      "d d e"
+      "downloads downloads downloads";
+  }
+
+  .layout-maps {
+    grid-template-rows: 700px minmax(360px, auto);
+  }
+
+  .layout-trends {
+    grid-template-rows: 500px minmax(420px, auto);
+  }
+
+  .layout-quality {
+    grid-template-rows: auto minmax(460px, auto) minmax(380px, auto);
+  }
+
+  .layout-ai {
+    grid-template-rows: 640px;
+  }
+
+  /* One ranked list above the other: unit names are read in full instead of being cut short. */
+  .rank-columns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .rank-list li {
+    grid-template-columns: minmax(0, 1.4fr) minmax(60px, 1fr) auto;
+  }
+
+  .trend-figure {
+    gap: 8px;
+  }
+}
+
+.trend-area {
+  fill: var(--blue-500);
+  opacity: 0.1;
+}
+
+.state-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+  color: var(--navy-800);
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 3px solid var(--blue-100);
+  border-top-color: var(--blue-600);
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.state-hint {
+  display: block;
+  margin-top: 4px;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-mid);
+}
+
+/* Unit names on maps: plain text with a pale halo so it reads over any fill. */
+.map-label {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--navy-900);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.95),
+    0 0 3px rgba(255, 255, 255, 0.95),
+    0 0 6px rgba(255, 255, 255, 0.8);
+  letter-spacing: 0.01em;
+}
+
+/* A crowded map (every district of Uganda) carries a few faint names until the viewer zooms in. */
+.map-canvas[data-label-density="crowded"] .map-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+.map-canvas[data-label-density="crowded"][data-label-detail="few"] .map-label-minor {
+  display: none;
+}
+
+.map-canvas[data-label-density="crowded"][data-label-detail="all"] .map-label {
+  opacity: 0.9;
+}

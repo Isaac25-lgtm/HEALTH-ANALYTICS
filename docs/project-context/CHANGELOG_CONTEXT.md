@@ -1,5 +1,27 @@
 # Context Changelog
 
+## 2026-10-11 - speed, MPDSR upkeep, sign-in and roomy layout (owner instruction 2026-10-10)
+
+The owner asked for the exact causes of slow pages and of MPDSR not loading, for fixes without
+added infrastructure, for testing by signing in, and for dashboards that are not squeezed. Full
+account, measurements and limits: [CLAUDE_HANDOFF_2026-10-11.md](CLAUDE_HANDOFF_2026-10-11.md).
+
+- Slowness was in our code: a deferred column read row by row (16,258 queries a page), yearly
+  totals rebuilt on every page, every stored run re-hashed from its rows, and the quality scan on
+  every build. A stored run is now returned while provably unchanged (verified-run memo, then an
+  exact PostgreSQL fingerprint of its own rows); roll-ups are re-verified only for changed units.
+- MPDSR: bulk event persistence that re-verifies unchanged events in place, four Tracker requests
+  at a time without the total count, statement-level revision triggers (the per-row counter was
+  the two-hour cost), event-based runs reusable within exact data and clock limits (D-072), a
+  three-year Tracker window, and a self-scheduling refresh for deployments without a worker (D-073).
+- National and regional runs read district/city rows only (D-074, for owner confirmation), so an
+  on-demand facility load no longer changes or invalidates them.
+- Dashboard snapshots now carry their creation time (the table lacked the default; migration 0019).
+- Sign-in keeps early typing and never submits empty fields. Dashboards are roomy and scroll
+  (D-070); maps carry unit names and finer boundaries.
+- Migrations 0016 to 0020 were applied to `hpip_live` after verified backups. Decisions D-070 to
+  D-075 are recorded. Redis, the worker, Celery Beat and the Playwright gate were not exercised.
+
 ## 2026-10-05 - follow-up code fixes; no live activation
 
 The owner instructed "fix them" after review of Claude's October verification. Complete aggregate

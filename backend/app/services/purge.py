@@ -42,6 +42,7 @@ from app.models import (
     AuditLog,
     CalculatedValue,
     CalculationRun,
+    CalculationRunMemo,
     DataQualityFlag,
     ExportArtifact,
     ExportJob,
@@ -532,6 +533,7 @@ def _purge_runs(session: Session, run_ids: list, result: PurgeResult) -> None:
         return
     for model, column in (
         (CalculatedValue, CalculatedValue.calculation_run_id),
+        (CalculationRunMemo, CalculationRunMemo.calculation_run_id),
         (DataQualityFlag, DataQualityFlag.calculation_run_id),
         (AiRequest, AiRequest.calculation_run_id),
     ):

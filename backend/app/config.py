@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     sync_execution: str = "queue"
     dashboard_precompute_enabled: bool = False
     dhis2_refresh_schedule_enabled: bool = False
+    # Eager (no worker) deployments: refresh when the last Tracker success is this old. It must stay
+    # below the MPDSR event retention so the events are renewed before they expire.
+    dhis2_refresh_interval_hours: int = Field(default=20, ge=1, le=168)
 
     seed_dev_data: bool = False
     seed_password: str = "dev-only-change-me"
@@ -94,6 +97,9 @@ class Settings(BaseSettings):
     dhis2_retry_max_seconds: float = 4.0
     dhis2_page_size: int = 200
     dhis2_max_pages: int = 50
+    # Tracker events are requested per district/city peer. A few requests at a time keeps a
+    # national retrieval to minutes without loading the source server.
+    dhis2_tracker_parallel_requests: int = Field(default=4, ge=1, le=8)
     dhis2_max_response_bytes: int = 5_000_000
     dhis2_ou_mode: str = "DESCENDANTS"
     dhis2_stale_hours: int = 72

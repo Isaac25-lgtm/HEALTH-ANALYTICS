@@ -4,8 +4,9 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.domain.enums import ActionPermission, AggregationClass, OrgUnitLevel, ProgrammeCode
@@ -33,7 +34,10 @@ from app.services.authorization import (
 )
 from app.services.calculation import (
     clear_calculation_batch,
+    flush_run_memos,
+    note_quality_scanned,
     prepare_calculation_batch,
+    quality_scan_is_recent,
     run_calculation,
 )
 from app.services.geography import descendants, top_units_of_class
@@ -55,12 +59,15 @@ FORMULA_UNAVAILABLE_TEXT = (
 
 
 def _selection_map(run: CalculationRun) -> dict[str, dict]:
-    config = run.config_snapshot or {}
-    return {
-        item["indicator_code"]: item
-        for item in config.get("formula_version_selection") or []
-        if item.get("indicator_code")
-    }
+    session = object_session(run)
+    if session is not None and "config_snapshot" in sa_inspect(run).unloaded:
+        # A verified run is loaded without its evidence; read the one list needed, not all of it.
+        selection = session.scalar(
+            select(CalculationRun.config_snapshot["formula_version_selection"]).where(CalculationRun.id == run.id)
+        )
+    else:
+        selection = (run.config_snapshot or {}).get("formula_version_selection")
+    return {item["indicator_code"]: item for item in selection or [] if item.get("indicator_code")}
 
 
 def _indicator_payload(
@@ -204,23 +211,27 @@ def _change(current: CalculatedValue | None, previous: CalculatedValue | None) -
 
 def _freshness(session: Session, org_unit: OrgUnit, period: str, programme_id: UUID) -> dict:
     units = [unit.id for unit in descendants(session, org_unit, include_self=True, period=period)]
-    rows = session.scalars(
-        select(RawAggregateValue).where(
+    # Counts and latest timestamps only: the rows themselves are not needed here.
+    row_count, latest_extracted, latest_source = session.execute(
+        select(
+            func.count(RawAggregateValue.id),
+            func.max(RawAggregateValue.extracted_at),
+            func.max(RawAggregateValue.source_freshness_at),
+        ).where(
             RawAggregateValue.org_unit_id.in_(units),
             RawAggregateValue.period == period,
             RawAggregateValue.programme_id == programme_id,
             RawAggregateValue.is_current.is_(True),
         )
-    ).all()
-    extracted = [row.extracted_at for row in rows if row.extracted_at]
-    source = [row.source_freshness_at for row in rows if row.source_freshness_at]
+    ).one()
+    extracted = [latest_extracted] if latest_extracted else []
     event_count = 0
     programme = session.get(Programme, programme_id)
     if programme is not None and programme.code == ProgrammeCode.MPDSR.value:
         from app.models import RawEventSnapshot
 
-        events = session.scalars(
-            select(RawEventSnapshot).where(
+        event_count, latest_event = session.execute(
+            select(func.count(RawEventSnapshot.id), func.max(RawEventSnapshot.extracted_at)).where(
                 RawEventSnapshot.org_unit_id.in_(units),
                 RawEventSnapshot.programme_id == programme_id,
                 RawEventSnapshot.is_current.is_(True),
@@ -228,16 +239,16 @@ def _freshness(session: Session, org_unit: OrgUnit, period: str, programme_id: U
                 RawEventSnapshot.extracted_at
                 > datetime.now(UTC) - timedelta(hours=get_settings().mpdsr_event_retention_hours),
             )
-        ).all()
-        event_count = len(events)
-        extracted.extend(event.extracted_at for event in events)
+        ).one()
+        if latest_event:
+            extracted.append(latest_event)
     return {
-        "raw_row_count": len(rows) + event_count,
-        "aggregate_row_count": len(rows),
+        "raw_row_count": row_count + event_count,
+        "aggregate_row_count": row_count,
         "event_row_count": event_count,
         "latest_extracted_at": max(extracted).isoformat() if extracted else None,
-        "latest_source_freshness_at": max(source).isoformat() if source else None,
-        "availability": "available" if rows or event_count else "no_source_rows",
+        "latest_source_freshness_at": latest_source.isoformat() if latest_source else None,
+        "availability": "available" if row_count or event_count else "no_source_rows",
     }
 
 
@@ -459,7 +470,10 @@ def _evaluate_module_body(
     # A reused run has identical inputs to one already scanned, so its flags are already recorded.
     # Quality/freshness is clock-sensitive even when the numerical inputs did not change.
     # A prepared-product hit bypasses this entire body; a rebuild must refresh its quality.
-    scan_quality(session, org_unit=org_unit, period=period, calculation_run=current_run)
+    # The same run scanned at the same revision within the last hour is not scanned again.
+    if not quality_scan_is_recent(session, current_run):
+        scan_quality(session, org_unit=org_unit, period=period, calculation_run=current_run)
+        note_quality_scanned(session, current_run)
     compare_run = run_calculation(
         session,
         org_unit=org_unit,
@@ -579,4 +593,5 @@ def _evaluate_module_body(
         result["continuum"] = _continuum(current_values)
     if module == "mpdsr":
         result["mpdsr"] = _mpdsr_extras(session, org_unit, period, user)
+    flush_run_memos(session)
     return result

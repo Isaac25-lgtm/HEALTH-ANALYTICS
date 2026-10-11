@@ -1,11 +1,12 @@
 """Dashboard calculation runs are reused only when every input is identical, and national and
 regional screens evaluate the district/city cohort for the map and ranking."""
 
-from datetime import date
+from datetime import date, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.domain.enums import AggregationClass
 from app.models import CalculationRun, OrgUnit, User
 from app.services.calculation import RUN_REUSE_PREFIX, run_calculation
@@ -78,8 +79,11 @@ def test_runs_outside_a_dashboard_batch_are_never_reused(session):
     assert first.idempotency_key is None
 
 
-def test_event_calculation_reuse_cannot_outlive_an_exact_coverage_cutoff(session):
+def test_event_calculation_is_reused_only_until_an_exact_clock_cutoff(session, monkeypatch):
+    """An event-based run is reused while its events, synchronisations and the clock leave it
+    unchanged, and never beyond the moment a retained event reaches the retention limit."""
     uganda = _unit(session, "UG")
+    pader = _unit(session, "PADER")
 
     def evaluate():
         return evaluate_module(
@@ -91,17 +95,31 @@ def test_event_calculation_reuse_cannot_outlive_an_exact_coverage_cutoff(session
             include_children=False,
         )
 
+    put_event(session, pader, death_date=date(2024, 8, 1), data_values={"event_type": "maternal_review"})
     first = evaluate()
     second = evaluate()
-    assert first["current_run_id"] != second["current_run_id"]
-    put_event(
-        session,
-        _unit(session, "PADER"),
-        death_date=date(2024, 8, 1),
-        data_values={"event_type": "maternal_review"},
-    )
+    assert first["current_run_id"] == second["current_run_id"]
+
+    # A new event is a changed input: the earlier run must not be returned.
+    put_event(session, pader, death_date=date(2024, 8, 2), data_values={"event_type": "maternal_review"})
     third = evaluate()
     assert third["current_run_id"] != first["current_run_id"]
+    assert evaluate()["current_run_id"] == third["current_run_id"]
+
+    # Nothing in the database changes; only the clock passes the retention limit.
+    import app.services.calculation as calculation
+
+    real = calculation.datetime
+    retention = timedelta(hours=get_settings().mpdsr_event_retention_hours, minutes=1)
+
+    class Later(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real.now(tz) + retention
+
+    monkeypatch.setattr(calculation, "datetime", Later)
+    fourth = evaluate()
+    assert fourth["current_run_id"] != third["current_run_id"]
 
 
 def test_national_evaluation_includes_the_district_cohort(session):

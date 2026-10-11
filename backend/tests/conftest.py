@@ -11,6 +11,10 @@ os.environ.setdefault("SEED_DEV_DATA", "false")
 os.environ.setdefault("DHIS2_ENABLED", "false")
 os.environ.setdefault("SYNC_ENABLED", "false")
 os.environ.setdefault("DHIS2_LOGIN_ENABLED", "false")
+# The owner's local .env turns on background preparation and the self-scheduled refresh; tests
+# must never start either from the surrounding environment.
+os.environ.setdefault("DASHBOARD_PRECOMPUTE_ENABLED", "false")
+os.environ.setdefault("DHIS2_REFRESH_SCHEDULE_ENABLED", "false")
 # Owner approvals and history windows recorded in a local operator .env are live-instance facts;
 # tests assert the unapproved defaults and set approvals explicitly where they need them.
 os.environ.setdefault("BOUNDARY_DISTRICT_HIERARCHY_APPROVAL_REFERENCE", "")

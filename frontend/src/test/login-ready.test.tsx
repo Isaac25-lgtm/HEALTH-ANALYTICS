@@ -48,6 +48,19 @@ describe("sign-in opens only a ready, authorised dashboard", () => {
     expect(readReadyDashboard(dashboard.analysis_snapshot_id)?.dashboard).toBe(dashboard);
   });
 
+  it("keeps typed credentials and never submits empty fields to the server", async () => {
+    render(<LoginPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await screen.findByText("Enter your DHIS2 username and password.");
+    expect(mocks.login).not.toHaveBeenCalled();
+    // The fields are uncontrolled: what is in the form is what is sent, however early it was typed.
+    (screen.getByLabelText("Username") as HTMLInputElement).value = "typed-before-ready";
+    (screen.getByLabelText("Password") as HTMLInputElement).value = "typed-password";
+    mocks.query.mockResolvedValue(dashboard);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(mocks.login).toHaveBeenCalledWith("typed-before-ready", "typed-password"));
+  });
+
   it("uses a ready product instead of recalculating on sign-in", async () => {
     mocks.prepared.mockResolvedValue(dashboard);
     submit();

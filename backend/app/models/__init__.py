@@ -756,6 +756,46 @@ class AnalyticsRevision(Base):
     revision: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
 
+class RollupState(Base):
+    """What a period's roll-ups were last verified against.
+
+    ``revision`` is the analytics revision of a complete verification. ``units`` holds a database
+    fingerprint of each unit's rows for the period and its months, and ``jobs`` one of each
+    covering synchronisation, so that after a change only the units whose rows (or coverage)
+    changed are read again. A unit missing from ``units`` has not been verified.
+    """
+
+    __tablename__ = "rollup_states"
+    period: Mapped[str] = mapped_column(String(40), primary_key=True)
+    revision: Mapped[int | None] = mapped_column(BigInteger)
+    summable_digest: Mapped[str | None] = mapped_column(String(64))
+    units: Mapped[dict | None] = mapped_column(JSON)
+    jobs: Mapped[dict | None] = mapped_column(JSON)
+
+
+class CalculationRunMemo(Base):
+    """A stored run verified against the analytics revision it was last checked at.
+
+    While the global revision is unchanged no calculation input has changed, so the run is
+    returned without re-reading and re-hashing its source rows. Derived data only.
+    """
+
+    __tablename__ = "calculation_run_memos"
+    request_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    calculation_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("calculation_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quality_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Event-based runs also depend on the clock (event retention, synchronisation freshness).
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # A change elsewhere (another district's facility rows) moves the global revision without
+    # touching this run. It is then re-verified from the configuration revision and an exact
+    # fingerprint of the source rows it reads, instead of being recalculated or re-read row by row.
+    config_revision: Mapped[int | None] = mapped_column(BigInteger)
+    inputs_digest: Mapped[str | None] = mapped_column(String(64))
+
+
 class DataQualityFlag(Base, TimestampMixin):
     __tablename__ = "data_quality_flags"
     __table_args__ = (

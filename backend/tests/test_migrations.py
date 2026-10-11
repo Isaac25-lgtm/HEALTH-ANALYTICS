@@ -33,7 +33,7 @@ def test_sensitive_event_column_comment_present():
     assert "names" in (table.c.data_values.comment or "").lower()
 
 
-HEAD_REVISION = "0015_sync_coverage_manifest"
+HEAD_REVISION = "0020_config_revision"
 
 
 def test_alembic_head_is_corrective_revision():
@@ -67,6 +67,11 @@ def test_historical_revisions_do_not_import_orm_models():
         root / "versions" / "0013_org_mapping_guard.py",
         root / "versions" / "0014_calculation_run_reuse.py",
         root / "versions" / "0015_sync_coverage_manifest.py",
+        root / "versions" / "0016_calculation_run_memos.py",
+        root / "versions" / "0017_statement_revision_triggers.py",
+        root / "versions" / "0018_run_memo_validity.py",
+        root / "versions" / "0019_snapshot_timestamps.py",
+        root / "versions" / "0020_config_revision.py",
         root / "historical" / "phase1.py",
         root / "historical" / "phase2.py",
         root / "historical" / "phase12_corrections.py",

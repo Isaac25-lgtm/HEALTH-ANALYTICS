@@ -75,9 +75,15 @@ def test_disabled_native_percentage_is_never_summed(session):
 
 
 def test_no_district_rows_cannot_fall_back_to_facilities(session):
+    """A region reads its district/city rows only (D-074): a facility row is never a substitute,
+    and it does not even change what the region reports, so loading facilities on demand cannot
+    alter a regional or national figure."""
+    acholi = _unit(session, "ACHOLI")
+    before = resolve_source_key(session, acholi, "FY2024/25", "ANC1")
     put_raw(session, _unit(session, "PADER_HC_III"), "FY2024/25", "ANC1", 100)
-    resolved = resolve_source_key(session, _unit(session, "ACHOLI"), "FY2024/25", "ANC1")
-    assert resolved.value is None and resolved.status == "incomplete"
+    resolved = resolve_source_key(session, acholi, "FY2024/25", "ANC1")
+    assert resolved.value is None and resolved.status == "missing"
+    assert (resolved.value, resolved.status) == (before.value, before.status)
 
 
 def test_routine_calculation_batch_never_selects_event_rows(session, monkeypatch):

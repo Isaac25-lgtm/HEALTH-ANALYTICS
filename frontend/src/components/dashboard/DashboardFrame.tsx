@@ -147,6 +147,21 @@ export function FilterStrip({
  * Data age, snapshot lineage and the population notice on one line. A missing population is
  * stated plainly; population-derived indicators then show as unavailable, never as zero.
  */
+/** "5 Oct 2026, 10:21" in the viewer's time zone; the exact timestamp stays in the tooltip. */
+function readableMoment(value: string): string {
+  const moment = new Date(value);
+  if (Number.isNaN(moment.getTime())) {
+    return value;
+  }
+  return moment.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function StatusLine({
   dashboard,
   kicker,
@@ -172,13 +187,21 @@ export function StatusLine({
           {" "}
           · data: {freshness.availability.replaceAll("_", " ")}
           {freshness.latest_source_freshness_at ? (
-            <span data-volatile> · source {freshness.latest_source_freshness_at}</span>
+            <span data-volatile title={freshness.latest_source_freshness_at}>
+              {" "}
+              · source updated {readableMoment(freshness.latest_source_freshness_at)}
+            </span>
           ) : null}
-          {freshness.latest_extracted_at ? <span data-volatile> · extracted {freshness.latest_extracted_at}</span> : null}
+          {freshness.latest_extracted_at ? (
+            <span data-volatile title={freshness.latest_extracted_at}>
+              {" "}
+              · extracted from DHIS2 {readableMoment(freshness.latest_extracted_at)}
+            </span>
+          ) : null}
         </span>
-        <span title={`Run ${dashboard.module_result.current_run_id}`}>
+        <span title={`Snapshot ${dashboard.analysis_snapshot_id} · run ${dashboard.module_result.current_run_id}`}>
           {" "}
-          · snapshot <span data-volatile>{dashboard.analysis_snapshot_id}</span>
+          · snapshot <span data-volatile>{dashboard.analysis_snapshot_id.slice(0, 8)}</span>
         </span>{" "}
         <button type="button" className="link-button" onClick={onRecalculate}>
           Recalculate snapshot

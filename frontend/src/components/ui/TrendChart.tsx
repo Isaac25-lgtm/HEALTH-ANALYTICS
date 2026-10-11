@@ -2,10 +2,10 @@ import { periodLabel, shortPeriodLabel } from "@/lib/periods";
 import type { DashboardResponse } from "@/lib/types";
 
 const WIDTH = 560;
-const HEIGHT = 170;
+const HEIGHT = 250;
 const LEFT = 38;
 const RIGHT = 10;
-const TOP = 10;
+const TOP = 14;
 const BOTTOM = 26;
 
 function niceStep(rough: number): number {
@@ -57,14 +57,30 @@ export function TrendChart({
   }
   let path = "";
   let drawing = false;
+  // Each unbroken run of values is shaded down to the axis; a gap stays empty.
+  const runs: { x: number; y: number }[][] = [];
   for (const item of series) {
     if (item.value == null) {
       drawing = false;
       continue;
     }
-    path += `${drawing ? "L" : "M"}${item.x.toFixed(1)} ${yFor(item.value).toFixed(1)} `;
+    const y = yFor(item.value);
+    path += `${drawing ? "L" : "M"}${item.x.toFixed(1)} ${y.toFixed(1)} `;
+    if (!drawing) {
+      runs.push([]);
+    }
+    runs[runs.length - 1].push({ x: item.x, y });
     drawing = true;
   }
+  const baseline = yFor(Math.max(min, 0));
+  const areas = runs
+    .filter((run) => run.length > 1)
+    .map(
+      (run) =>
+        `M${run[0].x.toFixed(1)} ${baseline.toFixed(1)} ` +
+        run.map((point) => `L${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ") +
+        ` L${run[run.length - 1].x.toFixed(1)} ${baseline.toFixed(1)} Z`,
+    );
   const labelEvery = Math.ceil(series.length / 8);
   return (
     <figure className="trend-figure">
@@ -83,6 +99,9 @@ export function TrendChart({
               {percent ? "%" : ""}
             </text>
           </g>
+        ))}
+        {areas.map((area) => (
+          <path key={area} d={area} className="trend-area" aria-hidden="true" />
         ))}
         <path d={path.trim()} className="trend-line" fill="none" />
         {series.map((item) =>

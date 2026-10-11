@@ -32,12 +32,16 @@ def _run(monkeypatch, session, argv, password: str | None = "a-strong-operator-c
 
 def test_login_form_ships_blank():
     page = (FRONTEND / "app" / "login" / "page.tsx").read_text(encoding="utf-8")
-    assert 'useState("")' in page
+    # Both fields are read from the form when it is submitted and ship with an empty default,
+    # so text typed before the page finishes loading is kept and nothing is ever prefilled.
+    assert page.count('defaultValue=""') == 2
+    assert "defaultValue={" not in page
     assert "national.analyst" not in page
     assert "dev-only" not in page
     # No password is ever prefilled in any environment.
     assert 'type="password"' in page
-    assert "value={password}" in page
+    assert 'name="password"' in page
+    assert "value={" not in page
 
 
 def test_no_synthetic_username_is_prefilled_anywhere_in_the_frontend():

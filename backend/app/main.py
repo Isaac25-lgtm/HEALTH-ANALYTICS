@@ -30,7 +30,55 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if errors:
         # Names of settings only; values are never echoed.
         raise RuntimeError("Refusing to start with blocking configuration errors: " + " ".join(errors))
+    _start_background_preparation()
     yield
+
+
+def _start_background_preparation() -> None:
+    """Have maps and common views ready before the first person asks for them.
+
+    Boundary shapes are simplified in this process (they are served from its memory). Dashboards
+    are prepared in a separate process so calculation never competes with requests; in queue mode
+    the worker does that instead. Nothing here can stop the API from starting.
+    """
+    current = get_settings()
+    if current.app_env == "test":
+        return
+    if current.sync_execution == "eager" and current.dhis2_refresh_schedule_enabled:
+        # No worker or Beat in eager mode: this process decides when the refresh script runs.
+        from app.services.local_scheduler import scheduler
+
+        scheduler.start()
+    if not current.dashboard_precompute_enabled:
+        return
+    import subprocess
+    import sys
+    import threading
+    from pathlib import Path
+
+    def warm_boundaries() -> None:
+        try:
+            from app.services.geometry import warm_simplified_boundaries
+
+            warm_simplified_boundaries()
+        except Exception:  # noqa: BLE001 - a cold map is slower, never wrong
+            pass
+
+    threading.Thread(target=warm_boundaries, name="warm-boundaries", daemon=True).start()
+    if current.sync_execution != "eager":
+        return
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(  # noqa: S603 - fixed arguments, this interpreter
+            [sys.executable, "-m", "scripts.prepare_dashboards", "--extended"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except OSError:
+        pass
 
 
 app = FastAPI(

@@ -81,6 +81,10 @@ vi.mock("maplibre-gl", () => {
       return { style: {} as Record<string, string> };
     }
 
+    getZoom() {
+      return 6;
+    }
+
     emitIdle() {
       const queued = [...this.idleHandlers];
       this.idleHandlers.clear();
@@ -115,6 +119,15 @@ vi.mock("maplibre-gl", () => {
         remove() {}
       },
       LngLatBounds: FakeBounds,
+      Marker: class {
+        setLngLat() {
+          return this;
+        }
+        addTo() {
+          return this;
+        }
+        remove() {}
+      },
     },
   };
 });

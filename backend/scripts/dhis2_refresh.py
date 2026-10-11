@@ -35,9 +35,11 @@ from app.models import EventFieldMapping, OrgUnit, OrgUnitMapping, Programme, So
 from app.services.mapping_coverage import evaluate_coverage  # noqa: E402
 from app.services.sync import (  # noqa: E402
     SyncDispatchError,
+    claim_sync_job,
     dispatch_sync_job,
     enqueue_sync_job,
     execute_sync_job,
+    record_sync_internal_failure,
     should_run_eager,
 )
 
@@ -173,8 +175,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 jobs.append(created)
                 new_jobs.append(created)
-        # MPDSR's short-lived cache also needs supervised recurring refresh. Request only
-        # the current and most recent closed FY, through today, using approved mappings.
+        # MPDSR's short-lived cache also needs supervised recurring refresh. Request the current
+        # financial year and the two before it, through today, using approved mappings: the landing
+        # period is the latest closed year and it is compared with the year before.
         mpdsr_sets = session.execute(
             select(Programme, EventFieldMapping.mapping_version)
             .join(EventFieldMapping, EventFieldMapping.programme_id == Programme.id)
@@ -187,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
             .distinct()
         ).all()
         current_fy = today.year if today.month >= 7 else today.year - 1
-        first = f"FY{current_fy - 1}/{str(current_fy)[2:]}"
+        first = f"FY{current_fy - 2}/{str(current_fy - 1)[2:]}"
         current = uganda_fy_key(today)
         for programme, mapping_version in mpdsr_sets:
             key = f"scheduled:tracker:{_bucket(now)}:{programme.code}:{mapping_version}"
@@ -217,8 +220,17 @@ def main(argv: list[str] | None = None) -> int:
             if job.status != JobStatus.QUEUED.value or job.idempotency_key is None:
                 continue
             if should_run_eager():
-                execute_sync_job(session, job.id)
-                session.commit()
+                # Claiming commits "running" first, so a long job is visible while it works.
+                job_id = job.id
+                if not claim_sync_job(session, job_id):
+                    continue
+                try:
+                    execute_sync_job(session, job_id, already_claimed=True)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    record_sync_internal_failure(session, job_id)
+                    failed += 1
             else:
                 try:
                     dispatch_sync_job(job.id)
@@ -231,8 +243,17 @@ def main(argv: list[str] | None = None) -> int:
                     session.commit()
                     failed += 1
 
+        prepared = None
+        if should_run_eager() and settings.dashboard_precompute_enabled:
+            # No worker in eager mode: prepare the common views here so the first person to open
+            # them after a refresh does not wait for the calculation.
+            from app.services.dashboard_precompute import prepare_default_dashboards
+
+            session.commit()
+            prepared = prepare_default_dashboards(extended=True, wait=True)
         plan.update(
             {
+                "dashboards_prepared": prepared,
                 "mode": "executed" if failed == 0 else "failed",
                 "coverage_incomplete_sets": uncovered,
                 "mapping_sets": [

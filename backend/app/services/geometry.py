@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session, defer
 from app.domain.enums import ORG_UNIT_LEVEL_RANK, ActionPermission, OrgUnitLevel, aggregation_class
 from app.models import Geometry, OrgUnit, User
 from app.services.audit import write_audit
-from app.services.authorization import AuthorizationError, can_access_org_unit, require_action
+from app.services.authorization import (
+    AuthorizationError,
+    can_access_org_unit,
+    geography_scope_units,
+    is_descendant_or_self,
+    require_action,
+)
 from app.services.geography import ancestors, descendants
 
 
@@ -524,8 +530,10 @@ def apply_geometry_import(
     return {"inserted": inserted, "unchanged": unchanged, "superseded": superseded}
 
 
-SIMPLIFY_VERSION = "hpip-rdp-1"
-SIMPLIFY_EPSILON_DEGREES = 0.01
+# 0.003 degrees is about 330 m: boundaries read as boundaries on a national map (190 KB compressed for
+# every district) instead of the angular 0.01-degree shapes used at first.
+SIMPLIFY_VERSION = "hpip-rdp-2"
+SIMPLIFY_EPSILON_DEGREES = 0.003
 
 
 def _point_distance(start: list[float], end: list[float], point: list[float]) -> float:
@@ -607,6 +615,27 @@ def _simplified(row: Geometry) -> dict | None:
             _SIMPLIFIED_CACHE.clear()
         _SIMPLIFIED_CACHE[key] = simplify_geojson(row.geojson)
     return _SIMPLIFIED_CACHE[key]
+
+
+def warm_simplified_boundaries() -> int:
+    """Simplify every boundary in force today once, so the first map after a start is immediate."""
+    from app.db.session import get_session_factory
+
+    today = date.today()
+    count = 0
+    with get_session_factory()() as session:
+        ids = session.scalars(
+            select(Geometry.id).where(
+                or_(Geometry.valid_from.is_(None), Geometry.valid_from <= today),
+                or_(Geometry.valid_to.is_(None), Geometry.valid_to >= today),
+            )
+        ).all()
+        for start in range(0, len(ids), 20):
+            for row in session.scalars(select(Geometry).where(Geometry.id.in_(ids[start : start + 20]))):
+                _simplified(row)
+                count += 1
+            session.expunge_all()
+    return count
 
 
 def _geometries_in_force(
@@ -719,18 +748,38 @@ def snapshot_map_features(
     effective_date = date.fromisoformat(map_block["geometry_effective_date"])
     wanted = [UUID(item) for item in map_block.get("map_feature_org_unit_ids") or []]
     rows_by_id = {str(row["org_unit_id"]): row for row in value_rows}
-    authorised: list[OrgUnit] = []
-    for unit_id in wanted:
-        unit = session.get(OrgUnit, unit_id)
-        if unit is not None and can_access_org_unit(session, user, unit):
-            authorised.append(unit)
+    # One query for the units and one for the pinned boundaries. The shapes themselves are large
+    # and already simplified in memory after the first map, so they are not read again.
+    units_by_id: dict[UUID, OrgUnit] = {}
+    for start in range(0, len(wanted), 5000):
+        for unit in session.scalars(select(OrgUnit).where(OrgUnit.id.in_(wanted[start : start + 5000]))):
+            units_by_id[unit.id] = unit
+    scopes = None if user.is_system_admin else geography_scope_units(session, user)
+    authorised: list[OrgUnit] = [
+        units_by_id[unit_id]
+        for unit_id in wanted
+        if unit_id in units_by_id
+        and (scopes is None or any(is_descendant_or_self(units_by_id[unit_id], scope) for scope in scopes))
+    ]
     pinned = map_block.get("geometry_versions") or {}
+    pinned_ids = [
+        UUID(geometry_id)
+        for unit in authorised
+        if (geometry_id := (pinned.get(str(unit.id)) or {}).get("geometry_id"))
+    ]
+    pinned_rows: dict[UUID, Geometry] = {}
+    for start in range(0, len(pinned_ids), 5000):
+        query = select(Geometry).where(Geometry.id.in_(pinned_ids[start : start + 5000]))
+        if simplify:
+            query = query.options(defer(Geometry.geojson))
+        for geometry in session.scalars(query):
+            pinned_rows[geometry.id] = geometry
     geometries = {}
     for unit in authorised:
         version = pinned.get(str(unit.id)) or {}
         geometry_id = version.get("geometry_id")
         if geometry_id:
-            geometry = session.get(Geometry, UUID(geometry_id))
+            geometry = pinned_rows.get(UUID(geometry_id))
             if geometry is not None and geometry.org_unit_id == unit.id:
                 geometries[unit.id] = geometry
         elif not pinned:

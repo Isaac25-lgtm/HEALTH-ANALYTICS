@@ -14,8 +14,13 @@ from app.services.dashboard_precompute import prepare_default_dashboards
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--programme", choices=["MNCH", "EPI", "MPDSR"])
+    parser.add_argument(
+        "--extended",
+        action="store_true",
+        help="Also prepare the financial year in progress and the two latest closed months.",
+    )
     args = parser.parse_args(argv)
-    print(json.dumps(prepare_default_dashboards(args.programme)))
+    print(json.dumps(prepare_default_dashboards(args.programme, extended=args.extended)))
     return 0
 
 

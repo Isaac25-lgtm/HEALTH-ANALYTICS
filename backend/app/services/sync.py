@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy import and_, case, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -53,7 +53,12 @@ from app.services.authorization import (
     require_org_unit_access,
     require_programme_access,
 )
-from app.services.geography import descendants, resolve_org_unit_by_dhis2_uid, unmapped_dhis2_org_units
+from app.services.geography import (
+    descendants,
+    mapping_in_force,
+    resolve_org_unit_by_dhis2_uid,
+    unmapped_dhis2_org_units,
+)
 from app.services.hierarchy_authority import DISTRICT_CITY_COHORT
 from app.services.mapping_coverage import evaluate_coverage
 from app.services.mappings import (
@@ -180,6 +185,71 @@ def persist_aggregate_observations(
 EVENT_DATE_SOURCE = "occurredAt"
 
 
+_EVENT_COMPARED_FIELDS = (
+    "programme_id",
+    "program_uid",
+    "program_stage_uid",
+    "org_unit_id",
+    "status",
+    "death_date",
+    "notification_date",
+    "review_date",
+    "data_values",
+    "mapping_version",
+)
+_EVENT_COMPARED_INSTANTS = ("occurred_at", "completed_at", "source_created_at", "source_updated_at")
+_EVENT_CHUNK = 1000
+
+
+def _same_moment(stored: datetime | None, incoming: datetime | None) -> bool:
+    if stored is None or incoming is None:
+        return stored is None and incoming is None
+    if incoming.tzinfo is None:
+        # DHIS2 sends local timestamps without an offset. The database returns the same wall-clock
+        # time it was given, labelled with the session time zone, so the labels are not compared.
+        return stored.replace(tzinfo=None) == incoming
+    return _aware(stored) == incoming
+
+
+def _event_unchanged(current: RawEventSnapshot, values: dict) -> bool:
+    """True when a re-extracted event carries exactly what the current snapshot already holds."""
+    return all(getattr(current, name) == values[name] for name in _EVENT_COMPARED_FIELDS) and all(
+        _same_moment(getattr(current, name), values[name]) for name in _EVENT_COMPARED_INSTANTS
+    )
+
+
+class _EventOrgUnits:
+    """Organisation units of one extraction, resolved from two queries instead of two per event."""
+
+    def __init__(self, session: Session, uids: set[str]) -> None:
+        self._mappings: dict[str, list[OrgUnitMapping]] = {}
+        ordered = sorted(uid for uid in uids if uid)
+        for start in range(0, len(ordered), 5000):
+            for row in session.scalars(
+                select(OrgUnitMapping).where(
+                    OrgUnitMapping.source_system == MappingSourceSystem.DHIS2.value,
+                    OrgUnitMapping.external_uid.in_(ordered[start : start + 5000]),
+                )
+            ):
+                self._mappings.setdefault(row.external_uid, []).append(row)
+        unit_ids = sorted({row.org_unit_id for rows in self._mappings.values() for row in rows}, key=str)
+        self._units: dict[UUID, OrgUnit] = {}
+        for start in range(0, len(unit_ids), 5000):
+            for unit in session.scalars(select(OrgUnit).where(OrgUnit.id.in_(unit_ids[start : start + 5000]))):
+                self._units[unit.id] = unit
+
+    def resolve(self, uid: str, as_of: date) -> OrgUnit | None:
+        in_force = [row for row in self._mappings.get(uid, []) if mapping_in_force(row, as_of)]
+        if len(in_force) > 1:
+            raise AuthorizationError(
+                "invalid_input",
+                "Overlapping active DHIS2 organisation-unit mappings exist for the requested source UID.",
+            )
+        if not in_force:
+            return None
+        return self._units.get(in_force[0].org_unit_id)
+
+
 def persist_event_observations(
     session: Session,
     job: SyncJob,
@@ -189,20 +259,30 @@ def persist_event_observations(
     *,
     seen_row_ids: set[UUID] | None = None,
 ) -> dict[str, int]:
+    """Store one extraction of events in bulk.
+
+    An event whose minimised content is identical to its current snapshot is not copied again: the
+    snapshot is marked as re-extracted (``extracted_at`` and the verifying job). Only new or changed
+    events create a snapshot, which supersedes the previous one. A national refresh is therefore a
+    few bulk statements, not five statements for every event.
+    """
     stored = rejected = dropped_fields = missing_death_dates = 0
+    scope = session.get(OrgUnit, job.org_unit_id) if job.org_unit_id else None
+    org_units = _EventOrgUnits(session, {observation.org_unit_uid for observation in observations})
+    # The last occurrence of an event within one extraction is the one kept.
+    prepared: dict[tuple[str, str], dict] = {}
     for observation in observations:
         if job.cancelled:
             break
         try:
             as_of = observation.occurred_at.date() if observation.occurred_at else extracted_at.date()
-            org_unit = resolve_org_unit_by_dhis2_uid(session, observation.org_unit_uid, as_of=as_of)
+            org_unit = org_units.resolve(observation.org_unit_uid, as_of)
         except AuthorizationError:
             rejected += 1
             continue
         if org_unit is None or not observation.event_uid:
             rejected += 1
             continue
-        scope = session.get(OrgUnit, job.org_unit_id) if job.org_unit_id else None
         if scope is not None and not is_descendant_or_self(org_unit, scope):
             rejected += 1
             continue
@@ -248,47 +328,86 @@ def persist_event_observations(
         death = _as_date(semantic.get("death_date"))
         if death is None:
             missing_death_dates += 1
-        notification = _as_date(semantic.get("notification_date"))
-        review = _as_date(semantic.get("review_date"))
-        existing = session.scalar(
-            select(RawEventSnapshot).where(
-                RawEventSnapshot.event_uid == observation.event_uid,
-                RawEventSnapshot.source_connector == observation.source_connector,
-                RawEventSnapshot.is_current.is_(True),
-            )
-        )
-        if existing is not None:
-            existing.is_current = False
-            session.flush()
-        row = RawEventSnapshot(
-            event_uid=observation.event_uid,
-            programme_id=job.programme_id,
-            source_connector=observation.source_connector,
-            program_uid=observation.program_uid,
-            program_stage_uid=observation.program_stage_uid,
-            org_unit_id=org_unit.id,
-            status=observation.status,
-            occurred_at=observation.occurred_at,
-            completed_at=observation.completed_at,
-            source_created_at=observation.source_created_at,
-            source_updated_at=observation.source_updated_at,
-            death_date=death,
-            notification_date=notification,
-            review_date=review,
-            data_values=semantic,
-            extracted_at=extracted_at,
-            mapping_version=job.mapping_version,
-            sync_job_id=job.id,
-            is_current=True,
-            privacy_class="restricted_event",
-        )
-        session.add(row)
-        session.flush()
-        if existing is not None:
-            existing.superseded_by_id = row.id
-        if seen_row_ids is not None:
-            seen_row_ids.add(row.id)
+        prepared[(observation.event_uid, observation.source_connector)] = {
+            "event_uid": observation.event_uid,
+            "programme_id": job.programme_id,
+            "source_connector": observation.source_connector,
+            "program_uid": observation.program_uid,
+            "program_stage_uid": observation.program_stage_uid,
+            "org_unit_id": org_unit.id,
+            "status": observation.status,
+            "occurred_at": observation.occurred_at,
+            "completed_at": observation.completed_at,
+            "source_created_at": observation.source_created_at,
+            "source_updated_at": observation.source_updated_at,
+            "death_date": death,
+            "notification_date": _as_date(semantic.get("notification_date")),
+            "review_date": _as_date(semantic.get("review_date")),
+            "data_values": semantic,
+            "mapping_version": job.mapping_version,
+        }
         stored += 1
+    keys = list(prepared)
+    for start in range(0, len(keys), _EVENT_CHUNK):
+        chunk = keys[start : start + _EVENT_CHUNK]
+        current_rows = {
+            (row.event_uid, row.source_connector): row
+            for row in session.scalars(
+                select(RawEventSnapshot).where(
+                    RawEventSnapshot.event_uid.in_([event_uid for event_uid, _connector in chunk]),
+                    RawEventSnapshot.is_current.is_(True),
+                )
+            )
+        }
+        verified_ids: list[UUID] = []
+        replaced: list[tuple[UUID, RawEventSnapshot]] = []
+        created: list[RawEventSnapshot] = []
+        for key in chunk:
+            values = prepared[key]
+            current = current_rows.get(key)
+            if current is not None and _event_unchanged(current, values):
+                verified_ids.append(current.id)
+                continue
+            row = RawEventSnapshot(
+                id=uuid4(),
+                **values,
+                extracted_at=extracted_at,
+                sync_job_id=job.id,
+                is_current=True,
+                privacy_class="restricted_event",
+            )
+            created.append(row)
+            if current is not None:
+                replaced.append((current.id, row))
+        if verified_ids:
+            session.execute(
+                update(RawEventSnapshot)
+                .where(RawEventSnapshot.id.in_(verified_ids))
+                .values(extracted_at=extracted_at, sync_job_id=job.id)
+                .execution_options(synchronize_session=False)
+            )
+        # The current-row unique index allows one current snapshot per event: retire, then insert.
+        # Whole-chunk statements: the revision trigger and the database work per statement.
+        if replaced:
+            session.execute(
+                update(RawEventSnapshot)
+                .where(RawEventSnapshot.id.in_([current_id for current_id, _row in replaced]))
+                .values(is_current=False)
+                .execution_options(synchronize_session=False)
+            )
+        session.add_all(created)
+        session.flush()
+        if replaced:
+            successor = {current_id: row.id for current_id, row in replaced}
+            session.execute(
+                update(RawEventSnapshot)
+                .where(RawEventSnapshot.id.in_(list(successor)))
+                .values(superseded_by_id=case(successor, value=RawEventSnapshot.id))
+                .execution_options(synchronize_session=False)
+            )
+        if seen_row_ids is not None:
+            seen_row_ids.update(verified_ids)
+            seen_row_ids.update(row.id for row in created)
     job.stored_count = stored
     job.rejected_count = rejected
     job.received_count = len(observations)

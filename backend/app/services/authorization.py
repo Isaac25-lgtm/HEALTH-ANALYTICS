@@ -1,7 +1,7 @@
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import ActionPermission, OrgUnitLevel
@@ -107,6 +107,51 @@ def authorised_org_unit_ids(session: Session, user: User) -> set[UUID]:
         if any(is_descendant_or_self(unit, scope) for scope in scopes):
             authorised.add(unit.id)
     return authorised
+
+
+_LIKE_ESCAPE = chr(92)
+
+
+def _like_prefix(path: str) -> str:
+    """A LIKE pattern matching every path below ``path``, with wildcards in the path escaped."""
+    escaped = path.rstrip("/")
+    for char in (_LIKE_ESCAPE, "%", "_"):
+        escaped = escaped.replace(char, _LIKE_ESCAPE + char)
+    return escaped + "/%"
+
+
+def authorised_entry_units(session: Session, user: User) -> list[OrgUnit]:
+    """The first authorised active unit of every level, by name then code.
+
+    One small query per level. Loading every authorised unit to pick these few cost seconds on
+    each page for a national account.
+    """
+    scopes = [] if user.is_system_admin else geography_scope_units(session, user)
+    if not user.is_system_admin and not scopes:
+        return []
+    within = None
+    if not user.is_system_admin:
+        within = or_(
+            *(
+                or_(
+                    OrgUnit.id == scope.id,
+                    OrgUnit.path.like(_like_prefix(scope.path), escape=_LIKE_ESCAPE),
+                )
+                for scope in scopes
+            )
+        )
+    levels_query = select(OrgUnit.level_type).where(OrgUnit.active.is_(True)).distinct()
+    if within is not None:
+        levels_query = levels_query.where(within)
+    entries: list[OrgUnit] = []
+    for level in session.scalars(levels_query).all():
+        query = select(OrgUnit).where(OrgUnit.active.is_(True), OrgUnit.level_type == level)
+        if within is not None:
+            query = query.where(within)
+        unit = session.scalars(query.order_by(OrgUnit.name, OrgUnit.code).limit(1)).first()
+        if unit is not None:
+            entries.append(unit)
+    return entries
 
 
 def can_access_org_unit(session: Session, user: User, org_unit: OrgUnit) -> bool:

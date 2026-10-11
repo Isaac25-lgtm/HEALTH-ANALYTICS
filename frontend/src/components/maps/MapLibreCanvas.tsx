@@ -28,6 +28,61 @@ function collectPoints(coordinates: unknown, sink: number[][]) {
   }
 }
 
+/** Signed area and centroid of one ring (shoelace); screen placement only. */
+function ringCentre(ring: number[][]): { area: number; centre: [number, number] } | null {
+  if (!Array.isArray(ring) || ring.length < 3) {
+    return null;
+  }
+  let twiceArea = 0;
+  let cx = 0;
+  let cy = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const [x1, y1] = ring[index];
+    const [x2, y2] = ring[(index + 1) % ring.length];
+    const cross = x1 * y2 - x2 * y1;
+    twiceArea += cross;
+    cx += (x1 + x2) * cross;
+    cy += (y1 + y2) * cross;
+  }
+  if (Math.abs(twiceArea) < 1e-12) {
+    return null;
+  }
+  return { area: Math.abs(twiceArea) / 2, centre: [cx / (3 * twiceArea), cy / (3 * twiceArea)] };
+}
+
+/** Where a unit's name sits: the centre of its largest polygon, and that polygon's area. */
+function labelAnchor(geometry: { type?: string; coordinates?: unknown } | null | undefined) {
+  if (!geometry) {
+    return null;
+  }
+  if (geometry.type === "Point") {
+    return { area: 0, centre: geometry.coordinates as [number, number] };
+  }
+  const polygons =
+    geometry.type === "Polygon"
+      ? [geometry.coordinates as number[][][]]
+      : geometry.type === "MultiPolygon"
+        ? (geometry.coordinates as number[][][][])
+        : [];
+  let best: { area: number; centre: [number, number] } | null = null;
+  for (const polygon of polygons) {
+    const outer = ringCentre(polygon?.[0] ?? []);
+    if (outer && (!best || outer.area > best.area)) {
+      best = outer;
+    }
+  }
+  return best;
+}
+
+/** "Pader District" is labelled "Pader"; a city keeps "City" so it is not mistaken for its district. */
+function labelText(name: string): string {
+  return name.replace(/\s+District$/i, "");
+}
+
+// A map of many units shows only this many names until the viewer zooms in.
+const NAMES_ALWAYS_SHOWN = 18;
+const ALL_NAMES_UP_TO = 40;
+
 export function MapLibreCanvas({
   features: collectionInput,
   module,
@@ -44,6 +99,8 @@ export function MapLibreCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const paintSequenceRef = useRef(0);
+  const labelsRef = useRef<maplibregl.Marker[]>([]);
+  const baseZoomRef = useRef<number | null>(null);
   const navigationRef = useRef({ module, period, comparison, selectedCode });
   navigationRef.current = { module, period, comparison, selectedCode };
 
@@ -62,8 +119,17 @@ export function MapLibreCanvas({
       cooperativeGestures: true,
     });
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    // On a crowded map the smaller units are named once the viewer zooms in.
+    map.on("zoom", () => {
+      const base = baseZoomRef.current;
+      if (base != null) {
+        containerRef.current?.setAttribute("data-label-detail", map.getZoom() >= base + 0.9 ? "all" : "few");
+      }
+    });
     mapRef.current = map;
     return () => {
+      labelsRef.current.forEach((label) => label.remove());
+      labelsRef.current = [];
       map.remove();
       mapRef.current = null;
     };
@@ -210,6 +276,27 @@ export function MapLibreCanvas({
         // Instant: a data map should present its cohort, not animate a camera into place.
         map.fitBounds(bounds, { padding: 24, duration: 0 });
       }
+      // Unit names, drawn as plain HTML over the map (no font files are fetched). They never
+      // intercept the pointer, so hover and click still reach the unit beneath.
+      labelsRef.current.forEach((label) => label.remove());
+      labelsRef.current = [];
+      const anchors = features
+        .map((feature) => ({ name: String(feature.properties.name ?? ""), anchor: labelAnchor(feature.geometry) }))
+        .filter((item) => item.name && item.anchor)
+        .sort((a, b) => (b.anchor?.area ?? 0) - (a.anchor?.area ?? 0));
+      const crowded = anchors.length > ALL_NAMES_UP_TO;
+      anchors.forEach((item, index) => {
+        const element = document.createElement("span");
+        element.className =
+          crowded && index >= NAMES_ALWAYS_SHOWN ? "map-label map-label-minor" : "map-label";
+        element.textContent = labelText(item.name);
+        labelsRef.current.push(
+          new maplibregl.Marker({ element }).setLngLat(item.anchor!.centre as [number, number]).addTo(map),
+        );
+      });
+      baseZoomRef.current = map.getZoom();
+      containerRef.current?.setAttribute("data-label-density", crowded ? "crowded" : "open");
+      containerRef.current?.setAttribute("data-label-detail", "few");
     };
     if (map.loaded()) {
       apply();

@@ -8,6 +8,7 @@ or operational logs, and event UIDs live only in the 24-hour event cache.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
@@ -205,6 +206,63 @@ def test_ingestion_persists_only_approved_fields(session, tracker_job):
     events = [item for item in recent_operational_events() if item["event_type"] == "mpdsr_event_fields_dropped"]
     assert events and events[0]["records_rejected"] >= 2
     assert "Jane" not in json.dumps(events)
+
+
+def test_unchanged_event_is_reverified_in_place_and_a_changed_one_is_superseded(session, tracker_job):
+    """A refresh re-reads every event; only new or changed ones may create a snapshot."""
+    job, mappings = tracker_job
+    first_at = datetime(2025, 2, 1, 8, 0, tzinfo=UTC)
+    second_at = datetime(2025, 2, 2, 8, 0, tzinfo=UTC)
+    same = _observation(TEST_UID_DE_DEATH_DATE="2025-01-04", TEST_UID_DE_NOTIFY="2025-01-05")
+    other = replace(
+        _observation(TEST_UID_DE_DEATH_DATE="2025-01-10", TEST_UID_DE_NOTIFY="2025-01-11"),
+        event_uid="TEST_UID_EVENT_MIN2",
+    )
+    seen: set = set()
+    persist_event_observations(session, job, [same, other], mappings, first_at, seen_row_ids=seen)
+    session.commit()
+    before = {row.event_uid: row.id for row in session.scalars(select(RawEventSnapshot))}
+    assert len(before) == 2 and seen == set(before.values())
+
+    changed = replace(
+        _observation(TEST_UID_DE_DEATH_DATE="2025-01-10", TEST_UID_DE_NOTIFY="2025-01-12"),
+        event_uid="TEST_UID_EVENT_MIN2",
+    )
+    seen = set()
+    outcome = persist_event_observations(session, job, [same, changed], mappings, second_at, seen_row_ids=seen)
+    session.commit()
+    session.expire_all()
+    assert outcome["stored"] == 2 and outcome["rejected"] == 0
+    rows = session.scalars(select(RawEventSnapshot)).all()
+    assert len(rows) == 3
+    current = {row.event_uid: row for row in rows if row.is_current}
+    # Unchanged: the same snapshot, marked as extracted again.
+    assert current["TEST_UID_EVENT_MIN1"].id == before["TEST_UID_EVENT_MIN1"]
+    assert current["TEST_UID_EVENT_MIN1"].extracted_at.replace(tzinfo=UTC) == second_at
+    # Changed: a new current snapshot that supersedes the old one.
+    assert current["TEST_UID_EVENT_MIN2"].id != before["TEST_UID_EVENT_MIN2"]
+    assert current["TEST_UID_EVENT_MIN2"].notification_date == date(2025, 1, 12)
+    retired = next(row for row in rows if not row.is_current)
+    assert retired.id == before["TEST_UID_EVENT_MIN2"]
+    assert retired.superseded_by_id == current["TEST_UID_EVENT_MIN2"].id
+    assert seen == {row.id for row in current.values()}
+
+
+def test_source_timestamps_without_an_offset_do_not_make_an_event_look_changed(session, tracker_job):
+    """DHIS2 sends local timestamps with no offset; re-reading one must not copy the event."""
+    job, mappings = tracker_job
+    observation = replace(
+        _observation(TEST_UID_DE_DEATH_DATE="2025-01-04", TEST_UID_DE_NOTIFY="2025-01-05"),
+        occurred_at=datetime(2025, 1, 4),
+        completed_at=datetime(2025, 1, 6, 17, 3, 53),
+        source_updated_at=datetime(2025, 1, 6, 17, 3, 53),
+    )
+    persist_event_observations(session, job, [observation], mappings, datetime(2025, 2, 1, tzinfo=UTC))
+    session.commit()
+    session.expire_all()
+    persist_event_observations(session, job, [observation], mappings, datetime(2025, 2, 2, tzinfo=UTC))
+    session.commit()
+    assert len(session.scalars(select(RawEventSnapshot)).all()) == 1
 
 
 def test_event_uid_is_the_only_identifier_and_never_leaves_the_cache(client, session):

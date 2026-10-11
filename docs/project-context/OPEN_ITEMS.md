@@ -1,5 +1,23 @@
 # Open Production Inputs
 
+## Status after the 2026-10-11 pass (read first)
+
+See [CLAUDE_HANDOFF_2026-10-11.md](CLAUDE_HANDOFF_2026-10-11.md). The live local database is at
+migration 0020; the local stack prepares common dashboards and refreshes DHIS2 data by itself.
+
+Still open:
+
+- **Owner confirmation of D-074** (national and regional figures read district/city rows only).
+- D-069 stays blocked; facility catchment populations, facility coordinates, the MPDSR cause
+  taxonomy and production formula effective dates are still owner inputs.
+- A first view after a data change is calculated on demand (20 to 60 s nationally); only the common
+  views are prepared in advance.
+- DHIS2 answers many times slower in working hours; the MPDSR refresh should run early in the day.
+- Redis, the Celery worker, Celery Beat and the Playwright gate were not exercised in this pass.
+- One facility load interrupted by a shutdown on 2026-10-10 is still marked running
+  (`scripts/recover_sync_dispatch.py` not run). Old noisy quality flags remain open.
+- The DHIS2 credential disclosed in chat must be rotated before hosted use.
+
 ## Current October correction status (read before historical entries below)
 
 October 5 follow-up: [CODEX_FIX_HANDOFF_2026-10-05.md](CODEX_FIX_HANDOFF_2026-10-05.md) adds

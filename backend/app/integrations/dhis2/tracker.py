@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -68,25 +70,27 @@ class TrackerEventsAdapter:
         prefix = self.client.settings.dhis2_api_path_prefix.rstrip("/")
         size = page_size or self.client.settings.dhis2_page_size
         mode = ou_mode or self.client.settings.dhis2_ou_mode or "DESCENDANTS"
-        collected: list[EventObservation] = []
-        page_limit = False
-        pages = 0
+        max_pages = self.client.settings.dhis2_max_pages
         targets = org_unit_uids or [None]
+        stop = threading.Event()
+
         # The service supplies non-overlapping district/city peers for a broad scope. Tracker
         # accepts one orgUnit per request, so query each peer with the requested mode; switching
         # to SELECTED here would silently omit events recorded below the district/city.
-        effective_mode = mode
-        for org_unit_uid in targets:
+        def fetch_peer(org_unit_uid: str | None) -> tuple[list[EventObservation], int, bool]:
+            collected: list[EventObservation] = []
+            pages = 0
             page = 1
             while True:
-                if self.client._cancelled():
+                if stop.is_set() or self.client._cancelled():
                     raise Dhis2CancelledError()
+                # The total page count is not requested: counting every matching event is the slow
+                # part of a tracker query. A page shorter than the page size is the last one.
                 params = {
                     "program": program_uid,
                     "page": page,
                     "pageSize": size,
-                    "totalPages": "true",
-                    "ouMode": effective_mode,
+                    "ouMode": mode,
                 }
                 if org_unit_uid:
                     params["orgUnit"] = org_unit_uid
@@ -100,18 +104,54 @@ class TrackerEventsAdapter:
                 rows = parse_tracker_events(payload, allowed_data_element_uids=allowed_data_element_uids)
                 collected.extend(rows)
                 pages += 1
-                pager = payload.get("pager") or {}
-                page_count = int(pager.get("pageCount") or 1) if pager else 1
-                if page >= page_count or not rows:
+                pager = (payload.get("pager") or {}) if isinstance(payload, dict) else {}
+                page_count = pager.get("pageCount") or (payload.get("pageCount") if isinstance(payload, dict) else None)
+                if not rows:
+                    break
+                if page_count is not None:
+                    if page >= int(page_count):
+                        break
+                elif len(rows) < size:
                     break
                 page += 1
-                if page > self.client.settings.dhis2_max_pages:
-                    page_limit = True
+                if page > max_pages:
+                    return collected, pages, True
+            return collected, pages, False
+
+        workers = max(1, min(int(getattr(self.client.settings, "dhis2_tracker_parallel_requests", 1)), len(targets)))
+        results: list[tuple[list[EventObservation], int, bool]] = []
+        if workers == 1:
+            for target in targets:
+                result = fetch_peer(target)
+                results.append(result)
+                if result[2]:
                     break
-            if page_limit:
-                break
+        else:
+            # The cancellation check reads the job through the caller's database session, which must
+            # not be used by two threads at once: the workers take turns to ask.
+            check_cancelled = self.client._cancelled
+            check_lock = threading.Lock()
+
+            def check_in_turn() -> bool:
+                with check_lock:
+                    return check_cancelled()
+
+            self.client._cancelled = check_in_turn
+            try:
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tracker-events") as pool:
+                    try:
+                        # map() keeps the peers in request order, so the extraction is deterministic.
+                        results = list(pool.map(fetch_peer, targets))
+                    except BaseException:
+                        stop.set()
+                        raise
+            finally:
+                self.client._cancelled = check_cancelled
+        collected = [row for rows, _pages, _limit in results for row in rows]
         self.last_result = TrackerFetchResult(
-            observations=collected, page_limit_reached=page_limit, pages_fetched=pages
+            observations=collected,
+            page_limit_reached=any(limit for _rows, _pages, limit in results),
+            pages_fetched=sum(pages for _rows, pages, _limit in results),
         )
         return self.last_result
 

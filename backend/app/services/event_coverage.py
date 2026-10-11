@@ -82,15 +82,17 @@ def _evaluate(
             requirement=requirement,
         )
     scope_ids = {org_unit.id, *(unit.id for unit in ancestors(session, org_unit, include_inactive=True))}
-    jobs = session.scalars(
-        select(SyncJob)
-        .where(
-            SyncJob.job_type == ConnectorType.TRACKER.value,
-            SyncJob.programme_id == programme.id,
-            SyncJob.org_unit_id.in_(scope_ids),
-        )
-        .order_by(SyncJob.finished_at.desc().nulls_last(), SyncJob.created_at.desc().nulls_last())
-    ).all()
+    # Within one calculation batch the Tracker jobs and event mappings cannot change: they are
+    # read once and filtered per unit, instead of once per unit, period and follow-up window.
+    batch = session.info.get("calc_batch")
+    shared = batch.setdefault("event_coverage_inputs", {}) if batch is not None else {}
+    if "jobs" not in shared:
+        shared["jobs"] = session.scalars(
+            select(SyncJob)
+            .where(SyncJob.job_type == ConnectorType.TRACKER.value, SyncJob.programme_id == programme.id)
+            .order_by(SyncJob.finished_at.desc().nulls_last(), SyncJob.created_at.desc().nulls_last())
+        ).all()
+    jobs = [job for job in shared["jobs"] if job.org_unit_id in scope_ids]
     if not jobs:
         return _result(
             EventCoverageStatus.UNVERIFIED,
@@ -117,15 +119,18 @@ def _evaluate(
         if moment - finished > stale_after:
             failures.append("stale")
             continue
-        try:
-            mappings = select_event_mappings(
-                session,
-                programme_id=programme.id,
-                mapping_version=job.mapping_version or "v1",
-                as_of=cohort.end,
-            )
-        except MappingSelectionError:
-            mappings = []
+        mapping_key = ("mappings", job.mapping_version or "v1", cohort.end)
+        if mapping_key not in shared:
+            try:
+                shared[mapping_key] = select_event_mappings(
+                    session,
+                    programme_id=programme.id,
+                    mapping_version=job.mapping_version or "v1",
+                    as_of=cohort.end,
+                )
+            except MappingSelectionError:
+                shared[mapping_key] = []
+        mappings = shared[mapping_key]
         program_uids = {row.program_uid for row in mappings if row.program_uid}
         if not program_uids:
             failures.append("mapping")

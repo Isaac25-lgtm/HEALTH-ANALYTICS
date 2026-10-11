@@ -29,6 +29,8 @@ os.environ["RATE_LIMIT_BACKEND"] = "memory"
 os.environ["DHIS2_ENABLED"] = "false"
 os.environ["DHIS2_LOGIN_ENABLED"] = "false"
 os.environ["SYNC_ENABLED"] = "false"
+os.environ["DASHBOARD_PRECOMPUTE_ENABLED"] = "false"
+os.environ["DHIS2_REFRESH_SCHEDULE_ENABLED"] = "false"
 # Clear the connection details too, so the synthetic process cannot reach the live instance even
 # if a future code path forgets to check the gates above.
 os.environ["DHIS2_BASE_URL"] = ""

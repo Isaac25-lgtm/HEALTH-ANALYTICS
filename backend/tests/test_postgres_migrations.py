@@ -20,7 +20,7 @@ from app.services.sync import sync_job_execution_lock
 # HPIP_POSTGRES_TEST_URL, so the suite never attempts to log in to a workstation instance.
 DEFAULT_ADMIN_URL = ""
 VERIFY_DB = "hpip_p18_alembic_verify"
-HEAD_REVISION = "0015_sync_coverage_manifest"
+HEAD_REVISION = "0020_config_revision"
 
 
 def _admin_url() -> str:
@@ -708,12 +708,16 @@ def test_postgres_prepared_revision_and_active_facility_guard(monkeypatch):
         command.upgrade(_alembic_cfg(), "head")
         engine = create_engine(test_url, future=True)
         with Session(engine) as session:
-            revision = lambda: session.scalar(select(AnalyticsRevision.revision))  # noqa: E731
-            baseline = revision()
+            read = lambda key: session.scalar(  # noqa: E731
+                select(AnalyticsRevision.revision).where(AnalyticsRevision.key == key)
+            )
+            revision = lambda: read("global")  # noqa: E731
+            baseline, config_baseline = revision(), read("config")
             programme = Programme(code="TEST_OCTOBER", name="Isolated verification programme", active=True)
             session.add(programme)
             session.flush()
             assert revision() == baseline + 1
+            assert read("config") == config_baseline + 1  # configuration, not source data (0020)
             job = SyncJob(job_type="aggregate_facilities", status="queued", idempotency_key="TEST_OCTOBER_KEY")
             session.add(job)
             session.flush()
@@ -726,6 +730,7 @@ def test_postgres_prepared_revision_and_active_facility_guard(monkeypatch):
             job.status = "succeeded"
             session.flush()
             assert revision() == baseline + 2
+            assert read("config") == config_baseline + 1  # a synchronisation is source data
             session.add(SyncJob(job_type="aggregate_facilities", status="queued", idempotency_key=job.idempotency_key))
             session.flush()  # a completed attempt does not block a later refresh
         engine.dispose()

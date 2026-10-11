@@ -79,3 +79,21 @@ The Next.js application remains the implementation target.
 - Unavailable values show the server's reason in words (for example "Population denominator unavailable") and never zero.
 - Contract tests (`frontend/src/test/prototype-contract.test.ts`, `backend/tests/test_prototype_contract.py`) block prototype values, client-side calculations, invented EPI bands, hosted fonts and prefilled accounts.
 - Screenshots from the latest Playwright run are written to `frontend/e2e-screenshots/` (not tracked in Git).
+
+## Amendment 2026-10-10 - roomy, scrolling desktop dashboards (D-070)
+
+The owner asked for dashboards that are not squeezed and that scroll, as a DHIS2 dashboard does.
+On desktop widths (above 1100 px) the one-dense-screen rule above no longer applies:
+
+- Order of rows: KPI strip; map (two thirds) with priority insights; the unit scorecard at full
+  width with every indicator column visible; trends (two thirds) with the ranked units; Ask the
+  Data; downloads. Programme, MPDSR, facility and analytical workspaces follow the same rhythm.
+- Panels are taller (map 600 px, trend and ranking 540 px), padding and row height are larger, a
+  long table scrolls inside its panel under a fixed header, and the top bar stays in view.
+- The ranked lists sit one above the other so unit names are read in full; the trend chart is
+  taller and shades each unbroken run of values (a gap stays empty).
+- Unchanged: the blue/navy shell, the palette, RAG/BLUE meanings, whole-cell scorecard colours,
+  panel anatomy, the subtle background, and every rule about values (nothing is derived, capped or
+  interpolated on screen). Tablet and phone widths keep their earlier rules.
+- Also added: a site icon, a visible activity indicator on loading with an explanation after five
+  seconds, and readable dates in the status line (exact timestamps remain in the tooltip).

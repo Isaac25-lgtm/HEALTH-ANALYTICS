@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getChildren, getContext, getPreparedDashboard, login, newRequestKey, queryDashboard } from "@/lib/api";
 import { clearReadyDashboard, primeDashboard } from "@/lib/dashboard-ready";
@@ -10,8 +10,12 @@ import type { CurrentContext } from "@/lib/types";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  // The fields are read when the form is submitted, so text typed before the page finished
+  // loading is kept. The button stays disabled until then, so the form can never submit natively.
+  const usernameRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => setReady(true), []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [identity, setIdentity] = useState<CurrentContext | null>(null);
@@ -24,13 +28,16 @@ export default function LoginPage() {
     setError(null);
     try {
       if (!identity) {
+        const username = usernameRef.current?.value.trim() ?? "";
+        const password = passwordRef.current?.value ?? "";
+        if (!username || !password) throw new Error("Enter your DHIS2 username and password.");
         clearReadyDashboard();
         setStage("Signing in…");
         const result = await login(username, password);
         if ("access_token" in (result as object)) {
           throw new Error("Login response included a forbidden access token.");
         }
-        setPassword("");
+        if (passwordRef.current) passwordRef.current.value = "";
       }
       const context = await getContext();
       setIdentity(context);
@@ -63,7 +70,7 @@ export default function LoginPage() {
       <p className="mt-2 text-sm text-slate-600">
         Sign in with a cookie-only session. Tokens are not stored in the browser.
       </p>
-      <form onSubmit={onSubmit} className="mt-8 space-y-4 rounded-xl border border-line bg-white p-6">
+      <form method="post" onSubmit={onSubmit} className="mt-8 space-y-4 rounded-xl border border-line bg-white p-6">
         {identity ? (
           <div role="status" className="rounded-md border border-line bg-slate-50 p-3 text-sm">
             <p>Signed in as <strong>{identity.display_name}</strong> ({identity.username})</p>
@@ -75,8 +82,9 @@ export default function LoginPage() {
           Username
           <input
             className="mt-1 w-full rounded-md border border-line px-3 py-2"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
+            ref={usernameRef}
+            name="username"
+            defaultValue=""
             autoComplete="username"
           />
         </label>
@@ -85,14 +93,15 @@ export default function LoginPage() {
           <input
             type="password"
             className="mt-1 w-full rounded-md border border-line px-3 py-2"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            ref={passwordRef}
+            name="password"
+            defaultValue=""
             autoComplete="current-password"
           />
         </label>
         </> : null}
         {error ? <p className="text-sm text-red-700">{error}</p> : null}
-        <button type="submit" disabled={busy} className="w-full rounded-md bg-navy px-4 py-2 text-white disabled:opacity-60">
+        <button type="submit" disabled={busy || !ready} className="w-full rounded-md bg-navy px-4 py-2 text-white disabled:opacity-60">
           {busy ? stage : identity ? "Retry dashboard preparation" : "Sign in"}
         </button>
       </form>
