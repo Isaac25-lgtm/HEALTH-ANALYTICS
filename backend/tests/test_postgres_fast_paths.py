@@ -207,11 +207,12 @@ def test_a_roll_up_is_not_read_again_for_a_change_in_another_period(monkeypatch)
         session.commit()
         assert report["status"] == "rebuilt" and report["created"] == 2
         assert loads == []  # only the two changed units were read
-        # The pass changed rows itself, so those units are verified by the next pass, then trusted.
-        assert session.get(RollupState, "FY2025/26").revision is None
+        # The call rebuilt rows itself, so it verified them again before returning: the period is
+        # trusted at the present revision, and the next call has nothing to do.
+        revision = _revisions(session)["global"]
+        assert session.get(RollupState, "FY2025/26").revision == revision
         assert ensure_period_rollups(session, ["FY2025/26"]).periods["FY2025/26"]["status"] == "current"
         session.commit()
-        assert session.get(RollupState, "FY2025/26").revision is not None
         year = session.scalar(
             select(RawAggregateValue).where(
                 RawAggregateValue.org_unit_id == pader.id,

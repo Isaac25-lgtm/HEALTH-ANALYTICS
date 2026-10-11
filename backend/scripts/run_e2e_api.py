@@ -18,7 +18,10 @@ os.environ["SEED_DEV_DATA"] = "true"
 os.environ["APP_ENV"] = "development"
 os.environ["AUTH_SECRET"] = "e2e-secret-value-that-is-32-chars-minxx"
 os.environ["AUTH_COOKIE_SECURE"] = "false"
-os.environ["WEB_ORIGIN"] = "http://localhost:3000"
+# Web and API ports follow the project contract unless the gate was given spare ones.
+WEB_PORT = int(os.environ.get("E2E_WEB_PORT", "3000"))
+API_PORT = int(os.environ.get("E2E_API_PORT", "8010"))
+os.environ["WEB_ORIGIN"] = f"http://localhost:{WEB_PORT}"
 # Explicit development gates for the disposable end-to-end API (no Redis or worker process).
 os.environ["EXPORT_EAGER"] = "true"
 os.environ["RATE_LIMIT_BACKEND"] = "memory"
@@ -65,4 +68,4 @@ finally:
 
 import uvicorn  # noqa: E402
 
-uvicorn.run("app.main:app", host="127.0.0.1", port=8010, log_level="warning")
+uvicorn.run("app.main:app", host="127.0.0.1", port=API_PORT, log_level="warning")

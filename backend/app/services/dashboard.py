@@ -20,7 +20,12 @@ from app.services.authorization import (
     require_org_unit_access,
     user_actions,
 )
-from app.services.calculation import clear_calculation_batch, prepare_calculation_batch, run_calculation
+from app.services.calculation import (
+    clear_calculation_batch,
+    flush_run_memos,
+    prepare_calculation_batch,
+    run_calculation,
+)
 from app.services.evidence import evidence_package
 from app.services.facility_data import queue_facility_load
 from app.services.geography import ancestors, descendants
@@ -223,6 +228,7 @@ def _facility_comparisons(
                     },
                 }
             )
+        flush_run_memos(session)
     finally:
         clear_calculation_batch(session)
     return rows
@@ -358,6 +364,7 @@ def build_dashboard(
     request_key: str | None = None,
 ) -> dict:
     session.info.pop("product_input_revision", None)
+    session.info.pop("product_input_unverified", None)
     require_action(session, user, ActionPermission.VIEW)
     org_unit = require_org_unit_access(session, user, org_unit_id, period=period)
     if user.is_system_admin:

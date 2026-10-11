@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { WEB_ORIGIN } from "./origin";
 
 const password = process.env.SEED_PASSWORD ?? "dev-only-change-me";
 const SHOTS = "e2e-screenshots";
@@ -27,8 +28,8 @@ test("session cookies stay on the web origin through the same-origin proxy", asy
   });
   await signIn(page, "national.analyst");
   expect(calls.length).toBeGreaterThan(0);
-  expect(calls.every((url) => url.startsWith("http://localhost:3000/api/"))).toBe(true);
-  const cookies = await context.cookies("http://localhost:3000");
+  expect(calls.every((url) => url.startsWith(`${WEB_ORIGIN}/api/`))).toBe(true);
+  const cookies = await context.cookies(WEB_ORIGIN);
   const session = cookies.find((cookie) => cookie.name === "hpip_session");
   expect(session?.httpOnly).toBe(true);
   expect(cookies.find((cookie) => cookie.name === "hpip_csrf")?.httpOnly).toBe(false);

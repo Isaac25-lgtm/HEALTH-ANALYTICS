@@ -41,6 +41,7 @@ from app.services.sync import (  # noqa: E402
     execute_sync_job,
     record_sync_internal_failure,
     should_run_eager,
+    sync_job_execution_lock,
 )
 
 # Refresh only periods that can still change.
@@ -221,16 +222,19 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if should_run_eager():
                 # Claiming commits "running" first, so a long job is visible while it works.
+                # The execution lock is what marks the job as genuinely running: if this process
+                # dies, the lock goes with it and the job can be recognised as interrupted.
                 job_id = job.id
-                if not claim_sync_job(session, job_id):
-                    continue
-                try:
-                    execute_sync_job(session, job_id, already_claimed=True)
-                    session.commit()
-                except Exception:
-                    session.rollback()
-                    record_sync_internal_failure(session, job_id)
-                    failed += 1
+                with sync_job_execution_lock(session, job_id) as acquired:
+                    if not acquired or not claim_sync_job(session, job_id):
+                        continue
+                    try:
+                        execute_sync_job(session, job_id, already_claimed=True)
+                        session.commit()
+                    except Exception:
+                        session.rollback()
+                        record_sync_internal_failure(session, job_id)
+                        failed += 1
             else:
                 try:
                     dispatch_sync_job(job.id)

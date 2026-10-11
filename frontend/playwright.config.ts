@@ -12,6 +12,9 @@ const reuseExistingServer = process.env.HPIP_REUSE_E2E_SERVER === "true";
 // Playwright's shell-based Windows teardown. Direct `playwright test` keeps the convenient built-in
 // web-server lifecycle.
 const externalServers = process.env.HPIP_E2E_EXTERNAL_SERVERS === "true";
+// Project contract by default; spare ports where 3000 or 8010 are in use (see e2e-gate.mjs).
+const webPort = process.env.E2E_WEB_PORT ?? "3000";
+const apiPort = process.env.E2E_API_PORT ?? "8010";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -22,7 +25,7 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: `http://localhost:${webPort}`,
     trace: "off",
   },
   reporter: [["list"], ["json", { outputFile: "playwright-report/results.json" }]],
@@ -32,7 +35,7 @@ export default defineConfig({
         {
           command: `${pythonCommand} scripts/run_e2e_api.py`,
           cwd: "../backend",
-          url: "http://127.0.0.1:8010/health",
+          url: `http://127.0.0.1:${apiPort}/health`,
           reuseExistingServer,
           timeout: 120_000,
         },
@@ -41,11 +44,11 @@ export default defineConfig({
           // address, then `next start` with the backend given only at runtime in Render's bare
           // host:port form. The browser calls /api on port 3000.
           command: "node scripts/e2e-web.mjs",
-          url: "http://localhost:3000",
+          url: `http://localhost:${webPort}`,
           reuseExistingServer,
           timeout: 240_000,
           env: {
-            E2E_BACKEND_HOSTPORT: "127.0.0.1:8010",
+            E2E_BACKEND_HOSTPORT: `127.0.0.1:${apiPort}`,
           },
         },
       ],

@@ -12,14 +12,24 @@ import json
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.config import get_settings
 from app.domain.modules import MODULE_PROGRAMME
-from app.models import AnalysisSnapshot, AnalyticsRevision, RawEventSnapshot, SyncJob
+from app.models import (
+    AnalysisSnapshot,
+    AnalyticsRevision,
+    OrgUnit,
+    Programme,
+    RawAggregateValue,
+    RawEventSnapshot,
+    SyncJob,
+)
 from app.services.analysis import load_snapshot, request_matches, snapshot_response
 from app.services.authorization import programme_scope_codes, user_actions
+from app.services.geography import escape_like
 
 
 @lru_cache(maxsize=1)
@@ -75,11 +85,47 @@ def prepared_signature(session, user, *, revision: int | None = None) -> str | N
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
 
 
-def preparation_metadata(session, user, module: str) -> dict:
+def _next_staleness(session, module: str, org_unit_id, period: str | None, now: datetime) -> datetime | None:
+    """When the first still-fresh source row of this view turns stale, if any will."""
+    if org_unit_id is None or period is None:
+        return None
+    unit = session.get(OrgUnit, UUID(str(org_unit_id)))
+    if unit is None:
+        return None
+    stale_after = timedelta(hours=get_settings().dhis2_stale_hours)
+    subtree = select(OrgUnit.id).where(
+        or_(
+            OrgUnit.id == unit.id,
+            OrgUnit.path.like(escape_like(unit.path.rstrip("/") + "/") + "%", escape="\\"),
+        )
+    )
+    query = select(func.min(RawAggregateValue.extracted_at)).where(
+        RawAggregateValue.org_unit_id.in_(subtree),
+        RawAggregateValue.period == period,
+        RawAggregateValue.is_current.is_(True),
+        RawAggregateValue.extracted_at > now - stale_after,
+    )
+    programme_code = MODULE_PROGRAMME.get(module)
+    if programme_code:
+        query = query.where(
+            RawAggregateValue.programme_id.in_(select(Programme.id).where(Programme.code == programme_code))
+        )
+    oldest_fresh = session.scalar(query)
+    return _utc(oldest_fresh) + stale_after if oldest_fresh is not None else None
+
+
+def preparation_metadata(session, user, module: str, *, org_unit_id=None, period: str | None = None) -> dict:
     # Flush material writes before capturing their revision; never capture a pre-write token.
     session.flush()
     now = datetime.now(UTC)
     expiry = now + timedelta(hours=6)
+    # A prepared product carries its quality warnings. It must not outlive the moment one of its
+    # source rows turns stale, nor the month change that moves the operational window.
+    turns_stale = _next_staleness(session, module, org_unit_id, period, now)
+    if turns_stale is not None:
+        expiry = min(expiry, turns_stale)
+    next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    expiry = min(expiry, next_month)
     if MODULE_PROGRAMME.get(module) == "MPDSR":
         settings = get_settings()
         retention = timedelta(hours=settings.mpdsr_event_retention_hours)
@@ -108,9 +154,8 @@ def preparation_metadata(session, user, module: str) -> dict:
     current = session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global"))
     captured = session.info.get("product_input_revision")
     # Sign the inputs we actually read, never a second revision fetched after this guard.
-    signature = (
-        prepared_signature(session, user, revision=captured) if captured is not None and captured == current else None
-    )
+    coherent = captured is not None and captured == current and not session.info.get("product_input_unverified")
+    signature = prepared_signature(session, user, revision=captured) if coherent else None
     return {
         "signature": signature,
         "valid_until": expiry.isoformat(),

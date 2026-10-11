@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { WEB_ORIGIN } from "./origin";
 
 import { expect, test } from "@playwright/test";
 
@@ -23,7 +24,7 @@ test("login, CSRF-protected export POST and file download all flow through the s
   await page.getByRole("button", { name: "Sign in" }).click();
   expect((await login).status()).toBe(200);
   await page.waitForURL(/dashboard|workspace/, { timeout: 30_000 });
-  const cookies = await context.cookies("http://localhost:3000");
+  const cookies = await context.cookies(WEB_ORIGIN);
   const csrfCookie = cookies.find((cookie) => cookie.name === "hpip_csrf");
   expect(cookies.find((cookie) => cookie.name === "hpip_session")?.httpOnly).toBe(true);
   expect(csrfCookie?.value).toBeTruthy();
@@ -61,5 +62,5 @@ test("login, CSRF-protected export POST and file download all flow through the s
   expect(bytes.subarray(0, 2).toString("latin1")).toBe("PK");
 
   // The browser only ever spoke to the web origin.
-  expect([...apiOrigins]).toEqual(["http://localhost:3000"]);
+  expect([...apiOrigins]).toEqual([WEB_ORIGIN]);
 });

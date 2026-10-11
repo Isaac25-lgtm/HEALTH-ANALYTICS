@@ -92,7 +92,10 @@ def tls_errors(url: str, label: str, *, configured: str, require_ssl: bool) -> l
 
 def connect_args(url: str, *, sslmode: str, connect_timeout: int, application_name: str) -> dict:
     if url.startswith("sqlite"):
-        return {"check_same_thread": False}
+        # SQLite allows one writer. A request holds the write lock from its first write to its
+        # commit, so a second request must be able to wait for a whole request, not the driver's
+        # default five seconds. SQLite serves tests and local development only.
+        return {"check_same_thread": False, "timeout": 60}
     args: dict = {"connect_timeout": connect_timeout}
     # A URL that already carries sslmode wins; DB_SSLMODE fills the gap.
     if sslmode and not url_sslmode(url):

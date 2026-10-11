@@ -31,7 +31,7 @@ if (build.status !== 0) {
   process.exit(build.status ?? 1);
 }
 
-const server = spawn(process.execPath, [nextBin, "start", "--port", "3000"], {
+const server = spawn(process.execPath, [nextBin, "start", "--port", process.env.E2E_WEB_PORT ?? "3000"], {
   cwd: root,
   env: { ...process.env, NODE_ENV: "production", BACKEND_INTERNAL_URL: backend },
   stdio: ["ignore", "pipe", "pipe"],

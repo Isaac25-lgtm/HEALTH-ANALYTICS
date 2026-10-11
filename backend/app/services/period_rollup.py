@@ -43,6 +43,10 @@ _ABSENT = {"no_source_row", "invalid_value"}
 @dataclass
 class RollupReport:
     periods: dict[str, dict] = field(default_factory=dict)
+    # The analytics revision at which every requested period was verified, with nothing committed
+    # in between. None when that could not be established (no revision row, or the data kept
+    # changing): a caller must then not treat what it reads as belonging to one revision.
+    verified_revision: int | None = None
 
     def note(self, period: str, **values) -> None:
         self.periods.setdefault(period, {}).update(values)
@@ -211,32 +215,69 @@ def ensure_period_rollups(session: Session, periods: list[str]) -> RollupReport:
     revision when it changes, so a period verified at the present revision is not read again. When
     the revision has moved, PostgreSQL fingerprints each unit's rows: only units whose rows changed,
     or whose non-reporting months a new synchronisation can now certify, are verified again. A
-    facility load for one district therefore costs one district, not the country. Revision and
-    fingerprints are taken before any row is read, so a change committed during verification can
-    only make the stored state older than what was verified, which forces the next call to look.
+    facility load for one district therefore costs one district, not the country.
+
+    A fingerprint taken before the rows are read says nothing about a change committed straight
+    after it. A pass is therefore accepted only if the revision is the same after it as before it
+    and the pass itself wrote nothing; otherwise the periods are verified again. On return,
+    ``verified_revision`` is the revision at which every requested period is known to be exact, or
+    None if that could not be reached.
     """
     report = RollupReport()
-    summable: set[tuple[UUID, str, str]] | None = None
-    summable_digest: str | None = None
-    revision = session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global"))
+    specs = []
     for period in dict.fromkeys(periods):
         try:
             spec = parse_period(period)
         except PeriodError:
             continue
-        if spec.kind == "month":
-            continue
+        if spec.kind != "month":
+            specs.append(spec)
+    totals: dict[str, dict] = {}
+    cache: dict = {}
+    for _ in range(_MAX_VERIFY_PASSES):
+        revision = session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global"))
+        wrote = _verify_pass(session, specs, revision, totals, cache)
+        if revision is None:
+            break
+        after = session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global"))
+        if not wrote and after == revision:
+            report.verified_revision = revision
+            break
+    for key, item in totals.items():
+        report.note(
+            key,
+            status="rebuilt" if item["created"] or item["superseded"] else "current",
+            created=item["created"],
+            superseded=item["superseded"],
+            skipped=item["skipped"],
+        )
+    return report
+
+
+# A pass that wrote rows, or during which another transaction committed, is followed by another.
+# Four is ample for the ordinary case (rebuild, then confirm); a source that keeps changing for
+# longer leaves the periods unverified rather than holding the request.
+_MAX_VERIFY_PASSES = 4
+
+
+def _verify_pass(session: Session, specs: list, revision: int | None, totals: dict, cache: dict) -> bool:
+    """One verification of every period at ``revision``. True when this pass itself wrote rows."""
+    wrote = False
+    for spec in specs:
+        total = totals.setdefault(spec.key, {"created": 0, "superseded": 0, "skipped": 0})
         tracked = revision is not None and len(spec.key) <= 40
         state = session.get(RollupState, spec.key) if tracked else None
         if state is not None and state.revision == revision:
-            report.note(spec.key, status="current", created=0, superseded=0, skipped=0)
             continue
         months = months_in(spec)
-        if summable is None:
-            summable = _summable_keys(session)
-            summable_digest = hashlib.sha256(
-                repr(sorted((str(programme_id), key, version) for programme_id, key, version in summable)).encode()
+        if "summable" not in cache:
+            cache["summable"] = _summable_keys(session)
+            cache["summable_digest"] = hashlib.sha256(
+                repr(
+                    sorted((str(programme_id), key, version) for programme_id, key, version in cache["summable"])
+                ).encode()
             ).hexdigest()
+        summable, summable_digest = cache["summable"], cache["summable_digest"]
         units_now = _unit_digests(session, spec.key, months) if tracked else None
         jobs_now = _job_digests(session, months) if units_now is not None else None
         scope: set[str] | None = None  # None: every unit
@@ -259,11 +300,14 @@ def ensure_period_rollups(session: Session, periods: list[str]) -> RollupReport:
             # The revision moved for rows this period does not read.
             state.revision = revision
             session.flush()
-            report.note(spec.key, status="current", created=0, superseded=0, skipped=0)
             continue
         created, superseded, skipped = _rebuild_period(session, spec.key, months, summable, unit_ids=scope)
+        total["created"] += created
+        total["superseded"] += superseded
+        total["skipped"] = skipped
+        clean = not created and not superseded
+        wrote = wrote or not clean
         if tracked:
-            clean = not created and not superseded
             if state is None:
                 state = RollupState(period=spec.key)
                 session.add(state)
@@ -282,14 +326,7 @@ def ensure_period_rollups(session: Session, periods: list[str]) -> RollupReport:
             state.summable_digest = summable_digest
             state.revision = revision if clean else None
             session.flush()
-        report.note(
-            spec.key,
-            status="rebuilt" if created or superseded else "current",
-            created=created,
-            superseded=superseded,
-            skipped=skipped,
-        )
-    return report
+    return wrote
 
 
 def _rebuild_period(

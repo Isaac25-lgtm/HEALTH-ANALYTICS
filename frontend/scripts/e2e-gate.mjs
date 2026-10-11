@@ -23,7 +23,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repo = path.resolve(root, "..");
 const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const cli = path.join(root, "node_modules", "@playwright", "test", "cli.js");
-const backendHostPort = process.env.E2E_BACKEND_HOSTPORT ?? "127.0.0.1:8010";
+// The ports default to the project contract (web 3000, API 8010). A workstation where those
+// are in use (a live local stack, another application) can run the same gate on spare ports
+// with E2E_WEB_PORT and E2E_API_PORT; nothing else about the run changes.
+const webPort = Number(process.env.E2E_WEB_PORT ?? 3000);
+const apiPort = Number(process.env.E2E_API_PORT ?? 8010);
+const backendHostPort = process.env.E2E_BACKEND_HOSTPORT ?? `127.0.0.1:${apiPort}`;
+const portEnv = { E2E_WEB_PORT: String(webPort), E2E_API_PORT: String(apiPort) };
 const evidenceRefresh = process.env.UPDATE_VISUAL_EVIDENCE === "1";
 const bounds = boundsFromEnv(process.env);
 
@@ -32,7 +38,7 @@ delete buildEnv.BACKEND_INTERNAL_URL;
 delete buildEnv.NEXT_PUBLIC_API_BASE_URL;
 
 const { summary, exitCode } = await runGate({
-  ports: [3000, 8010],
+  ports: [webPort, apiPort],
   reportPath: path.join(root, "playwright-report", "results.json"),
   noSkipsScript: path.join(root, "scripts", "assert-no-skips.mjs"),
   bounds,
@@ -50,23 +56,23 @@ const { summary, exitCode } = await runGate({
     label: "e2e-api",
     executable: process.env.HPIP_PYTHON ?? "python",
     args: ["scripts/run_e2e_api.py"],
-    options: { cwd: path.join(repo, "backend"), env: process.env },
-    readyUrl: "http://127.0.0.1:8010/health",
+    options: { cwd: path.join(repo, "backend"), env: { ...process.env, ...portEnv } },
+    readyUrl: `http://127.0.0.1:${apiPort}/health`,
     readyTimeoutMs: 120_000,
   },
   web: {
     label: "e2e-web",
     executable: process.execPath,
-    args: [nextBin, "start", "--port", "3000"],
+    args: [nextBin, "start", "--port", String(webPort)],
     options: { cwd: root, env: { ...process.env, NODE_ENV: "production", BACKEND_INTERNAL_URL: backendHostPort } },
-    readyUrl: "http://127.0.0.1:3000",
+    readyUrl: `http://127.0.0.1:${webPort}`,
     readyTimeoutMs: 60_000,
   },
   playwright: {
     label: "playwright",
     executable: process.execPath,
     args: [cli, "test", ...process.argv.slice(2)],
-    options: { cwd: root, env: { ...process.env, HPIP_E2E_EXTERNAL_SERVERS: "true" } },
+    options: { cwd: root, env: { ...process.env, ...portEnv, HPIP_E2E_EXTERNAL_SERVERS: "true" } },
   },
 });
 

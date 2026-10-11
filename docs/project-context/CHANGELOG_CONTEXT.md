@@ -1,5 +1,16 @@
 # Context Changelog
 
+## 2026-10-11 (afternoon) - corrections after the independent audit
+
+Codex's audit reproduced stale or wrong results in the fast paths added on 10 October. Corrected:
+roll-up verification repeats until stable and a batch is stamped only with the revision its
+roll-ups were verified at (D-076); extraction coverage is part of the fingerprint of
+reporting-units indicators and the MPDSR event check hashes event content (D-077); paging,
+one-refresh lease, clock-aware quality reuse and snapshot expiry, interrupted-job release, opt-in
+scheduled purge; SQLite read-then-write deadlock in dashboard requests. No migration. Details,
+what the earlier handoff got wrong, and what is still open (CI red since 24 September, 133,568
+expired event rows awaiting an owner decision): [CLAUDE_CORRECTIONS_2026-10-11.md](CLAUDE_CORRECTIONS_2026-10-11.md).
+
 ## 2026-10-11 - speed, MPDSR upkeep, sign-in and roomy layout (owner instruction 2026-10-10)
 
 The owner asked for the exact causes of slow pages and of MPDSR not loading, for fixes without

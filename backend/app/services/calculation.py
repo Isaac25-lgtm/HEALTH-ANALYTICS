@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import Numeric, String, cast, func, or_, select
+from sqlalchemy import Numeric, String, cast, func, or_, select, update
 from sqlalchemy.orm import Session, defer
 from sqlalchemy.orm.util import identity_key
 
@@ -215,9 +215,19 @@ def prepare_calculation_batch(
 
     from app.services.period_rollup import ensure_period_rollups
 
+    if session.get_bind().dialect.name == "sqlite":
+        # SQLite has one writer, and a transaction that reads and then writes can deadlock with
+        # another writer: SQLite then fails one of them at once ("database is locked") instead of
+        # letting it wait. A dashboard request always writes (roll-up state, runs, its snapshot),
+        # so it takes the write lock before it reads; a second request simply waits its turn.
+        # The statement matches no row. PostgreSQL needs nothing of the kind.
+        session.execute(
+            update(AnalyticsRevision).where(AnalyticsRevision.key == "sqlite-write-lock").values(revision=0)
+        )
+    rollups_verified_at = None
     try:
         with session.begin_nested():
-            ensure_period_rollups(session, periods)
+            rollups_verified_at = ensure_period_rollups(session, periods).verified_revision
     except IntegrityError:
         pass
     # Optimistic guard for prepared products: never stamp a calculation made from an
@@ -231,6 +241,13 @@ def prepare_calculation_batch(
         ).all()
     )
     input_revision = revisions.get("global")
+    # The batch is coherent only if the roll-ups it will read were verified at exactly the revision
+    # it is stamped with. Otherwise a year verified a moment ago could be read, and blessed, at a
+    # newer revision whose months it no longer matches. An incoherent batch still answers the
+    # request, but nothing it produces is stamped as verified or signed as a prepared product.
+    coherent = input_revision is not None and rollups_verified_at == input_revision
+    if not coherent:
+        session.info["product_input_unverified"] = True
     session.info.setdefault("product_input_revision", input_revision)
     units = descendants(session, org_unit, include_self=True, active_only=False)
     # Rows are selected by subtree path: an 11,000-item ID list is far slower to send and plan.
@@ -318,6 +335,7 @@ def prepare_calculation_batch(
         key: resolve_indicator_versions_for_period(session, key, loaded=loaded_versions) for key in periods
     }
     values = {
+        "coherent": coherent,
         "input_revision": input_revision,
         "config_revision": revisions.get("config"),
         "digest_query": digest_query,
@@ -375,12 +393,13 @@ def _reference_state(session: Session, batch: dict) -> str:
     return batch["reference_state"]
 
 
-def _request_uses_events(
+def _request_versions(
     batch: dict,
     versions: list[IndicatorVersion],
     programme_codes: list[str] | None,
     indicator_codes: list[str] | None,
-) -> bool:
+):
+    """The formula versions one request actually evaluates."""
     indicators = batch.get("indicators") or {}
     programmes = batch.get("programmes") or {}
     for version in versions:
@@ -390,6 +409,16 @@ def _request_uses_events(
             continue
         if indicator_codes and indicator.code not in indicator_codes:
             continue
+        yield version
+
+
+def _request_uses_events(
+    batch: dict,
+    versions: list[IndicatorVersion],
+    programme_codes: list[str] | None,
+    indicator_codes: list[str] | None,
+) -> bool:
+    for version in _request_versions(batch, versions, programme_codes, indicator_codes):
         spec = version.formula_spec or {}
         if any(
             isinstance(part, dict) and part.get("mode") == "event_count"
@@ -399,10 +428,114 @@ def _request_uses_events(
     return False
 
 
+def _request_uses_coverage(
+    batch: dict,
+    versions: list[IndicatorVersion],
+    programme_codes: list[str] | None,
+    indicator_codes: list[str] | None,
+) -> bool:
+    """True when a formula sums reporting units, so extraction coverage decides its result."""
+    return any(
+        (version.formula_spec or {}).get("child_coverage") == "reporting_units"
+        for version in _request_versions(batch, versions, programme_codes, indicator_codes)
+    )
+
+
+def _coverage_digest(
+    session: Session, batch: dict, org_unit: OrgUnit, period: str, programme_codes: list[str] | None
+) -> str:
+    """The synchronisations that can certify a non-reporting unit this run reads.
+
+    A reporting-units formula (D-067) counts an absent peer as "reported nothing" only when a
+    successful extraction covers it. Whether one does is an input: a synchronisation finishing, or
+    being cancelled, changes the result without changing any source row. Jobs are the same objects
+    the calculation reads, so the digest and the calculation cannot disagree within a batch.
+    """
+    from app.integrations.dhis2.periods import months_in
+    from app.services.period_rollup import _coverage_jobs
+
+    months = months_in(parse_period(period))
+    jobs_by_months = batch.setdefault("source_coverage_jobs", {})
+    jobs = jobs_by_months.get(months)
+    if jobs is None:
+        jobs = _coverage_jobs(session, months)
+        jobs_by_months[months] = jobs
+    programme_ids = {
+        programme.id
+        for programme in (batch.get("programmes") or {}).values()
+        if not programme_codes or programme.code in programme_codes
+    }
+    units = {str(unit_id) for unit_id in _read_units(session, org_unit, period)}
+    hashes = batch.setdefault("coverage_job_hashes", {})
+    parts = []
+    for job in jobs:
+        if job.programme_id not in programme_ids:
+            continue
+        manifest = job.coverage_manifest or {}
+        listed = manifest.get("org_unit_ids")
+        # A job that lists its units and names none this run reads cannot certify anything for it
+        # (a facility load for another district, say). One that does not list them is kept.
+        if isinstance(listed, list) and units.isdisjoint(str(value) for value in listed):
+            continue
+        if job.id not in hashes:
+            hashes[job.id] = hashlib.sha256(
+                json.dumps([str(job.programme_id), job.mapping_version, manifest], sort_keys=True, default=str).encode()
+            ).hexdigest()
+        parts.append(f"{job.id}:{hashes[job.id]}")
+    return hashlib.sha256("|".join(sorted(parts)).encode()).hexdigest()
+
+
+_EVENT_DIGEST_COLUMNS = (
+    RawEventSnapshot.id,
+    RawEventSnapshot.org_unit_id,
+    RawEventSnapshot.programme_id,
+    RawEventSnapshot.program_uid,
+    RawEventSnapshot.program_stage_uid,
+    RawEventSnapshot.status,
+    RawEventSnapshot.death_date,
+    RawEventSnapshot.notification_date,
+    RawEventSnapshot.review_date,
+    RawEventSnapshot.data_values,
+    RawEventSnapshot.extracted_at,
+    RawEventSnapshot.mapping_version,
+)
+
+
+def _retained_event_digest(session: Session, retained_after: datetime) -> tuple:
+    """``(count, oldest extraction, content digest)`` of the retained current Tracker events."""
+    retained = (
+        RawEventSnapshot.is_current.is_(True),
+        RawEventSnapshot.source_connector == "tracker",
+        RawEventSnapshot.extracted_at > retained_after,
+    )
+    if session.get_bind().dialect.name == "postgresql":
+        row_text = func.concat_ws(
+            "|", *[func.coalesce(cast(column, String), "~") for column in _EVENT_DIGEST_COLUMNS]
+        )
+        count, oldest, total = session.execute(
+            select(
+                func.count(RawEventSnapshot.id),
+                func.min(RawEventSnapshot.extracted_at),
+                func.coalesce(func.sum(cast(func.hashtextextended(row_text, 0), Numeric)), 0),
+            ).where(*retained)
+        ).one()
+        return count, oldest, str(total)
+    # Other databases (tests on SQLite): the same content, hashed here.
+    rows = session.execute(select(*_EVENT_DIGEST_COLUMNS).where(*retained)).all()
+    content = hashlib.sha256()
+    for line in sorted(json.dumps([str(value) for value in row], sort_keys=True) for row in rows):
+        content.update(line.encode())
+    oldest = min((row.extracted_at for row in rows), default=None)
+    return len(rows), oldest, content.hexdigest()
+
+
 def _event_state(session: Session, batch: dict) -> dict:
     """Everything an event-based result depends on besides its aggregate rows and reference tables.
 
-    ``digest`` changes whenever a retained event or a Tracker synchronisation changes. ``valid_until``
+    ``digest`` changes whenever a retained event or a Tracker synchronisation changes. It hashes
+    every retained event's own content: counts and newest timestamps are not enough, because a
+    transaction that began earlier can commit a change later without moving any maximum.
+    ``valid_until``
     is the first moment at which the clock alone would change a result: the oldest retained event
     reaching the retention limit, a covering synchronisation reaching the freshness limit, or
     midnight. It is computed before any event is read for calculation, so an event that expires
@@ -415,18 +548,7 @@ def _event_state(session: Session, batch: dict) -> dict:
     now = datetime.now(UTC)
     retention = timedelta(hours=settings.mpdsr_event_retention_hours)
     freshness = timedelta(hours=min(settings.dhis2_stale_hours, settings.mpdsr_event_retention_hours))
-    retained = session.execute(
-        select(
-            func.count(RawEventSnapshot.id),
-            func.min(RawEventSnapshot.extracted_at),
-            func.max(RawEventSnapshot.updated_at),
-            func.max(RawEventSnapshot.created_at),
-        ).where(
-            RawEventSnapshot.is_current.is_(True),
-            RawEventSnapshot.source_connector == "tracker",
-            RawEventSnapshot.extracted_at > now - retention,
-        )
-    ).one()
+    retained = _retained_event_digest(session, now - retention)
     jobs = session.execute(
         select(
             SyncJob.id,
@@ -460,8 +582,7 @@ def _event_state(session: Session, batch: dict) -> dict:
         settings.dhis2_stale_hours,
         retained[0],
         _utc(retained[1]),
-        _utc(retained[2]),
-        _utc(retained[3]),
+        retained[2],
         valid_until.isoformat(),
     ):
         digest.update(repr(item).encode())
@@ -504,6 +625,7 @@ def _input_fingerprint(
     if batch is None or not programme_codes or period not in (batch.get("version_decisions_by_period") or {}):
         return None
     uses_events = _request_uses_events(batch, versions, programme_codes, indicator_codes)
+    uses_coverage = _request_uses_coverage(batch, versions, programme_codes, indicator_codes)
     hierarchy = batch.setdefault("hierarchy_digest", {})
     hierarchy_key = (org_unit.id, period)
     if hierarchy_key not in hierarchy:
@@ -530,6 +652,8 @@ def _input_fingerprint(
     material.extend([calculation_build_signature(), str(get_settings().mpdsr_reporting_units_approved)])
     if uses_events:
         material.append("events:" + _event_state(session, batch)["digest"])
+    if uses_coverage:
+        material.append("coverage:" + _coverage_digest(session, batch, org_unit, period, programme_codes))
     material.append(hierarchy_hash)
     material.extend(
         sorted(
@@ -581,6 +705,7 @@ def clear_calculation_batch(session: Session) -> None:
     session.info.pop(BATCH_INFO_KEY, None)
     session.info.pop(MEMO_PENDING_KEY, None)
     session.info.pop(MEMO_STATE_KEY, None)
+    session.info.pop(CREATED_RUNS_KEY, None)
 
 
 # Verified-run memo. Every input of a non-event calculation lives in a table whose changes bump the
@@ -597,8 +722,26 @@ def clear_calculation_batch(session: Session) -> None:
 # of the source rows the run reads (its subtree, period and programme; plus the event state for an
 # event-based run) must equal the one stored with it. PostgreSQL only; elsewhere the full input
 # fingerprint decides, as before.
+#
+# None of the above is a proof on its own. A fingerprint read before the rows says nothing about a
+# change committed between the two reads: the run would then hold a result from one state and a
+# fingerprint of another, and a later return to the first state would revive it. So nothing is
+# stamped unless the revision is the same when the stamps are written as when the batch began
+# (flush_run_memos): no relevant row was committed in between, and every read saw one state. The
+# batch must also be coherent (its roll-ups verified at its own revision). A run calculated while
+# the revision moved keeps its result but loses its reuse key.
 MEMO_PENDING_KEY = "calculation_run_memo_pending"
 MEMO_STATE_KEY = "calculation_run_memo_state"
+CREATED_RUNS_KEY = "calculation_runs_created"
+
+
+@dataclass(frozen=True)
+class _RunTraits:
+    """What, besides its aggregate rows, a run depends on."""
+
+    events: bool = False
+    # Programme codes when a reporting-units formula makes extraction coverage an input.
+    coverage_programmes: tuple[str, ...] | None = None
 QUALITY_SCAN_REUSE = timedelta(hours=1)
 
 
@@ -641,7 +784,7 @@ def _source_digests(session: Session, batch: dict) -> dict | None:
     return digests
 
 
-def _inputs_digest(session: Session, org_unit: OrgUnit, period: str, uses_events: bool) -> str | None:
+def _inputs_digest(session: Session, org_unit: OrgUnit, period: str, traits: _RunTraits) -> str | None:
     """Fingerprint of every source row a run for this unit and period reads, or None if unsupported."""
     batch = _batch(session)
     if batch is None:
@@ -663,13 +806,17 @@ def _inputs_digest(session: Session, org_unit: OrgUnit, period: str, uses_events
             count += rows
             total += fingerprint
     material = f"{count}|{total}"
-    if uses_events:
-        material += "|" + _event_state(session, batch)["digest"]
+    if traits.events:
+        material += "|events:" + _event_state(session, batch)["digest"]
+    if traits.coverage_programmes is not None:
+        material += "|coverage:" + _coverage_digest(
+            session, batch, org_unit, period, list(traits.coverage_programmes)
+        )
     return hashlib.sha256(material.encode()).hexdigest()
 
 
 def _memo_run(
-    session: Session, key: str | None, org_unit: OrgUnit, period: str, uses_events: bool
+    session: Session, key: str | None, org_unit: OrgUnit, period: str, traits: _RunTraits
 ) -> CalculationRun | None:
     batch = _batch(session) or {}
     revision = batch.get("input_revision")
@@ -704,9 +851,11 @@ def _memo_run(
     }
     if stamped_revision != revision:
         config = batch.get("config_revision")
-        if config is None or stamped_config != config or stamped_digest is None:
+        # The second check needs a coherent batch: a run for a year is exact only if the year's
+        # roll-up, which is one of the rows it reads, was verified at this batch's revision.
+        if not batch.get("coherent") or config is None or stamped_config != config or stamped_digest is None:
             return None
-        if _inputs_digest(session, org_unit, period, uses_events) != stamped_digest:
+        if _inputs_digest(session, org_unit, period, traits) != stamped_digest:
             return None
         # The same inputs at a newer revision: stamp it, so the next request needs one lookup.
         session.info.setdefault(MEMO_PENDING_KEY, {})[key] = {"run_id": run.id, "revision": revision, **state}
@@ -715,30 +864,59 @@ def _memo_run(
 
 
 def _remember_run(
-    session: Session, key: str | None, run: CalculationRun, org_unit: OrgUnit, period: str, uses_events: bool
+    session: Session, key: str | None, run: CalculationRun, org_unit: OrgUnit, period: str, traits: _RunTraits
 ) -> None:
     batch = _batch(session) or {}
     revision = batch.get("input_revision")
-    if key is None or revision is None:
+    if key is None or revision is None or not batch.get("coherent"):
         return
     state = {
         "key": key,
         "scanned_at": None,
         # Only an event-based run has a moment at which the clock alone would change it.
-        "valid_until": _event_state(session, batch)["valid_until"] if uses_events else None,
+        "valid_until": _event_state(session, batch)["valid_until"] if traits.events else None,
         "config_revision": batch.get("config_revision"),
-        "inputs_digest": _inputs_digest(session, org_unit, period, uses_events),
+        "inputs_digest": _inputs_digest(session, org_unit, period, traits),
     }
     session.info.setdefault(MEMO_PENDING_KEY, {})[key] = {"run_id": run.id, "revision": revision, **state}
     session.info.setdefault(MEMO_STATE_KEY, {})[run.id] = state
 
 
 def quality_scan_is_recent(session: Session, run: CalculationRun) -> bool:
-    """True when this exact run, on unchanged inputs, was quality-scanned within the last hour."""
+    """True when a quality scan of this exact run, on unchanged inputs, would find nothing new.
+
+    Unchanged inputs do not mean unchanged warnings: a source row becomes stale when the clock
+    passes its extraction time plus the staleness limit, and the operational window moves with the
+    date. A scan is reused for at most an hour, never across a date change, and never once a row
+    in the run's scope has crossed the staleness limit since the scan.
+    """
     state = (session.info.get(MEMO_STATE_KEY) or {}).get(run.id)
     if state is None or state["scanned_at"] is None:
         return False
-    return datetime.now(UTC) - _utc(state["scanned_at"]) < QUALITY_SCAN_REUSE
+    now = datetime.now(UTC)
+    scanned_at = _utc(state["scanned_at"])
+    if now - scanned_at >= QUALITY_SCAN_REUSE or now.date() != scanned_at.date():
+        return False
+    unit = session.get(OrgUnit, run.geography_org_unit_id) if run.geography_org_unit_id else None
+    if unit is None:
+        return False
+    stale_after = timedelta(hours=get_settings().dhis2_stale_hours)
+    subtree = select(OrgUnit.id).where(
+        or_(
+            OrgUnit.id == unit.id,
+            OrgUnit.path.like(escape_like(unit.path.rstrip("/") + "/") + "%", escape="\\"),
+        )
+    )
+    newly_stale = select(RawAggregateValue.id).where(
+        RawAggregateValue.org_unit_id.in_(subtree),
+        RawAggregateValue.period == run.period,
+        RawAggregateValue.is_current.is_(True),
+        RawAggregateValue.extracted_at > scanned_at - stale_after,
+        RawAggregateValue.extracted_at <= now - stale_after,
+    )
+    if run.programme_id is not None:
+        newly_stale = newly_stale.where(RawAggregateValue.programme_id == run.programme_id)
+    return session.scalar(newly_stale.limit(1)) is None
 
 
 def note_quality_scanned(session: Session, run: CalculationRun) -> None:
@@ -752,10 +930,26 @@ def note_quality_scanned(session: Session, run: CalculationRun) -> None:
 
 
 def flush_run_memos(session: Session) -> None:
-    """Write this request's stamps in key order, in one statement, so concurrent views cannot deadlock."""
+    """Write this request's stamps, but only if every read of the batch saw one state.
+
+    The revision is read again here. If it differs from the one a stamp was taken at, something was
+    committed while the batch was reading: its fingerprints and its rows may describe different
+    states. Such stamps are dropped, and a run calculated in that batch gives up its reuse key, so
+    neither the memo nor the input fingerprint can later return it for inputs it was not made from.
+    Stamps are written in key order, in one statement, so concurrent views cannot deadlock.
+    """
     pending = session.info.pop(MEMO_PENDING_KEY, None)
+    created = session.info.pop(CREATED_RUNS_KEY, None)
     session.info.pop(MEMO_STATE_KEY, None)
+    if not pending and not created:
+        return
+    current = session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global"))
+    for run, revision in created or []:
+        if revision != current:
+            run.idempotency_key = None
+    pending = {key: entry for key, entry in (pending or {}).items() if entry["revision"] == current}
     if not pending:
+        session.flush()
         return
     dialect = session.get_bind().dialect.name
     if dialect == "postgresql":
@@ -2040,9 +2234,16 @@ def run_calculation(
         (decision.version for decision in decisions.values() if decision.version is not None),
         key=lambda row: str(row.id),
     )
-    uses_events = batch is not None and _request_uses_events(batch, versions, programme_codes, indicator_codes)
+    traits = _RunTraits(
+        events=batch is not None and _request_uses_events(batch, versions, programme_codes, indicator_codes),
+        coverage_programmes=(
+            tuple(programme_codes or ())
+            if batch is not None and _request_uses_coverage(batch, versions, programme_codes, indicator_codes)
+            else None
+        ),
+    )
     memo_key = _memo_key(org_unit, period, programme_codes, indicator_codes)
-    verified = _memo_run(session, memo_key, org_unit, period, uses_events)
+    verified = _memo_run(session, memo_key, org_unit, period, traits)
     if verified is not None:
         session.info.setdefault(REUSED_RUNS_KEY, set()).add(verified.id)
         return verified
@@ -2068,7 +2269,7 @@ def run_calculation(
         reused = _reusable_run(session, org_unit, period, fingerprint)
         if reused is not None:
             session.info.setdefault(REUSED_RUNS_KEY, set()).add(reused.id)
-            _remember_run(session, memo_key, reused, org_unit, period, uses_events)
+            _remember_run(session, memo_key, reused, org_unit, period, traits)
             return reused
     run = CalculationRun(
         id=uuid4(),
@@ -2291,7 +2492,9 @@ def run_calculation(
         run.evidence_manifest = run.config_snapshot
         session.flush()
         if fingerprint is not None:
-            _remember_run(session, memo_key, run, org_unit, period, uses_events)
+            _remember_run(session, memo_key, run, org_unit, period, traits)
+            if batch is not None:
+                session.info.setdefault(CREATED_RUNS_KEY, []).append((run, batch.get("input_revision")))
         return run
     except Exception:
         run.status = JobStatus.FAILED.value

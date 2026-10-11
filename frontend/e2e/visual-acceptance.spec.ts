@@ -29,7 +29,16 @@ async function evidence(page: Page, name: string) {
   });
 }
 const DESKTOP = { width: 1680, height: 945 };
-const MAX_DESKTOP_HEIGHT = Math.round(DESKTOP.height * 1.5);
+// D-070 (owner, 2026-10-10): desktop dashboards are roomy and scroll instead of fitting one dense
+// screen. The page is still bounded: a dashboard is a few screens of panels, never an endless one.
+const MAX_DESKTOP_HEIGHT = DESKTOP.height * 4;
+
+/** A panel is given room: it is at least this tall and its table shows every column unclipped. */
+async function panelBox(page: Page, selector: string) {
+  const box = await page.locator(selector).first().boundingBox();
+  expect(box, `${selector} is rendered`).not.toBeNull();
+  return box!;
+}
 
 async function signIn(page: Page, username: string, landing: RegExp) {
   await page.goto("/login");
@@ -76,7 +85,7 @@ async function bottomOf(page: Page, selector: string) {
 test.describe("desktop 1680x945", () => {
   test.use({ viewport: DESKTOP });
 
-  test("national overview fits about one screen with key panels above the fold", async ({ page }) => {
+  test("national overview gives each panel room, with the indicators and the map leading", async ({ page }) => {
     await signIn(page, "national.analyst", /dashboard\/national/);
     await expect(page.getByRole("heading", { name: "Geographic intelligence" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "Priority insights" })).toBeVisible();
@@ -87,10 +96,25 @@ test.describe("desktop 1680x945", () => {
     expect(metrics.smallText).toEqual([]);
     const kpis = await bottomOf(page, ".kpi-strip");
     expect(kpis.bottom).toBeLessThanOrEqual(DESKTOP.height);
-    for (const selector of [".area-map", ".area-insights", ".area-scorecard"]) {
-      const panel = await bottomOf(page, selector);
-      expect(panel.bottom, `${selector} ends above the fold`).toBeLessThanOrEqual(DESKTOP.height);
-    }
+    // The map and the insights open the page, side by side, the map taking the wider share.
+    const map = await panelBox(page, ".area-map");
+    const insights = await panelBox(page, ".area-insights");
+    expect(map.y, "the map starts above the fold").toBeLessThan(DESKTOP.height);
+    expect(insights.y, "insights start above the fold").toBeLessThan(DESKTOP.height);
+    expect(map.height, "the map is given room").toBeGreaterThanOrEqual(500);
+    expect(map.width).toBeGreaterThan(insights.width * 1.5);
+    // The scorecard has the full width, below them, and shows every column without clipping.
+    const scorecard = await panelBox(page, ".area-scorecard");
+    expect(scorecard.y).toBeGreaterThanOrEqual(map.y + map.height - 1);
+    expect(scorecard.width).toBeGreaterThan(map.width);
+    const clipped = await page
+      .locator(".area-scorecard .table-wrap")
+      .first()
+      .evaluate((node) => node.scrollWidth - node.clientWidth);
+    expect(clipped, "scorecard columns are not cut off").toBeLessThanOrEqual(1);
+    // Trends and ranking follow, each tall enough to read.
+    expect((await panelBox(page, ".area-trend")).height).toBeGreaterThanOrEqual(400);
+    expect((await panelBox(page, ".area-ranking")).height).toBeGreaterThanOrEqual(400);
     expect(await page.locator(".kpi-strip .kpi-card").count()).toBeLessThanOrEqual(6);
     // Long lists are bounded: the insight panel shows a short list with a path to all of them.
     expect(await page.locator(".area-insights .insight").count()).toBeLessThanOrEqual(4);
@@ -98,7 +122,7 @@ test.describe("desktop 1680x945", () => {
     await evidence(page, "national-desktop-1680x945.png");
   });
 
-  test("regional, district and facility views keep the same density", async ({ page }) => {
+  test("regional, district and facility views keep the same roomy rhythm", async ({ page }) => {
     await signIn(page, "acholi.analyst", /dashboard\/regional/);
     await expect(page.getByRole("heading", { name: "Unit scorecard" })).toBeVisible({ timeout: 30_000 });
     let metrics = await layoutMetrics(page);
@@ -112,8 +136,10 @@ test.describe("desktop 1680x945", () => {
     metrics = await layoutMetrics(page);
     expect(metrics.overflow).toBeLessThanOrEqual(1);
     expect(metrics.height).toBeLessThanOrEqual(MAX_DESKTOP_HEIGHT);
-    const primary = await bottomOf(page, ".area-primary");
-    expect(primary.bottom).toBeLessThanOrEqual(DESKTOP.height);
+    // The facility scorecard leads the district view at full width.
+    const primary = await panelBox(page, ".area-primary");
+    expect(primary.y, "the facility scorecard starts above the fold").toBeLessThan(DESKTOP.height);
+    expect(primary.width).toBeGreaterThan(DESKTOP.width * 0.6);
     await evidence(page, "district-desktop-1680x945.png");
   });
 

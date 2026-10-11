@@ -81,7 +81,13 @@ def persist_snapshot(
 ) -> AnalysisSnapshot:
     from app.services.prepared_dashboard import preparation_metadata
 
-    preparation = preparation_metadata(session, user, dashboard["module"])
+    preparation = preparation_metadata(
+        session,
+        user,
+        dashboard["module"],
+        org_unit_id=dashboard.get("scope", {}).get("id"),
+        period=dashboard.get("period"),
+    )
     snapshot_id = uuid4()
     view_hash = compute_view_hash(
         org_unit_id=dashboard["scope"]["id"],

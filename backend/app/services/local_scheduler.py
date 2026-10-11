@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,6 +24,8 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.domain.enums import ConnectorType, JobStatus
 from app.models import SyncJob
+from app.services.purge import acquire_lease
+from app.services.sync import reclaim_abandoned_sync_jobs
 
 CHECK_EVERY_SECONDS = 15 * 60
 FIRST_CHECK_AFTER_SECONDS = 20
@@ -31,6 +34,9 @@ IN_PROGRESS_WINDOW = timedelta(hours=3)
 # After any attempt, successful or not, wait before trying again: a slow or unavailable source
 # server must not be asked again every few minutes.
 RETRY_AFTER = timedelta(hours=2)
+REFRESH_LEASE = "local_scheduler:dhis2_refresh"
+PURGE_LEASE = "local_scheduler:retention_purge"
+PURGE_EVERY = timedelta(hours=20)
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -80,7 +86,9 @@ class LocalRefreshScheduler:
 
     def __init__(self) -> None:
         self._process: subprocess.Popen | None = None
+        self._purge: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
+        self._holder = uuid4().hex
 
     def start(self) -> None:
         if self._thread is not None:
@@ -104,7 +112,18 @@ class LocalRefreshScheduler:
 
         settings = get_settings()
         with get_session_factory()() as session:
+            try:
+                reclaim_abandoned_sync_jobs(session)
+            except Exception:  # noqa: BLE001 - tidying up must not stop the refresh decision
+                session.rollback()
+            self._purge_if_enabled(session, settings)
             due = refresh_is_due(session, settings)
+            # Two API processes can reach the same decision in the same second. The lease is taken
+            # in the database, so exactly one of them starts the refresh; it lapses by itself.
+            if due and not acquire_lease(
+                session, REFRESH_LEASE, self._holder, int(RETRY_AFTER.total_seconds())
+            ):
+                due = False
         if not due:
             return False
         backend_root = Path(__file__).resolve().parents[2]
@@ -117,6 +136,30 @@ class LocalRefreshScheduler:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return True
+
+
+    def _purge_if_enabled(self, session: Session, settings: Settings) -> None:
+        """Run the governed retention purge about once a day, only when the operator opted in.
+
+        Expired MPDSR events are already excluded from every calculation, but excluded is not
+        deleted. In queue mode Celery Beat schedules the purge; here nothing did. This starts the
+        same ``scripts/purge_expired.py`` and adds no deletion rule of its own.
+        """
+        if not (settings.purge_enabled and settings.purge_schedule_enabled):
+            return
+        if self._purge is not None and self._purge.poll() is None:
+            return
+        if not acquire_lease(session, PURGE_LEASE, self._holder, int(PURGE_EVERY.total_seconds())):
+            return
+        backend_root = Path(__file__).resolve().parents[2]
+        self._purge = subprocess.Popen(  # noqa: S603 - fixed arguments, this interpreter
+            [sys.executable, str(backend_root / "scripts" / "purge_expired.py"), "--source", "scheduler"],
+            cwd=str(backend_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
 
 scheduler = LocalRefreshScheduler()

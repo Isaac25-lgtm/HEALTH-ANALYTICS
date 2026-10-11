@@ -299,3 +299,62 @@ def test_tracker_events_are_fetched_several_peers_at_a_time_in_a_fixed_order():
     assert all("totalPages" not in request.url.params for request in requests)
     # The cancellation check uses the caller's database session: never from two threads at once.
     assert checking["overlapped"] is False
+
+
+def test_nothing_is_stamped_when_data_changed_while_a_batch_was_reading(session):
+    """A result made while the revision moved may mix two states: it is neither remembered as
+    verified nor left reusable by its input fingerprint."""
+    from app.services import calculation as calc
+
+    acholi, kitgum = _unit(session, "ACHOLI"), _unit(session, "KITGUM")
+    put_population(session, acholi, 2024, 1_000_000, code="SEAMLESS_GUARD")
+    put_raw(session, kitgum, "FY2024/25", "ANC1", 9_000)
+    session.flush()
+    calc.prepare_calculation_batch(session, org_unit=acholi, periods=["FY2024/25"], programme_codes=["MNCH"])
+    try:
+        run = calc.run_calculation(
+            session,
+            org_unit=acholi,
+            period="FY2024/25",
+            user=None,
+            programme_codes=["MNCH"],
+            indicator_codes=["ANC1_COVERAGE"],
+        )
+        assert run.idempotency_key is not None
+        # Another change lands before the batch finishes.
+        put_raw(session, _unit(session, "PADER"), "FY2024/25", "ANC1", 8_000)
+        calc.flush_run_memos(session)
+    finally:
+        calc.clear_calculation_batch(session)
+    assert run.idempotency_key is None
+    assert session.scalars(select(CalculationRunMemo)).all() == []
+
+
+def test_a_prepared_product_is_not_signed_when_its_inputs_were_not_one_state(session):
+    from app.services.prepared_dashboard import preparation_metadata
+
+    admin = _admin(session)
+    revision = session.scalar(select(AnalyticsRevision.revision).where(AnalyticsRevision.key == "global"))
+    session.info["product_input_revision"] = revision
+    session.info.pop("product_input_unverified", None)
+    assert preparation_metadata(session, admin, "anc")["signature"] is not None
+    session.info["product_input_unverified"] = True
+    assert preparation_metadata(session, admin, "anc")["signature"] is None
+    session.info.pop("product_input_unverified", None)
+    session.info.pop("product_input_revision", None)
+
+
+def test_a_prepared_product_expires_when_one_of_its_source_rows_turns_stale(session):
+    """A prepared product carries its quality warnings, so it cannot outlive a staleness crossing."""
+    from app.services.prepared_dashboard import preparation_metadata
+
+    admin, pader = _admin(session), _unit(session, "PADER")
+    stale_hours = get_settings().dhis2_stale_hours
+    row = put_raw(session, pader, "202609", "ANC1", 100)
+    row.extracted_at = datetime.now(UTC) - timedelta(hours=stale_hours) + timedelta(minutes=30)
+    session.flush()
+    with_scope = preparation_metadata(session, admin, "anc", org_unit_id=pader.id, period="202609")
+    without_scope = preparation_metadata(session, admin, "anc")
+    expires = datetime.fromisoformat(with_scope["valid_until"])
+    assert timedelta(minutes=25) < expires - datetime.now(UTC) < timedelta(minutes=31)
+    assert datetime.fromisoformat(without_scope["valid_until"]) > expires

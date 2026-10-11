@@ -111,8 +111,16 @@ class TrackerEventsAdapter:
                 if page_count is not None:
                     if page >= int(page_count):
                         break
-                elif len(rows) < size:
-                    break
+                else:
+                    # The server may serve smaller pages than were asked for. A page is the last
+                    # one only when it is shorter than the size the server says it used.
+                    served = pager.get("pageSize") or (payload.get("pageSize") if isinstance(payload, dict) else None)
+                    try:
+                        effective = min(size, int(served)) if served else size
+                    except (TypeError, ValueError):
+                        effective = size
+                    if len(rows) < max(effective, 1):
+                        break
                 page += 1
                 if page > max_pages:
                     return collected, pages, True

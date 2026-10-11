@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, case, or_, select, text, update
@@ -737,6 +737,54 @@ def claim_sync_job(
     )
     session.commit()
     return bool(result.rowcount)
+
+
+# A job is "running" only while a process holds its execution lock. One left running by a
+# process that no longer exists would block the same request for ever (an on-demand facility load
+# is unique while active).
+ABANDONED_AFTER = timedelta(minutes=10)
+
+
+def reclaim_abandoned_sync_jobs(session: Session, now: datetime | None = None) -> int:
+    """Mark as failed the jobs whose process stopped while they were running. PostgreSQL only.
+
+    Only job kinds whose executor holds ``sync_job_execution_lock`` for the whole run are
+    considered: on-demand facility loads and the scheduled refresh. If the lock can be taken,
+    nothing is executing the job. Its transaction died with its process, so nothing was stored.
+    """
+    if session.get_bind().dialect.name != "postgresql":
+        return 0
+    moment = now or datetime.now(UTC)
+    candidates = session.scalars(
+        select(SyncJob.id).where(
+            SyncJob.status == JobStatus.RUNNING.value,
+            SyncJob.started_at.is_not(None),
+            SyncJob.started_at < moment - ABANDONED_AFTER,
+            or_(SyncJob.job_type == "aggregate_facilities", SyncJob.idempotency_key.like("scheduled:%")),
+        )
+    ).all()
+    session.commit()
+    reclaimed = 0
+    for job_id in candidates:
+        with sync_job_execution_lock(session, job_id) as acquired:
+            if not acquired:
+                continue
+            result = session.execute(
+                update(SyncJob)
+                .where(SyncJob.id == job_id, SyncJob.status == JobStatus.RUNNING.value)
+                .values(
+                    status=JobStatus.FAILED.value,
+                    error_code="interrupted",
+                    error_message=(
+                        "The process running this job stopped before it finished. Nothing was stored; "
+                        "the job can be requested again."
+                    ),
+                    finished_at=moment,
+                )
+            )
+            session.commit()
+            reclaimed += result.rowcount or 0
+    return reclaimed
 
 
 def record_sync_internal_failure(session: Session, job_id: UUID) -> None:
